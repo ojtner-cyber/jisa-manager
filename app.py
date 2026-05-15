@@ -56,6 +56,30 @@ def init_db():
         created_at TEXT DEFAULT CURRENT_TIMESTAMP,
         UNIQUE(branch_id, year, month),
         FOREIGN KEY(branch_id) REFERENCES branches(id))""")
+    conn.execute("""CREATE TABLE IF NOT EXISTS sales_data (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        sale_date TEXT,
+        seller_name TEXT,
+        item_code TEXT,
+        item_name TEXT,
+        item_group TEXT,
+        quantity INTEGER DEFAULT 1,
+        unit_price INTEGER DEFAULT 0,
+        supply_price INTEGER DEFAULT 0,
+        vat INTEGER DEFAULT 0,
+        total INTEGER DEFAULT 0,
+        buyer TEXT,
+        buyer_phone TEXT,
+        real_seller TEXT,
+        upload_batch TEXT,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP)""")
+    conn.execute("""CREATE TABLE IF NOT EXISTS sellers (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT UNIQUE NOT NULL,
+        real_name TEXT,
+        first_seen TEXT,
+        total_sales INTEGER DEFAULT 0,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP)""")
     # 기본 계정 생성
     conn.execute("INSERT OR IGNORE INTO users(email,password,name,role) VALUES(?,?,?,?)",
         ("test@visang.com","visang123!","관리자","admin"))
@@ -355,6 +379,198 @@ def export_sales():
 @login_required
 def api_me():
     return jsonify(session.get("user",{}))
+
+# ── 엑셀(.xlsx) 판매현황 업로드 ───────────────
+def parse_xlsx_sales(file_bytes):
+    """ZIP 기반으로 xlsx 직접 파싱 (스타일 오류 무시)"""
+    import zipfile, xml.etree.ElementTree as ET, re
+    from datetime import datetime as dt
+
+    results = []
+    with zipfile.ZipFile(io.BytesIO(file_bytes)) as z:
+        # 공유문자열
+        strings = []
+        if 'xl/sharedStrings.xml' in z.namelist():
+            sst = z.read('xl/sharedStrings.xml').decode('utf-8')
+            sst_root = ET.fromstring(sst)
+            ns2 = 'http://schemas.openxmlformats.org/spreadsheetml/2006/main'
+            for si in sst_root.findall(f'{{{ns2}}}si'):
+                t_els = si.findall(f'.//{{{ns2}}}t')
+                strings.append(''.join(t.text or '' for t in t_els))
+
+        sheet_xml = z.read('xl/worksheets/sheet1.xml').decode('utf-8')
+        root = ET.fromstring(sheet_xml)
+        ns2 = 'http://schemas.openxmlformats.org/spreadsheetml/2006/main'
+
+        for row in root.findall(f'.//{{{ns2}}}row'):
+            rnum = int(row.get('r', 0))
+            if rnum <= 2: continue  # 헤더 행 스킵
+
+            row_vals = {}
+            for cell in row.findall(f'{{{ns2}}}c'):
+                ref = cell.get('r', '')
+                col = ''.join(c for c in ref if c.isalpha())
+                t = cell.get('t', '')
+                is_el = cell.find(f'{{{ns2}}}is')
+                v_el = cell.find(f'{{{ns2}}}v')
+                val = ''
+                if is_el is not None:
+                    t_els = is_el.findall(f'.//{{{ns2}}}t')
+                    val = ''.join(x.text or '' for x in t_els)
+                elif t == 's' and v_el is not None:
+                    idx = int(v_el.text)
+                    val = strings[idx] if idx < len(strings) else ''
+                elif v_el is not None:
+                    val = v_el.text or ''
+                if val:
+                    row_vals[col] = val
+
+            if not row_vals.get('C'):
+                continue  # 판매처명 없으면 스킵
+
+            # 일자 파싱 (2026/05/03 -5 형태)
+            raw_date = row_vals.get('B', '')
+            sale_date = re.sub(r'\s*-\d+$', '', raw_date).strip()
+            try:
+                dt.strptime(sale_date, '%Y/%m/%d')
+                sale_date = sale_date.replace('/', '-')
+            except:
+                sale_date = ''
+
+            results.append({
+                'sale_date':    sale_date,
+                'seller_name':  row_vals.get('C', '').strip(),
+                'item_code':    row_vals.get('G', '').strip(),
+                'item_name':    row_vals.get('H', '').strip(),
+                'item_group':   row_vals.get('AA', '').strip(),
+                'quantity':     int(float(row_vals.get('I', 1) or 1)),
+                'unit_price':   int(float(row_vals.get('K', 0) or 0)),
+                'supply_price': int(float(row_vals.get('L', 0) or 0)),
+                'vat':          int(float(row_vals.get('M', 0) or 0)),
+                'total':        int(float(row_vals.get('N', 0) or 0)),
+                'buyer':        row_vals.get('D', '').strip(),
+                'buyer_phone':  row_vals.get('E', '').strip(),
+                'real_seller':  row_vals.get('AE', '').strip(),
+            })
+    return results
+
+@app.route("/api/upload/xlsx/preview", methods=["POST"])
+@login_required
+def upload_xlsx_preview():
+    f = request.files.get("file")
+    if not f: return jsonify({"error": "파일이 없습니다"}), 400
+    try:
+        rows = parse_xlsx_sales(f.read())
+    except Exception as e:
+        return jsonify({"error": f"파일 파싱 오류: {str(e)}"}), 400
+
+    # 판매처 목록 추출
+    sellers = {}
+    for r in rows:
+        name = r['seller_name']
+        if name not in sellers:
+            sellers[name] = {'count': 0, 'total': 0, 'real_name': r.get('real_seller', '')}
+        sellers[name]['count'] += 1
+        sellers[name]['total'] += r['total']
+
+    return jsonify({
+        "count": len(rows),
+        "seller_count": len(sellers),
+        "sellers": [{"name": k, "count": v['count'], "total": v['total'],
+                     "real_name": v['real_name']} for k, v in sorted(sellers.items())],
+        "sample": rows[:5],
+        "date_range": {
+            "from": min((r['sale_date'] for r in rows if r['sale_date']), default=''),
+            "to":   max((r['sale_date'] for r in rows if r['sale_date']), default=''),
+        }
+    })
+
+@app.route("/api/upload/xlsx/commit", methods=["POST"])
+@login_required
+def upload_xlsx_commit():
+    f = request.files.get("file")
+    if not f: return jsonify({"error": "파일이 없습니다"}), 400
+    try:
+        rows = parse_xlsx_sales(f.read())
+    except Exception as e:
+        return jsonify({"error": str(e)}), 400
+
+    batch = datetime.now().strftime("%Y%m%d%H%M%S")
+    conn = get_db()
+
+    # 기존 데이터 삭제 (전체 덮어쓰기)
+    conn.execute("DELETE FROM sales_data")
+    conn.execute("DELETE FROM sellers")
+
+    # 판매처 등록
+    seller_set = {}
+    for r in rows:
+        name = r['seller_name']
+        if name not in seller_set:
+            seller_set[name] = {'total': 0, 'count': 0, 'real_name': r.get('real_seller', '')}
+        seller_set[name]['total'] += r['total']
+        seller_set[name]['count'] += 1
+
+    today = date.today().isoformat()
+    for name, info in seller_set.items():
+        conn.execute("""INSERT OR IGNORE INTO sellers(name, real_name, first_seen, total_sales)
+                        VALUES(?,?,?,?)""", (name, info['real_name'], today, info['total']))
+
+    # 판매 데이터 저장
+    for r in rows:
+        conn.execute("""INSERT INTO sales_data
+            (sale_date,seller_name,item_code,item_name,item_group,quantity,
+             unit_price,supply_price,vat,total,buyer,buyer_phone,real_seller,upload_batch)
+            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (r['sale_date'], r['seller_name'], r['item_code'], r['item_name'],
+             r['item_group'], r['quantity'], r['unit_price'], r['supply_price'],
+             r['vat'], r['total'], r['buyer'], r['buyer_phone'], r['real_seller'], batch))
+
+    conn.commit(); conn.close()
+    return jsonify({"ok": True, "rows": len(rows), "sellers": len(seller_set), "batch": batch})
+
+# ── 판매현황 조회 API ──────────────────────────
+@app.route("/api/sales-data/summary")
+@login_required
+def sales_data_summary():
+    conn = get_db()
+    # 전체 요약
+    total = conn.execute("SELECT COUNT(*) c, SUM(total) t, SUM(quantity) q FROM sales_data").fetchone()
+    # 판매처별
+    by_seller = [dict(r) for r in conn.execute("""
+        SELECT seller_name, COUNT(*) cnt, SUM(quantity) qty, SUM(total) total
+        FROM sales_data GROUP BY seller_name ORDER BY total DESC LIMIT 20""").fetchall()]
+    # 품목그룹별
+    by_group = [dict(r) for r in conn.execute("""
+        SELECT item_group, COUNT(*) cnt, SUM(quantity) qty, SUM(total) total
+        FROM sales_data WHERE item_group != '' GROUP BY item_group ORDER BY total DESC""").fetchall()]
+    # 일별
+    by_date = [dict(r) for r in conn.execute("""
+        SELECT sale_date, COUNT(*) cnt, SUM(total) total
+        FROM sales_data WHERE sale_date != '' GROUP BY sale_date ORDER BY sale_date""").fetchall()]
+    # 품목별 TOP20
+    by_item = [dict(r) for r in conn.execute("""
+        SELECT item_name, SUM(quantity) qty, SUM(total) total
+        FROM sales_data GROUP BY item_name ORDER BY total DESC LIMIT 20""").fetchall()]
+    conn.close()
+    return jsonify({
+        "total_count": total["c"] or 0,
+        "total_amount": total["t"] or 0,
+        "total_quantity": total["q"] or 0,
+        "by_seller": by_seller,
+        "by_group": by_group,
+        "by_date": by_date,
+        "by_item": by_item,
+    })
+
+@app.route("/api/sellers")
+@login_required
+def api_sellers():
+    conn = get_db()
+    rows = [dict(r) for r in conn.execute(
+        "SELECT * FROM sellers ORDER BY total_sales DESC").fetchall()]
+    conn.close()
+    return jsonify(rows)
 
 # ── 엑셀 템플릿 다운로드 ───────────────────────
 @app.route("/api/template/branches")

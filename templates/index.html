@@ -292,6 +292,7 @@ td.center{text-align:center}
       <a onclick="showPage('dashboard')" id="nav-dashboard" class="active"><span class="ni">◫</span>대시보드</a>
       <a onclick="showPage('branches')" id="nav-branches"><span class="ni">⊞</span>지사 관리</a>
       <a onclick="showPage('sales')" id="nav-sales"><span class="ni">↗</span>판매부수</a>
+      <a onclick="showPage('salesdata')" id="nav-salesdata"><span class="ni">★</span>판매현황</a>
       <a onclick="showPage('users')" id="nav-users"><span class="ni">◎</span>권한 관리</a>
     </nav>
     <div class="sb-div"></div>
@@ -421,6 +422,65 @@ td.center{text-align:center}
       </div>
     </div>
 
+    <!-- ██ 판매현황 ██ -->
+    <div class="page" id="page-salesdata">
+      <div class="ph">
+        <div><h2>판매현황</h2><p>엑셀 업로드 데이터 기반 판매처 · 품목 · 금액 분석</p></div>
+        <div class="ph-r">
+          <button class="btn btn-dark btn-sm" onclick="showPage('upload')">↑ 엑셀 업로드</button>
+        </div>
+      </div>
+
+      <div class="kpi-grid" id="sd-kpi-grid">
+        <div class="kpi"><div class="kpi-accent"></div><div class="kpi-ic">📋</div><div class="kpi-lbl">총 판매 건수</div><div class="kpi-val" id="sd-count">—</div></div>
+        <div class="kpi"><div class="kpi-accent"></div><div class="kpi-ic">📦</div><div class="kpi-lbl">총 판매 수량</div><div class="kpi-val" id="sd-qty">—</div></div>
+        <div class="kpi"><div class="kpi-accent"></div><div class="kpi-ic">💰</div><div class="kpi-lbl">총 판매 금액</div><div class="kpi-val" id="sd-total">—</div></div>
+        <div class="kpi"><div class="kpi-accent"></div><div class="kpi-ic">🏪</div><div class="kpi-lbl">판매처 수</div><div class="kpi-val" id="sd-sellers">—</div></div>
+      </div>
+
+      <div class="cr cr-1-1" style="margin-bottom:14px">
+        <div class="cc">
+          <div class="cc-t">📅 일별 판매 추이</div>
+          <canvas id="c-sd-date"></canvas>
+        </div>
+        <div class="cc">
+          <div class="cc-t">🗂 품목그룹별 비율</div>
+          <canvas id="c-sd-group"></canvas>
+        </div>
+      </div>
+
+      <div class="cr cr-1-1">
+        <div class="cc">
+          <div class="cc-t">🏪 판매처별 TOP 20</div>
+          <div style="overflow-y:auto;max-height:320px">
+            <table style="width:100%;border-collapse:collapse;font-size:12px">
+              <thead><tr>
+                <th style="padding:8px 12px;text-align:left;background:var(--ink-50);border-bottom:1px solid var(--ink-100);font-size:10px;font-weight:700;color:var(--ink-300);text-transform:uppercase;position:sticky;top:0">#</th>
+                <th style="padding:8px 12px;text-align:left;background:var(--ink-50);border-bottom:1px solid var(--ink-100);font-size:10px;font-weight:700;color:var(--ink-300);text-transform:uppercase;position:sticky;top:0">판매처명</th>
+                <th style="padding:8px 12px;text-align:right;background:var(--ink-50);border-bottom:1px solid var(--ink-100);font-size:10px;font-weight:700;color:var(--ink-300);text-transform:uppercase;position:sticky;top:0">건수</th>
+                <th style="padding:8px 12px;text-align:right;background:var(--ink-50);border-bottom:1px solid var(--ink-100);font-size:10px;font-weight:700;color:var(--ink-300);text-transform:uppercase;position:sticky;top:0">금액</th>
+              </tr></thead>
+              <tbody id="sd-seller-tbody"></tbody>
+            </table>
+          </div>
+        </div>
+        <div class="cc">
+          <div class="cc-t">📦 품목별 TOP 20</div>
+          <div style="overflow-y:auto;max-height:320px">
+            <table style="width:100%;border-collapse:collapse;font-size:12px">
+              <thead><tr>
+                <th style="padding:8px 12px;text-align:left;background:var(--ink-50);border-bottom:1px solid var(--ink-100);font-size:10px;font-weight:700;color:var(--ink-300);text-transform:uppercase;position:sticky;top:0">#</th>
+                <th style="padding:8px 12px;text-align:left;background:var(--ink-50);border-bottom:1px solid var(--ink-100);font-size:10px;font-weight:700;color:var(--ink-300);text-transform:uppercase;position:sticky;top:0">품목명</th>
+                <th style="padding:8px 12px;text-align:right;background:var(--ink-50);border-bottom:1px solid var(--ink-100);font-size:10px;font-weight:700;color:var(--ink-300);text-transform:uppercase;position:sticky;top:0">수량</th>
+                <th style="padding:8px 12px;text-align:right;background:var(--ink-50);border-bottom:1px solid var(--ink-100);font-size:10px;font-weight:700;color:var(--ink-300);text-transform:uppercase;position:sticky;top:0">금액</th>
+              </tr></thead>
+              <tbody id="sd-item-tbody"></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <!-- ██ 엑셀 업로드 ██ -->
     <div class="page" id="page-upload">
       <div class="ph">
@@ -429,6 +489,26 @@ td.center{text-align:center}
       <div style="background:var(--accent-lt);border:1px solid rgba(79,70,229,.2);border-radius:var(--r-md);padding:14px 18px;margin-bottom:24px;font-size:13px;color:var(--accent);line-height:1.7">
         💡 <strong>사용 방법:</strong> 양식 다운로드 → 데이터 입력 → 파일 업로드 → 미리보기 확인 → 저장
       </div>
+
+      <!-- xlsx 판매현황 업로드 (신규) -->
+      <div class="slbl" style="margin-bottom:10px">📊 판매현황 엑셀 업로드 (.xlsx)</div>
+      <div style="background:var(--paper);border-radius:var(--r-lg);padding:24px;box-shadow:var(--sh-sm);border:1px solid rgba(0,0,0,.04);margin-bottom:20px">
+        <p style="font-size:13px;color:var(--ink-300);margin-bottom:16px">기존 판매 엑셀 파일(.xlsx)을 그대로 업로드하세요. 판매처, 품목, 수량, 금액을 자동으로 인식합니다.</p>
+        <div style="display:flex;gap:12px;align-items:flex-start">
+          <div class="drop-zone" id="drop-xlsx" style="flex:1" ondragover="onDrag(event,'drop-xlsx')" ondragleave="offDrag('drop-xlsx')" ondrop="onDropXlsx(event)">
+            <input type="file" accept=".xlsx,.xls" onchange="onXlsxSelect(event)">
+            <div class="drop-icon">📊</div>
+            <div class="drop-txt">판매현황 엑셀 파일을 끌어다 놓거나<br><strong>클릭해서 선택</strong></div>
+            <div style="font-size:11px;color:var(--ink-300);margin-top:6px">.xlsx 파일 지원</div>
+          </div>
+          <div style="font-size:12px;color:var(--ink-300);line-height:2;min-width:200px;padding-top:8px">
+            <strong style="color:var(--ink-700)">자동 인식 항목</strong><br>
+            • B열: 일자<br>• C열: 판매처명<br>• H열: 품명<br>• I열: 수량<br>• K열: 단가<br>• N열: 합계<br>• AA열: 품목그룹<br>• AE열: 실적용거래처명
+          </div>
+        </div>
+      </div>
+
+      <div class="slbl" style="margin-bottom:10px">📋 지사 · 판매부수 CSV 업로드</div>
       <div class="upload-grid">
         <div class="upload-card">
           <h3>🏢 지사 목록 업로드</h3>
@@ -568,7 +648,7 @@ function showPage(n){
   document.querySelectorAll('nav a').forEach(a=>a.classList.remove('active'));
   document.getElementById('page-'+n).classList.add('active');
   document.getElementById('nav-'+n).classList.add('active');
-  ({dashboard:loadDash,branches:loadBranches,sales:loadSalesPage,users:loadUsers}[n]||function(){})();
+  ({dashboard:loadDash,branches:loadBranches,sales:loadSalesPage,users:loadUsers,salesdata:loadSalesData}[n]||function(){})();
   if(n==='upload') cancelUpload();
 }
 async function doLogin(){
@@ -708,6 +788,97 @@ async function delUser(id,name){
 
 ['bm-ov','um-ov'].forEach(id=>{document.getElementById(id).addEventListener('click',e=>{if(e.target.id===id)e.target.classList.remove('open');});});
 
+// ── xlsx 판매현황 업로드 ──────────────────────────
+let xlsxFile = null;
+
+function onDropXlsx(e){e.preventDefault();offDrag('drop-xlsx');const f=e.dataTransfer.files[0];if(f)processXlsx(f);}
+function onXlsxSelect(e){const f=e.target.files[0];if(f)processXlsx(f);}
+
+async function processXlsx(file){
+  if(!file.name.match(/\.(xlsx|xls)$/i)){toast('xlsx 파일만 업로드 가능합니다',false);return;}
+  xlsxFile = file;
+  toast('파일 분석 중...');
+  const fd=new FormData();fd.append('file',file);
+  const r=await fetch('/api/upload/xlsx/preview',{method:'POST',body:fd});
+  const d=await r.json();
+  if(d.error){toast(d.error,false);return;}
+  showXlsxPreview(d);
+}
+
+function showXlsxPreview(d){
+  document.getElementById('xlsx-ov').classList.add('open');
+  document.getElementById('xlsx-count').textContent=`총 ${d.count.toLocaleString()}건 / 판매처 ${d.seller_count}개`;
+  document.getElementById('xlsx-range').textContent=`기간: ${d.date_range.from} ~ ${d.date_range.to}`;
+
+  const tbody=document.getElementById('xlsx-seller-preview');
+  tbody.innerHTML=d.sellers.slice(0,15).map((s,i)=>`<tr style="border-bottom:1px solid rgba(0,0,0,.04)">
+    <td style="padding:8px 12px;font-weight:600">${i+1}</td>
+    <td style="padding:8px 12px;font-weight:600">${s.name}</td>
+    <td style="padding:8px 12px;color:var(--ink-300)">${s.real_name||'—'}</td>
+    <td style="padding:8px 12px;text-align:right">${s.count}</td>
+    <td style="padding:8px 12px;text-align:right;font-weight:600;color:var(--accent-m)">${N(s.total)}원</td>
+  </tr>`).join('');
+}
+
+async function confirmXlsx(){
+  if(!xlsxFile){toast('파일이 없습니다',false);return;}
+  const fd=new FormData();fd.append('file',xlsxFile);
+  toast('저장 중...');
+  const r=await fetch('/api/upload/xlsx/commit',{method:'POST',body:fd});
+  const d=await r.json();
+  if(!d.ok){toast(d.error||'저장 실패',false);return;}
+  document.getElementById('xlsx-ov').classList.remove('open');
+  xlsxFile=null;
+  toast(`✅ ${d.rows.toLocaleString()}건 저장 완료 (판매처 ${d.sellers}개 등록)`);
+  showPage('salesdata');
+}
+
+// ── 판매현황 대시보드 ──────────────────────────────
+let cSdDate, cSdGroup;
+
+async function loadSalesData(){
+  const d=await api('/api/sales-data/summary');if(!d)return;
+  document.getElementById('sd-count').textContent=d.total_count.toLocaleString()+'건';
+  document.getElementById('sd-qty').textContent=d.total_quantity.toLocaleString()+'개';
+  document.getElementById('sd-total').textContent=N(d.total_amount)+'원';
+  document.getElementById('sd-sellers').textContent=d.by_seller.length+'개';
+
+  Chart.defaults.font.family='DM Sans,Noto Sans KR,sans-serif';
+
+  // 일별 차트
+  if(cSdDate)cSdDate.destroy();
+  cSdDate=new Chart(document.getElementById('c-sd-date'),{
+    type:'line',
+    data:{labels:d.by_date.map(r=>r.sale_date.slice(5)),datasets:[{label:'판매금액',data:d.by_date.map(r=>r.total),borderColor:'#4F46E5',backgroundColor:'rgba(79,70,229,.08)',tension:.3,fill:true,pointRadius:3}]},
+    options:{plugins:{legend:{display:false}},scales:{x:{grid:{display:false},ticks:{font:{size:10},color:'#9898B2'}},y:{grid:{color:'rgba(232,232,240,.6)'},ticks:{font:{size:10},color:'#9898B2',callback:v=>N(v)}}},responsive:true,maintainAspectRatio:true}
+  });
+
+  // 품목그룹 도넛
+  if(cSdGroup)cSdGroup.destroy();
+  const COLORS=['#3730A3','#059669','#B45309','#B91C1C','#7C3AED','#0369A1','#047857','#92400E'];
+  cSdGroup=new Chart(document.getElementById('c-sd-group'),{
+    type:'doughnut',
+    data:{labels:d.by_group.map(r=>r.item_group),datasets:[{data:d.by_group.map(r=>r.total),backgroundColor:COLORS,borderWidth:3,borderColor:'#FAFAFA'}]},
+    options:{plugins:{legend:{position:'right',labels:{font:{size:11},usePointStyle:true,boxWidth:8,padding:10}}},cutout:'55%',responsive:true,maintainAspectRatio:true}
+  });
+
+  // 판매처 테이블
+  document.getElementById('sd-seller-tbody').innerHTML=d.by_seller.map((r,i)=>`<tr style="border-bottom:1px solid rgba(0,0,0,.03)">
+    <td style="padding:8px 12px;color:var(--ink-300)">${i+1}</td>
+    <td style="padding:8px 12px;font-weight:600;max-width:180px;overflow:hidden;text-overflow:ellipsis">${r.seller_name}</td>
+    <td style="padding:8px 12px;text-align:right;color:var(--ink-300)">${r.cnt}</td>
+    <td style="padding:8px 12px;text-align:right;font-weight:600;color:var(--accent-m)">${N(r.total)}</td>
+  </tr>`).join('');
+
+  // 품목 테이블
+  document.getElementById('sd-item-tbody').innerHTML=d.by_item.map((r,i)=>`<tr style="border-bottom:1px solid rgba(0,0,0,.03)">
+    <td style="padding:8px 12px;color:var(--ink-300)">${i+1}</td>
+    <td style="padding:8px 12px;font-weight:600;max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${r.item_name}</td>
+    <td style="padding:8px 12px;text-align:right;color:var(--ink-300)">${r.qty}</td>
+    <td style="padding:8px 12px;text-align:right;font-weight:600;color:var(--accent-m)">${N(r.total)}</td>
+  </tr>`).join('');
+}
+
 // ── 업로드 ─────────────────────────────────────────
 let uploadType='',uploadPreviewData=[];
 
@@ -779,5 +950,42 @@ function cancelUpload(){
   if(r.ok){const me=await r.json();if(me.id){document.getElementById('login-page').style.display='none';document.getElementById('app').classList.add('show');document.getElementById('sb-name').textContent=me.name||'—';document.getElementById('sb-role').textContent=me.role==='admin'?'관리자':'일반 사용자';initYears();loadDash();}}
 })();
 </script>
+
+<!-- ══ xlsx 미리보기 모달 ══ -->
+<div class="ov" id="xlsx-ov">
+  <div class="modal" style="width:640px">
+    <div class="mh">
+      <h3>판매현황 업로드 확인</h3>
+      <button class="mc" onclick="document.getElementById('xlsx-ov').classList.remove('open')">✕</button>
+    </div>
+    <div class="mb">
+      <div style="background:var(--green-lt);border-radius:var(--r-md);padding:12px 16px;margin-bottom:16px;font-size:13px;color:var(--green)">
+        <strong id="xlsx-count">—</strong> &nbsp;·&nbsp; <span id="xlsx-range">—</span>
+      </div>
+      <div style="font-size:12px;font-weight:700;color:var(--ink-300);letter-spacing:.5px;text-transform:uppercase;margin-bottom:8px">판매처 목록 (상위 15개)</div>
+      <div style="overflow-y:auto;max-height:300px;border:1px solid var(--ink-100);border-radius:var(--r-md)">
+        <table style="width:100%;border-collapse:collapse;font-size:12px">
+          <thead><tr style="background:var(--ink-50);position:sticky;top:0">
+            <th style="padding:8px 12px;text-align:left;font-size:10px;font-weight:700;color:var(--ink-300);text-transform:uppercase">#</th>
+            <th style="padding:8px 12px;text-align:left;font-size:10px;font-weight:700;color:var(--ink-300);text-transform:uppercase">판매처명</th>
+            <th style="padding:8px 12px;text-align:left;font-size:10px;font-weight:700;color:var(--ink-300);text-transform:uppercase">실적용거래처</th>
+            <th style="padding:8px 12px;text-align:right;font-size:10px;font-weight:700;color:var(--ink-300);text-transform:uppercase">건수</th>
+            <th style="padding:8px 12px;text-align:right;font-size:10px;font-weight:700;color:var(--ink-300);text-transform:uppercase">금액</th>
+          </tr></thead>
+          <tbody id="xlsx-seller-preview"></tbody>
+        </table>
+      </div>
+      <div style="font-size:12px;color:var(--red);background:var(--red-lt);border-radius:var(--r-md);padding:10px 14px;margin-top:12px">
+        ⚠️ 저장 시 기존 판매현황 데이터가 모두 삭제되고 새 데이터로 교체됩니다.
+      </div>
+    </div>
+    <div class="mf">
+      <button class="btn btn-ghost" onclick="document.getElementById('xlsx-ov').classList.remove('open')">취소</button>
+      <button class="btn btn-dark" onclick="confirmXlsx()">✅ 저장하기</button>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"><div class="toast-dot"></div><span id="toast-msg"></span></div>
 </body>
 </html>
