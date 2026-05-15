@@ -160,36 +160,55 @@ def api_dashboard():
     conn = get_db()
     total_branches = conn.execute("SELECT COUNT(*) FROM branches").fetchone()[0]
     active = conn.execute("SELECT COUNT(*) FROM branches WHERE status='운영중'").fetchone()[0]
-    stats = conn.execute("""
-        SELECT SUM(target) t, SUM(actual) a
-        FROM sales WHERE year=?""", (y,)).fetchone()
-    monthly = [dict(r) for r in conn.execute("""
-        SELECT month, SUM(target) target, SUM(actual) actual
-        FROM sales WHERE year=?
-        GROUP BY month ORDER BY month""", (y,)).fetchall()]
+
+    # 판매현황(sales_data) 기반 실적
+    sd_total = conn.execute("""SELECT SUM(total) t, COUNT(*) c FROM sales_data
+        WHERE sale_date LIKE ?""", (f"{y}%",)).fetchone()
+
+    # 월별: sales_data 기반
+    monthly_sd = [dict(r) for r in conn.execute("""
+        SELECT CAST(strftime('%m', sale_date) AS INTEGER) month, SUM(total) actual, COUNT(*) cnt
+        FROM sales_data WHERE sale_date LIKE ? AND sale_date != ''
+        GROUP BY month ORDER BY month""", (f"{y}%",)).fetchall()]
+    # 목표는 sales 테이블 유지
+    monthly_target = {r["month"]: r["target"] for r in conn.execute("""
+        SELECT month, SUM(target) target FROM sales WHERE year=?
+        GROUP BY month""", (y,)).fetchall()}
+    monthly = []
+    for m in range(1, 13):
+        sd_row = next((r for r in monthly_sd if r["month"]==m), None)
+        monthly.append({"month": m, "target": monthly_target.get(m, 0),
+                        "actual": sd_row["actual"] if sd_row else 0})
+
+    # TOP5 판매처 (sales_data 기반)
     top5 = [dict(r) for r in conn.execute("""
-        SELECT b.name, SUM(s.actual) total
-        FROM sales s JOIN branches b ON s.branch_id=b.id
-        WHERE s.year=?
-        GROUP BY s.branch_id ORDER BY total DESC LIMIT 5""", (y,)).fetchall()]
+        SELECT seller_name name, SUM(total) total FROM sales_data
+        WHERE sale_date LIKE ? GROUP BY seller_name ORDER BY total DESC LIMIT 5""",
+        (f"{y}%",)).fetchall()]
+
+    # 지역별 (branches + sales_data 조인)
     region_stats = [dict(r) for r in conn.execute("""
-        SELECT b.region, SUM(s.actual) total
-        FROM sales s JOIN branches b ON s.branch_id=b.id
-        WHERE s.year=?
-        GROUP BY b.region ORDER BY total DESC""", (y,)).fetchall()]
+        SELECT b.region, SUM(sd.total) total
+        FROM sales_data sd JOIN branches b ON sd.seller_name=b.name
+        WHERE sd.sale_date LIKE ?
+        GROUP BY b.region ORDER BY total DESC""", (f"{y}%",)).fetchall()]
+
     conn.close()
+    total_actual = int(sd_total["t"] or 0)
+    total_count  = int(sd_total["c"] or 0)
     return jsonify({
         "total_branches": total_branches,
         "active_branches": active,
-        "total_target": stats["t"] or 0,
-        "total_actual": stats["a"] or 0,
-        "achievement": round((stats["a"] or 0)/(stats["t"] or 1)*100,1),
+        "total_target": 0,
+        "total_actual": total_actual,
+        "total_count": total_count,
+        "achievement": 0,
         "monthly": monthly,
         "top5": top5,
         "region_stats": region_stats,
     })
 
-# ── 지사 API ───────────────────────────────────
+# ── 판매처(지사) API ───────────────────────────
 @app.route("/api/branches")
 @login_required
 def api_branches():
@@ -204,14 +223,14 @@ def api_branches():
     if q_str:  q += " AND (name LIKE ? OR manager LIKE ? OR address LIKE ?)"; params+=[f"%{q_str}%"]*3
     q += " ORDER BY name"
     rows = [dict(r) for r in conn.execute(q, params).fetchall()]
-    # 올해 실적 붙이기
     y = datetime.now().year
     for row in rows:
-        sales = conn.execute("SELECT SUM(target) t, SUM(actual) a FROM sales WHERE branch_id=? AND year=?",
-            (row["id"], y)).fetchone()
-        row["year_target"] = sales["t"] or 0
-        row["year_actual"] = sales["a"] or 0
-        row["achievement"] = round((sales["a"] or 0)/(sales["t"] or 1)*100,1)
+        # 판매현황(sales_data)에서 실적 연동
+        sd = conn.execute("""
+            SELECT SUM(total) total FROM sales_data
+            WHERE seller_name=? AND sale_date LIKE ?""",
+            (row["name"], f"{y}%")).fetchone()
+        row["year_actual"] = int(sd["total"] or 0)
     conn.close()
     return jsonify(rows)
 
@@ -220,11 +239,10 @@ def api_branches():
 def api_branches_add():
     d = request.json
     conn = get_db()
-    conn.execute("""INSERT INTO branches(name,region,manager,phone,email,address,status,contract_date,fee_rate,note)
-        VALUES(?,?,?,?,?,?,?,?,?,?)""",
+    conn.execute("""INSERT INTO branches(name,region,manager,phone,email,address,status,note)
+        VALUES(?,?,?,?,?,?,?,?)""",
         (d["name"],d.get("region",""),d.get("manager",""),d.get("phone",""),
-         d.get("email",""),d.get("address",""),d.get("status","운영중"),
-         d.get("contract_date",""),float(d.get("fee_rate",0)),d.get("note","")))
+         d.get("email",""),d.get("address",""),d.get("status","운영중"),d.get("note","")))
     conn.commit(); conn.close()
     return jsonify({"ok":True})
 
@@ -242,12 +260,35 @@ def api_branches_update(bid):
     d = request.json
     conn = get_db()
     conn.execute("""UPDATE branches SET name=?,region=?,manager=?,phone=?,email=?,
-        address=?,status=?,contract_date=?,fee_rate=?,note=? WHERE id=?""",
+        address=?,status=?,note=? WHERE id=?""",
         (d["name"],d.get("region",""),d.get("manager",""),d.get("phone",""),
-         d.get("email",""),d.get("address",""),d.get("status","운영중"),
-         d.get("contract_date",""),float(d.get("fee_rate",0)),d.get("note",""),bid))
+         d.get("email",""),d.get("address",""),d.get("status","운영중"),d.get("note",""),bid))
     conn.commit(); conn.close()
     return jsonify({"ok":True})
+
+# ── 판매처 xlsx 자동 등록 ─────────────────────
+@app.route("/api/branches/from-xlsx", methods=["POST"])
+@login_required
+def branches_from_xlsx():
+    """판매현황 xlsx에서 판매처 목록 자동 추출 & 등록"""
+    conn = get_db()
+    # sales_data에서 고유 판매처명 추출
+    sellers = [dict(r) for r in conn.execute("""
+        SELECT seller_name, real_seller, COUNT(*) cnt, SUM(total) total
+        FROM sales_data GROUP BY seller_name ORDER BY seller_name""").fetchall()]
+
+    added, updated = 0, 0
+    for s in sellers:
+        name = s["seller_name"]
+        existing = conn.execute("SELECT id FROM branches WHERE name=?", (name,)).fetchone()
+        if not existing:
+            conn.execute("""INSERT INTO branches(name,region,manager,phone,email,address,status,note)
+                VALUES(?,?,?,?,?,?,?,?)""", (name,"","","","","","운영중", s["real_seller"] or ""))
+            added += 1
+        else:
+            updated += 1
+    conn.commit(); conn.close()
+    return jsonify({"ok": True, "added": added, "updated": updated, "total": len(sellers)})
 
 @app.route("/api/branches/<int:bid>", methods=["DELETE"])
 @login_required

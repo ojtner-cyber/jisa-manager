@@ -290,7 +290,7 @@ td.center{text-align:center}
     <div class="sb-lbl">메뉴</div>
     <nav>
       <a onclick="showPage('dashboard')" id="nav-dashboard" class="active"><span class="ni">◫</span>대시보드</a>
-      <a onclick="showPage('branches')" id="nav-branches"><span class="ni">⊞</span>지사 관리</a>
+      <a onclick="showPage('branches')" id="nav-branches"><span class="ni">⊞</span>판매처 관리</a>
       <a onclick="showPage('sales')" id="nav-sales"><span class="ni">↗</span>판매부수</a>
       <a onclick="showPage('salesdata')" id="nav-salesdata"><span class="ni">★</span>판매현황</a>
       <a onclick="showPage('users')" id="nav-users"><span class="ni">◎</span>권한 관리</a>
@@ -317,10 +317,10 @@ td.center{text-align:center}
         <div class="ph-r"><select class="ysel" id="dash-year" onchange="loadDash()"></select></div>
       </div>
       <div class="kpi-grid">
-        <div class="kpi"><div class="kpi-accent"></div><div class="kpi-ic">🏢</div><div class="kpi-lbl">전체 지사</div><div class="kpi-val" id="d-total">—</div><div class="kpi-sub">운영중 <span class="g" id="d-active">—</span>개소</div></div>
-        <div class="kpi"><div class="kpi-accent"></div><div class="kpi-ic">📚</div><div class="kpi-lbl">목표 판매부수</div><div class="kpi-val" id="d-target">—</div><div class="kpi-sub">연간 합계</div></div>
-        <div class="kpi"><div class="kpi-accent"></div><div class="kpi-ic">✦</div><div class="kpi-lbl">실적 판매부수</div><div class="kpi-val" id="d-actual">—</div><div class="kpi-sub">연간 합계</div></div>
-        <div class="kpi"><div class="kpi-accent"></div><div class="kpi-ic">◎</div><div class="kpi-lbl">평균 달성률</div><div class="kpi-val" id="d-pct">—</div><div class="kpi-sub">전 지사 기준</div></div>
+        <div class="kpi"><div class="kpi-accent"></div><div class="kpi-ic">🏢</div><div class="kpi-lbl">전체 판매처</div><div class="kpi-val" id="d-total">—</div><div class="kpi-sub">운영중 <span class="g" id="d-active">—</span>개소</div></div>
+        <div class="kpi"><div class="kpi-accent"></div><div class="kpi-ic">📋</div><div class="kpi-lbl">판매 건수</div><div class="kpi-val" id="d-target">—</div><div class="kpi-sub">연간 누적</div></div>
+        <div class="kpi"><div class="kpi-accent"></div><div class="kpi-ic">💰</div><div class="kpi-lbl">판매 금액</div><div class="kpi-val" id="d-actual">—</div><div class="kpi-sub">연간 누적</div></div>
+        <div class="kpi"><div class="kpi-accent"></div><div class="kpi-ic">🏪</div><div class="kpi-lbl">활성 판매처</div><div class="kpi-val" id="d-pct">—</div><div class="kpi-sub">전 지역 기준</div></div>
       </div>
       <div class="cr cr-2-1">
         <div class="cc"><div class="cc-t">↗ 월별 목표 vs 실적</div><canvas id="c-monthly"></canvas></div>
@@ -332,12 +332,16 @@ td.center{text-align:center}
       </div>
     </div>
 
-    <!-- ██ 지사 관리 ██ -->
+    <!-- ██ 판매처 관리 ██ -->
     <div class="page" id="page-branches">
       <div class="ph">
-        <div><h2>지사 관리</h2><p>지사 정보 등록 · 수정 · 조회</p></div>
-        <div class="ph-r"><button class="btn btn-dark" onclick="openBM()">+ 지사 추가</button></div>
+        <div><h2>판매처 관리</h2><p>판매처 정보 등록 · 수정 · 조회 (판매현황과 자동 연동)</p></div>
+        <div class="ph-r">
+          <button class="btn btn-ghost btn-sm" onclick="importFromXlsx()" title="업로드된 판매현황에서 판매처 자동 등록">📊 판매현황에서 가져오기</button>
+          <button class="btn btn-dark" onclick="openBM()">+ 판매처 추가</button>
+        </div>
       </div>
+
       <div class="fb">
         <span class="flbl">지역</span>
         <select class="fs" id="b-region" onchange="loadBranches()">
@@ -350,12 +354,16 @@ td.center{text-align:center}
           <option value="">전체</option><option>운영중</option><option>일시중단</option><option>폐지</option>
         </select>
         <div class="fdiv"></div>
-        <input class="fi" type="text" id="b-q" placeholder="지사명 · 담당자 검색" style="width:180px" onkeydown="if(event.key==='Enter')loadBranches()">
+        <input class="fi" type="text" id="b-q" placeholder="판매처명 · 담당자 검색" style="width:180px" onkeydown="if(event.key==='Enter')loadBranches()">
         <button class="btn btn-ghost btn-sm" onclick="loadBranches()">검색</button>
       </div>
+
       <div class="tw">
         <table>
-          <thead><tr><th>지사명</th><th>지역</th><th>담당자</th><th>전화번호</th><th>상태</th><th class="num">연간 목표</th><th class="num">연간 실적</th><th style="min-width:140px">달성률</th><th>수수료</th><th>계약일</th><th class="center">—</th></tr></thead>
+          <thead><tr>
+            <th>판매처명</th><th>지역</th><th>담당자</th><th>전화번호</th>
+            <th>상태</th><th class="num">연간 실적</th><th>메모</th><th class="center">—</th>
+          </tr></thead>
           <tbody id="branch-tbody"></tbody>
         </table>
       </div>
@@ -576,27 +584,24 @@ td.center{text-align:center}
 </div><!-- /app -->
 <div class="ov" id="bm-ov">
   <div class="modal">
-    <div class="mh"><h3 id="bm-title">지사 추가</h3><button class="mc" onclick="closeBM()">✕</button></div>
+    <div class="mh"><h3 id="bm-title">판매처 추가</h3><button class="mc" onclick="closeBM()">✕</button></div>
     <div class="mb">
       <input type="hidden" id="bm-id">
       <div class="ms">기본 정보</div>
       <div class="mg">
-        <div class="mr"><label>지사명 *</label><input type="text" id="bm-name" placeholder="예: 서울 강남지사"></div>
-        <div class="mr"><label>지역 *</label><select id="bm-region">{% for r in regions %}<option>{{r}}</option>{% endfor %}</select></div>
+        <div class="mr"><label>판매처명 *</label><input type="text" id="bm-name" placeholder="예: 베이비하우스 영통점"></div>
+        <div class="mr"><label>지역</label><select id="bm-region">{% for r in regions %}<option>{{r}}</option>{% endfor %}</select></div>
       </div>
       <div class="mg" style="margin-top:16px">
         <div class="mr"><label>담당자</label><input type="text" id="bm-manager" placeholder="담당자명"></div>
         <div class="mr"><label>전화번호</label><input type="text" id="bm-phone" placeholder="010-0000-0000"></div>
       </div>
       <div class="mr" style="margin-top:16px"><label>이메일</label><input type="email" id="bm-email" placeholder="email@example.com"></div>
-      <div class="mr" style="margin-top:16px"><label>주소</label><input type="text" id="bm-address" placeholder="지사 주소"></div>
-      <div class="ms">계약 정보</div>
-      <div class="mg">
+      <div class="mr" style="margin-top:16px"><label>주소</label><input type="text" id="bm-address" placeholder="주소"></div>
+      <div class="mg" style="margin-top:16px">
         <div class="mr"><label>상태</label><select id="bm-status"><option>운영중</option><option>일시중단</option><option>폐지</option></select></div>
-        <div class="mr"><label>계약일</label><input type="date" id="bm-contract"></div>
+        <div class="mr"><label>메모</label><input type="text" id="bm-note" placeholder="실적용거래처명 등"></div>
       </div>
-      <div class="mr" style="margin-top:16px"><label>수수료율 (%)</label><input type="number" id="bm-fee" placeholder="0.0" step="0.1" min="0" max="100"></div>
-      <div class="mr" style="margin-top:16px"><label>메모</label><input type="text" id="bm-note" placeholder="선택사항"></div>
     </div>
     <div class="mf"><button class="btn btn-ghost" onclick="closeBM()">취소</button><button class="btn btn-dark" onclick="saveBranch()">저장하기</button></div>
   </div>
@@ -667,9 +672,9 @@ async function loadDash(){
   const d=await api(`/api/dashboard?year=${y}`);if(!d)return;
   document.getElementById('d-total').textContent=d.total_branches+'개소';
   document.getElementById('d-active').textContent=d.active_branches;
-  document.getElementById('d-target').textContent=N(d.total_target);
-  document.getElementById('d-actual').textContent=N(d.total_actual);
-  document.getElementById('d-pct').textContent=d.achievement+'%';
+  document.getElementById('d-target').textContent=(d.total_count||0).toLocaleString()+'건';
+  document.getElementById('d-actual').textContent=N(d.total_actual)+'원';
+  document.getElementById('d-pct').textContent=d.active_branches+'개';
   const mx=d.top5[0]?.total||1;
   document.getElementById('t5').innerHTML=d.top5.map((r,i)=>`<div class="t5-row"><div class="t5-n r${i+1}">${i+1}</div><span class="t5-nm">${r.name}</span><div class="t5-bw"><div class="t5-bf" style="width:${r.total/mx*100}%"></div></div><span class="t5-v">${N(r.total)}</span></div>`).join('');
   Chart.defaults.font.family='DM Sans,Noto Sans KR,sans-serif';
@@ -689,34 +694,56 @@ async function loadBranches(){
   BD=await api(`/api/branches?region=${encodeURIComponent(document.getElementById('b-region').value)}&status=${encodeURIComponent(document.getElementById('b-status').value)}&q=${encodeURIComponent(document.getElementById('b-q').value)}`);
   if(!BD)return;
   const tb=document.getElementById('branch-tbody');
-  if(!BD.length){tb.innerHTML=`<tr><td colspan="11"><div class="empty"><div class="empty-ic">🏢</div><p>조회된 지사가 없습니다</p></div></td></tr>`;return;}
-  tb.innerHTML=BD.map(b=>{const p=b.achievement||0,c=PC(p),sb=b.status==='운영중'?'b-green':b.status==='일시중단'?'b-amber':'b-red';
-    return `<tr><td class="td-main">${b.name}</td><td><span class="badge b-blue">${b.region||'—'}</span></td><td>${b.manager||'—'}</td><td style="color:var(--ink-300)">${b.phone||'—'}</td><td><span class="badge ${sb}">${b.status}</span></td><td class="num">${N(b.year_target)}</td><td class="num">${N(b.year_actual)}</td><td><div class="prog"><div class="prog-t"><div class="prog-f" style="width:${Math.min(p,100)}%;background:${c}"></div></div><span class="prog-p" style="color:${c}">${p}%</span></div></td><td style="color:var(--ink-300)">${b.fee_rate||0}%</td><td style="color:var(--ink-300)">${b.contract_date||'—'}</td><td class="center" style="white-space:nowrap"><button class="btn btn-ghost btn-xs" onclick="editBranch(${b.id})">수정</button><button class="btn btn-red-lt btn-xs" style="margin-left:4px" onclick="delBranch(${b.id},'${b.name}')">삭제</button></td></tr>`;
+  if(!BD.length){tb.innerHTML=`<tr><td colspan="8"><div class="empty"><div class="empty-ic">🏪</div><p>등록된 판매처가 없습니다</p></div></td></tr>`;return;}
+  tb.innerHTML=BD.map(b=>{
+    const sb=b.status==='운영중'?'b-green':b.status==='일시중단'?'b-amber':'b-red';
+    return `<tr>
+      <td class="td-main">${b.name}</td>
+      <td>${b.region?`<span class="badge b-blue">${b.region}</span>`:'—'}</td>
+      <td>${b.manager||'—'}</td>
+      <td style="color:var(--ink-300)">${b.phone||'—'}</td>
+      <td><span class="badge ${sb}">${b.status}</span></td>
+      <td class="num" style="font-weight:700;color:var(--accent-m)">${N(b.year_actual)}원</td>
+      <td style="color:var(--ink-300);max-width:120px;overflow:hidden;text-overflow:ellipsis">${b.note||'—'}</td>
+      <td class="center" style="white-space:nowrap">
+        <button class="btn btn-ghost btn-xs" onclick="editBranch(${b.id})">수정</button>
+        <button class="btn btn-red-lt btn-xs" style="margin-left:4px" onclick="delBranch(${b.id},'${b.name}')">삭제</button>
+      </td>
+    </tr>`;
   }).join('');
+}
+
+async function importFromXlsx(){
+  if(!confirm('판매현황 업로드 데이터에서 판매처를 자동으로 가져옵니다.\n기존에 없는 판매처만 추가됩니다. 계속하시겠습니까?')) return;
+  const r=await api('/api/branches/from-xlsx',{method:'POST',body:{}});
+  if(!r||!r.ok){toast('먼저 판매현황 엑셀을 업로드해 주세요',false);return;}
+  loadBranches();
+  toast(`✅ 완료! 신규 ${r.added}개 추가, 기존 ${r.updated}개 유지 (총 ${r.total}개 판매처)`);
 }
 function openBM(row=null){
   document.getElementById('bm-id').value=row?row.id:'';
-  document.getElementById('bm-title').textContent=row?'지사 수정':'지사 추가';
+  document.getElementById('bm-title').textContent=row?'판매처 수정':'판매처 추가';
   ['bm-name','bm-manager','bm-phone','bm-email','bm-address','bm-note'].forEach(id=>{
     const k=id.replace('bm-','');document.getElementById(id).value=row?(row[k]||''):'';
   });
   document.getElementById('bm-region').value=row?row.region:'서울';
   document.getElementById('bm-status').value=row?row.status:'운영중';
-  document.getElementById('bm-contract').value=row?row.contract_date||'':'';
-  document.getElementById('bm-fee').value=row?row.fee_rate||0:0;
   document.getElementById('bm-ov').classList.add('open');
 }
 function closeBM(){document.getElementById('bm-ov').classList.remove('open');}
 async function editBranch(id){const r=await api(`/api/branches/${id}`);if(r)openBM(r);}
 async function saveBranch(){
   const id=document.getElementById('bm-id').value,name=document.getElementById('bm-name').value.trim();
-  if(!name){toast('지사명을 입력하세요',false);return;}
-  const body={name,region:document.getElementById('bm-region').value,manager:document.getElementById('bm-manager').value,phone:document.getElementById('bm-phone').value,email:document.getElementById('bm-email').value,address:document.getElementById('bm-address').value,status:document.getElementById('bm-status').value,contract_date:document.getElementById('bm-contract').value,fee_rate:document.getElementById('bm-fee').value||0,note:document.getElementById('bm-note').value};
+  if(!name){toast('판매처명을 입력하세요',false);return;}
+  const body={name,region:document.getElementById('bm-region').value,
+    manager:document.getElementById('bm-manager').value,phone:document.getElementById('bm-phone').value,
+    email:document.getElementById('bm-email').value,address:document.getElementById('bm-address').value,
+    status:document.getElementById('bm-status').value,note:document.getElementById('bm-note').value};
   if(id)await api(`/api/branches/${id}`,{method:'PUT',body});else await api('/api/branches',{method:'POST',body});
-  closeBM();loadBranches();toast(id?'지사 정보가 수정되었습니다':'지사가 추가되었습니다');
+  closeBM();loadBranches();toast(id?'판매처 정보가 수정되었습니다':'판매처가 추가되었습니다');
 }
 async function delBranch(id,name){
-  if(!confirm(`[${name}]을 삭제하시겠습니까?\n관련 판매부수 데이터도 함께 삭제됩니다.`))return;
+  if(!confirm(`[${name}]을 삭제하시겠습니까?`))return;
   await api(`/api/branches/${id}`,{method:'DELETE'});loadBranches();toast('삭제되었습니다');
 }
 
