@@ -214,6 +214,27 @@ td.center{text-align:center}
 .expcard h3{font-family:var(--fd);font-size:15px;font-weight:600;color:var(--ink-900);margin-bottom:6px}
 .expcard p{font-size:13px;color:var(--ink-300);line-height:1.65;margin-bottom:20px}
 
+/* UPLOAD */
+.upload-grid{display:grid;grid-template-columns:1fr 1fr;gap:20px;margin-bottom:24px}
+.upload-card{background:var(--paper);border-radius:var(--r-lg);padding:28px;box-shadow:var(--sh-sm);border:1px solid rgba(0,0,0,.04)}
+.upload-card h3{font-family:var(--fd);font-size:15px;font-weight:600;color:var(--ink-900);margin-bottom:6px}
+.upload-card p{font-size:13px;color:var(--ink-300);line-height:1.6;margin-bottom:16px}
+.drop-zone{border:2px dashed var(--ink-100);border-radius:var(--r-md);padding:28px 16px;text-align:center;cursor:pointer;transition:.2s;position:relative}
+.drop-zone:hover,.drop-zone.drag{border-color:var(--accent-m);background:var(--accent-lt)}
+.drop-zone input[type=file]{position:absolute;inset:0;opacity:0;cursor:pointer;width:100%;height:100%}
+.drop-icon{font-size:28px;margin-bottom:8px}
+.drop-txt{font-size:13px;color:var(--ink-300)}
+.drop-txt strong{color:var(--accent-m)}
+.upload-step{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--ink-300);margin-bottom:8px}
+.upload-step-num{width:18px;height:18px;border-radius:50%;background:var(--ink-100);color:var(--ink-500);font-size:10px;font-weight:700;display:flex;align-items:center;justify-content:center;flex-shrink:0}
+
+/* PREVIEW TABLE */
+.preview-wrap{background:var(--paper);border-radius:var(--r-lg);box-shadow:var(--sh-sm);border:1px solid rgba(0,0,0,.04);overflow:hidden;margin-bottom:16px}
+.preview-hdr{display:flex;align-items:center;justify-content:space-between;padding:16px 20px;border-bottom:1px solid var(--ink-100)}
+.preview-hdr h4{font-family:var(--fd);font-size:14px;font-weight:600;color:var(--ink-900)}
+.preview-count{font-size:12px;color:var(--ink-300)}
+.err-box{background:var(--red-lt);border-radius:var(--r-md);padding:12px 16px;margin-bottom:12px;font-size:12px;color:var(--red);line-height:1.8}
+
 /* EMPTY */
 .empty{text-align:center;padding:52px 20px;color:var(--ink-300)}
 .empty-ic{font-size:32px;margin-bottom:12px}
@@ -277,6 +298,7 @@ td.center{text-align:center}
     <div class="sb-lbl">내보내기</div>
     <nav>
       <a onclick="showPage('export')" id="nav-export"><span class="ni">↓</span>데이터 내보내기</a>
+      <a onclick="showPage('upload')" id="nav-upload"><span class="ni">↑</span>엑셀 업로드</a>
     </nav>
     <div class="sb-foot">
       <div class="sb-name" id="sb-name">—</div>
@@ -399,10 +421,79 @@ td.center{text-align:center}
       </div>
     </div>
 
-  </div>
-</div>
+    <!-- ██ 엑셀 업로드 ██ -->
+    <div class="page" id="page-upload">
+      <div class="ph">
+        <div><h2>엑셀 업로드</h2><p>CSV 파일로 지사 · 판매부수 데이터를 일괄 입력하세요</p></div>
+      </div>
+      <div style="background:var(--accent-lt);border:1px solid rgba(79,70,229,.2);border-radius:var(--r-md);padding:14px 18px;margin-bottom:24px;font-size:13px;color:var(--accent);line-height:1.7">
+        💡 <strong>사용 방법:</strong> 양식 다운로드 → 데이터 입력 → 파일 업로드 → 미리보기 확인 → 저장
+      </div>
+      <div class="upload-grid">
+        <div class="upload-card">
+          <h3>🏢 지사 목록 업로드</h3>
+          <p>지사명, 지역, 담당자, 연락처 등을 CSV로 한번에 등록하세요.</p>
+          <div style="margin-bottom:14px">
+            <div class="upload-step"><div class="upload-step-num">1</div>양식 다운로드 후 데이터 입력</div>
+            <div class="upload-step"><div class="upload-step-num">2</div>파일 업로드</div>
+            <div class="upload-step"><div class="upload-step-num">3</div>미리보기 확인 후 저장</div>
+          </div>
+          <button class="btn btn-ghost btn-sm" style="margin-bottom:12px;width:100%" onclick="location='/api/template/branches'">📥 지사 양식 다운로드</button>
+          <div class="drop-zone" id="drop-branches" ondragover="onDrag(event,'drop-branches')" ondragleave="offDrag('drop-branches')" ondrop="onDrop(event,'branches')">
+            <input type="file" accept=".csv" onchange="onFileSelect(event,'branches')">
+            <div class="drop-icon">📂</div>
+            <div class="drop-txt">파일을 끌어다 놓거나<br><strong>클릭해서 선택</strong></div>
+            <div style="font-size:11px;color:var(--ink-300);margin-top:6px">CSV 파일만 지원</div>
+          </div>
+        </div>
+        <div class="upload-card">
+          <h3>📈 판매부수 업로드</h3>
+          <p>지사별 월별 목표·실적을 CSV로 한번에 입력하세요.<br>지사는 미리 등록되어 있어야 합니다.</p>
+          <div style="margin-bottom:14px">
+            <div class="upload-step"><div class="upload-step-num">1</div>양식 다운로드 후 데이터 입력</div>
+            <div class="upload-step"><div class="upload-step-num">2</div>파일 업로드</div>
+            <div class="upload-step"><div class="upload-step-num">3</div>미리보기 확인 후 저장</div>
+          </div>
+          <button class="btn btn-ghost btn-sm" style="margin-bottom:12px;width:100%" onclick="location='/api/template/sales'">📥 판매부수 양식 다운로드</button>
+          <div class="drop-zone" id="drop-sales" ondragover="onDrag(event,'drop-sales')" ondragleave="offDrag('drop-sales')" ondrop="onDrop(event,'sales')">
+            <input type="file" accept=".csv" onchange="onFileSelect(event,'sales')">
+            <div class="drop-icon">📂</div>
+            <div class="drop-txt">파일을 끌어다 놓거나<br><strong>클릭해서 선택</strong></div>
+            <div style="font-size:11px;color:var(--ink-300);margin-top:6px">CSV 파일만 지원</div>
+          </div>
+        </div>
+      </div>
+      <div id="preview-area" style="display:none">
+        <div class="slbl">업로드 미리보기</div>
+        <div id="preview-errors" class="err-box" style="display:none"></div>
+        <div class="preview-wrap">
+          <div class="preview-hdr">
+            <h4 id="preview-title">미리보기</h4>
+            <div style="display:flex;align-items:center;gap:14px">
+              <span class="preview-count" id="preview-count"></span>
+              <div style="display:flex;align-items:center;gap:10px;font-size:12px;color:var(--ink-300)">
+                업로드 방식:
+                <label style="display:flex;align-items:center;gap:4px;cursor:pointer"><input type="radio" name="umode" value="append" checked> 추가</label>
+                <label style="display:flex;align-items:center;gap:4px;cursor:pointer"><input type="radio" name="umode" value="overwrite"> 전체 덮어쓰기</label>
+              </div>
+            </div>
+          </div>
+          <div style="overflow-x:auto;max-height:300px;overflow-y:auto">
+            <table style="width:100%;border-collapse:collapse;font-size:12px">
+              <thead id="preview-thead" style="position:sticky;top:0;background:var(--ink-50)"></thead>
+              <tbody id="preview-tbody"></tbody>
+            </table>
+          </div>
+        </div>
+        <div style="display:flex;gap:8px;margin-top:14px">
+          <button class="btn btn-ghost" onclick="cancelUpload()">✕ 취소</button>
+          <button class="btn btn-dark" onclick="confirmUpload()">✅ 저장하기</button>
+        </div>
+      </div>
+    </div>
 
-<!-- ══ 지사 모달 ══ -->
+  </div><!-- /main -->
+</div><!-- /app -->
 <div class="ov" id="bm-ov">
   <div class="modal">
     <div class="mh"><h3 id="bm-title">지사 추가</h3><button class="mc" onclick="closeBM()">✕</button></div>
@@ -478,6 +569,7 @@ function showPage(n){
   document.getElementById('page-'+n).classList.add('active');
   document.getElementById('nav-'+n).classList.add('active');
   ({dashboard:loadDash,branches:loadBranches,sales:loadSalesPage,users:loadUsers}[n]||function(){})();
+  if(n==='upload') cancelUpload();
 }
 async function doLogin(){
   const r=await fetch('/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email:document.getElementById('l-email').value,password:document.getElementById('l-pw').value})});
@@ -615,6 +707,72 @@ async function delUser(id,name){
 }
 
 ['bm-ov','um-ov'].forEach(id=>{document.getElementById(id).addEventListener('click',e=>{if(e.target.id===id)e.target.classList.remove('open');});});
+
+// ── 업로드 ─────────────────────────────────────────
+let uploadType='',uploadPreviewData=[];
+
+function onDrag(e,id){e.preventDefault();document.getElementById(id).classList.add('drag');}
+function offDrag(id){document.getElementById(id).classList.remove('drag');}
+function onDrop(e,type){e.preventDefault();offDrag('drop-'+type);const f=e.dataTransfer.files[0];if(f)processFile(f,type);}
+function onFileSelect(e,type){const f=e.target.files[0];if(f)processFile(f,type);}
+
+async function processFile(file,type){
+  if(!file.name.endsWith('.csv')){toast('CSV 파일만 업로드 가능합니다',false);return;}
+  const fd=new FormData();fd.append('file',file);
+  toast('파일 분석 중...');
+  const r=await fetch(`/api/upload/${type}/preview`,{method:'POST',body:fd});
+  const d=await r.json();
+  if(d.error){toast(d.error,false);return;}
+  uploadType=type;uploadPreviewData=d.rows;
+  showPreview(type,d);
+}
+
+function showPreview(type,d){
+  document.getElementById('preview-area').style.display='block';
+  document.getElementById('preview-area').scrollIntoView({behavior:'smooth'});
+  const errEl=document.getElementById('preview-errors');
+  if(d.errors&&d.errors.length){errEl.style.display='block';errEl.innerHTML='⚠️ <strong>주의사항</strong><br>'+d.errors.join('<br>');}
+  else errEl.style.display='none';
+  document.getElementById('preview-count').textContent=`총 ${d.count}행`;
+  const thStyle='padding:9px 12px;text-align:left;font-size:10px;font-weight:700;color:var(--ink-300);letter-spacing:.5px;text-transform:uppercase;border-bottom:1px solid var(--ink-100)';
+  const tdStyle='padding:9px 12px';
+  if(type==='branches'){
+    document.getElementById('preview-title').textContent='지사 목록 미리보기';
+    document.getElementById('preview-thead').innerHTML=`<tr>${['지사명','지역','담당자','전화','이메일','상태','계약일','수수료'].map(h=>`<th style="${thStyle}">${h}</th>`).join('')}</tr>`;
+    document.getElementById('preview-tbody').innerHTML=d.rows.map(r=>`<tr style="border-bottom:1px solid rgba(0,0,0,.03)">
+      <td style="${tdStyle};font-weight:600">${r.name}</td>
+      <td style="${tdStyle}"><span class="badge b-blue">${r.region||'—'}</span></td>
+      <td style="${tdStyle}">${r.manager||'—'}</td>
+      <td style="${tdStyle};color:var(--ink-300)">${r.phone||'—'}</td>
+      <td style="${tdStyle};color:var(--ink-300)">${r.email||'—'}</td>
+      <td style="${tdStyle}"><span class="badge ${r.status==='운영중'?'b-green':r.status==='일시중단'?'b-amber':'b-red'}">${r.status}</span></td>
+      <td style="${tdStyle};color:var(--ink-300)">${r.contract_date||'—'}</td>
+      <td style="${tdStyle}">${r.fee_rate||0}%</td>
+    </tr>`).join('');
+  } else {
+    document.getElementById('preview-title').textContent='판매부수 미리보기';
+    document.getElementById('preview-thead').innerHTML=`<tr>${['지사명','연도','1월','2월','3월','4월','5월','6월','7월','8월','9월','10월','11월','12월'].map(h=>`<th style="${thStyle}">${h}</th>`).join('')}</tr>`;
+    document.getElementById('preview-tbody').innerHTML=d.rows.map(r=>`<tr style="border-bottom:1px solid rgba(0,0,0,.03)">
+      <td style="${tdStyle};font-weight:600">${r.branch_name}</td>
+      <td style="${tdStyle}">${r.year}</td>
+      ${r.months.map(m=>`<td style="${tdStyle};font-size:11px"><div style="color:var(--ink-300);font-size:10px">목표</div>${N(m.target)}<div style="color:var(--ink-300);font-size:10px;margin-top:2px">실적</div>${N(m.actual)}</td>`).join('')}
+    </tr>`).join('');
+  }
+}
+
+async function confirmUpload(){
+  if(!uploadPreviewData.length){toast('저장할 데이터가 없습니다',false);return;}
+  const mode=document.querySelector('input[name="umode"]:checked').value;
+  const r=await api(`/api/upload/${uploadType}/commit`,{method:'POST',body:{rows:uploadPreviewData,mode}});
+  if(!r||!r.ok){toast('저장 중 오류가 발생했습니다',false);return;}
+  const t=uploadType; cancelUpload();
+  if(t==='branches')toast(`✅ 지사 ${r.total}개 저장 완료 (신규 ${r.added}개)`);
+  else toast(`✅ 판매부수 ${r.total}개 지사 저장 완료`);
+}
+function cancelUpload(){
+  document.getElementById('preview-area').style.display='none';
+  uploadType='';uploadPreviewData=[];
+}
 
 (async()=>{
   const r=await fetch('/api/me');

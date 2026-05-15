@@ -356,6 +356,133 @@ def export_sales():
 def api_me():
     return jsonify(session.get("user",{}))
 
+# ── 엑셀 템플릿 다운로드 ───────────────────────
+@app.route("/api/template/branches")
+@login_required
+def template_branches():
+    buf = io.StringIO()
+    w = csv.writer(buf)
+    w.writerow(["지사명","지역","담당자","전화","이메일","주소","상태","계약일","수수료율","메모"])
+    w.writerow(["서울 강남지사","서울","홍길동","010-1234-5678","example@visang.com","서울시 강남구","운영중","2024-01-01",5.0,"예시 데이터"])
+    buf.seek(0)
+    return send_file(io.BytesIO(buf.getvalue().encode("utf-8-sig")), mimetype="text/csv",
+                     as_attachment=True, download_name="지사_업로드_양식.csv")
+
+@app.route("/api/template/sales")
+@login_required
+def template_sales():
+    buf = io.StringIO()
+    w = csv.writer(buf)
+    w.writerow(["지사명","연도","1월목표","1월실적","2월목표","2월실적","3월목표","3월실적",
+                "4월목표","4월실적","5월목표","5월실적","6월목표","6월실적",
+                "7월목표","7월실적","8월목표","8월실적","9월목표","9월실적",
+                "10월목표","10월실적","11월목표","11월실적","12월목표","12월실적"])
+    w.writerow(["서울 강남지사", 2026,
+                1000,850, 1200,1100, 1100,980, 1300,1250, 1400,1300, 1200,1150,
+                1100,1000, 1300,1200, 1400,1350, 1500,1420, 1600,1500, 1800,1700])
+    buf.seek(0)
+    return send_file(io.BytesIO(buf.getvalue().encode("utf-8-sig")), mimetype="text/csv",
+                     as_attachment=True, download_name="판매부수_업로드_양식.csv")
+
+# ── 엑셀 업로드 (미리보기) ────────────────────
+@app.route("/api/upload/branches/preview", methods=["POST"])
+@login_required
+def upload_branches_preview():
+    f = request.files.get("file")
+    if not f: return jsonify({"error":"파일이 없습니다"}), 400
+    content = f.read().decode("utf-8-sig")
+    reader = csv.DictReader(io.StringIO(content))
+    rows, errors = [], []
+    REGIONS = ["서울","경기","인천","강원","충북","충남","대전","세종","경북","경남","대구","부산","울산","전북","전남","광주","제주"]
+    for i, row in enumerate(reader, 1):
+        name = row.get("지사명","").strip()
+        region = row.get("지역","").strip()
+        if not name:
+            errors.append(f"{i}행: 지사명 누락")
+            continue
+        if region and region not in REGIONS:
+            errors.append(f"{i}행 [{name}]: 알 수 없는 지역 '{region}'")
+        rows.append({
+            "name": name, "region": region,
+            "manager": row.get("담당자","").strip(),
+            "phone": row.get("전화","").strip(),
+            "email": row.get("이메일","").strip(),
+            "address": row.get("주소","").strip(),
+            "status": row.get("상태","운영중").strip() or "운영중",
+            "contract_date": row.get("계약일","").strip(),
+            "fee_rate": float(row.get("수수료율",0) or 0),
+            "note": row.get("메모","").strip(),
+        })
+    return jsonify({"rows": rows, "errors": errors, "count": len(rows)})
+
+@app.route("/api/upload/branches/commit", methods=["POST"])
+@login_required
+def upload_branches_commit():
+    data = request.json
+    rows = data.get("rows", [])
+    mode = data.get("mode", "append")  # append | overwrite
+    conn = get_db()
+    if mode == "overwrite":
+        conn.execute("DELETE FROM branches")
+        conn.execute("DELETE FROM sales")
+    added = 0
+    for r in rows:
+        existing = conn.execute("SELECT id FROM branches WHERE name=?", (r["name"],)).fetchone()
+        if existing:
+            conn.execute("""UPDATE branches SET region=?,manager=?,phone=?,email=?,
+                            address=?,status=?,contract_date=?,fee_rate=?,note=? WHERE id=?""",
+                (r["region"],r["manager"],r["phone"],r["email"],r["address"],
+                 r["status"],r["contract_date"],r["fee_rate"],r["note"],existing["id"]))
+        else:
+            conn.execute("""INSERT INTO branches(name,region,manager,phone,email,address,status,contract_date,fee_rate,note)
+                            VALUES(?,?,?,?,?,?,?,?,?,?)""",
+                (r["name"],r["region"],r["manager"],r["phone"],r["email"],
+                 r["address"],r["status"],r["contract_date"],r["fee_rate"],r["note"]))
+            added += 1
+    conn.commit(); conn.close()
+    return jsonify({"ok": True, "added": added, "total": len(rows)})
+
+@app.route("/api/upload/sales/preview", methods=["POST"])
+@login_required
+def upload_sales_preview():
+    f = request.files.get("file")
+    if not f: return jsonify({"error":"파일이 없습니다"}), 400
+    content = f.read().decode("utf-8-sig")
+    reader = csv.DictReader(io.StringIO(content))
+    rows, errors = [], []
+    conn = get_db()
+    for i, row in enumerate(reader, 1):
+        name = row.get("지사명","").strip()
+        year = row.get("연도","").strip()
+        if not name or not year:
+            errors.append(f"{i}행: 지사명 또는 연도 누락"); continue
+        branch = conn.execute("SELECT id FROM branches WHERE name=?", (name,)).fetchone()
+        if not branch:
+            errors.append(f"{i}행: '{name}' 지사가 시스템에 없음 (지사 먼저 등록 필요)")
+            continue
+        months = []
+        for m in range(1, 13):
+            t = int(row.get(f"{m}월목표", 0) or 0)
+            a = int(row.get(f"{m}월실적", 0) or 0)
+            months.append({"month": m, "target": t, "actual": a})
+        rows.append({"branch_id": branch["id"], "branch_name": name,
+                     "year": int(year), "months": months})
+    conn.close()
+    return jsonify({"rows": rows, "errors": errors, "count": len(rows)})
+
+@app.route("/api/upload/sales/commit", methods=["POST"])
+@login_required
+def upload_sales_commit():
+    data = request.json
+    rows = data.get("rows", [])
+    conn = get_db()
+    for r in rows:
+        for m in r["months"]:
+            conn.execute("""INSERT INTO sales(branch_id,year,month,target,actual) VALUES(?,?,?,?,?)
+                ON CONFLICT(branch_id,year,month) DO UPDATE SET target=excluded.target,actual=excluded.actual""",
+                (r["branch_id"], r["year"], m["month"], m["target"], m["actual"]))
+    conn.commit(); conn.close()
+    return jsonify({"ok": True, "total": len(rows)})
 
 # Render/gunicorn 실행 시 자동 초기화
 init_db()
