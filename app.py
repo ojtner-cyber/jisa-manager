@@ -91,32 +91,12 @@ def init_db():
             conn.execute("ALTER TABLE sales_data ADD COLUMN upload_batch TEXT DEFAULT ''")
     except Exception:
         pass
-    # 기본 계정 생성
+
+    # 기본 계정만 생성 (샘플 데이터 없음)
     conn.execute("INSERT OR IGNORE INTO users(email,password,name,role) VALUES(?,?,?,?)",
         ("test@visang.com","visang123!","관리자","admin"))
     conn.execute("INSERT OR IGNORE INTO users(email,password,name,role) VALUES(?,?,?,?)",
         ("user@visang.com","visang123!","일반사용자","user"))
-    # 샘플 지사
-    sample = [
-        ("서울 강남지사","서울","김철수","010-1234-5678","kangnam@visang.com","서울시 강남구","운영중","2023-01-01",5.0),
-        ("경기 수원지사","경기","이영희","010-2345-6789","suwon@visang.com","경기도 수원시","운영중","2023-03-15",4.5),
-        ("부산 해운대지사","부산","박민준","010-3456-7890","haeundae@visang.com","부산시 해운대구","운영중","2022-07-01",5.5),
-        ("대구 중구지사","대구","최수진","010-4567-8901","daegu@visang.com","대구시 중구","운영중","2023-06-01",4.0),
-        ("인천 부평지사","인천","정지훈","010-5678-9012","bupyeong@visang.com","인천시 부평구","일시중단","2022-12-01",3.5),
-        ("광주 서구지사","광주","한소희","010-6789-0123","gwangju@visang.com","광주시 서구","운영중","2024-01-15",5.0),
-    ]
-    for s in sample:
-        conn.execute("INSERT OR IGNORE INTO branches(name,region,manager,phone,email,address,status,contract_date,fee_rate) VALUES(?,?,?,?,?,?,?,?,?)", s)
-    # 샘플 판매 데이터
-    import random; random.seed(42)
-    branches = conn.execute("SELECT id FROM branches").fetchall()
-    y = datetime.now().year
-    for b in branches:
-        for m in range(1, 13):
-            t = random.randint(800, 2000) * 10000
-            a = int(t * random.uniform(0.6, 1.2))
-            conn.execute("INSERT OR IGNORE INTO sales(branch_id,year,month,target,actual) VALUES(?,?,?,?,?)",
-                (b[0], y, m, t, a))
     conn.commit(); conn.close()
 
 # ── 인증 ──────────────────────────────────────
@@ -386,33 +366,37 @@ def upload_stores():
     conn.commit(); conn.close()
     return jsonify({"ok": True, "added": added, "updated": updated, "total": len(stores)})
 
-# ── 판매부수 페이지용 — 매장별 sales_data 실적 ──
+# ── 판매부수 페이지용 — 매장별 실적 ──────────────
 @app.route("/api/sales-by-store")
 @login_required
 def api_sales_by_store():
-    """매장별 월별 실적 (sales_data 기반)"""
-    year = request.args.get("year", str(datetime.now().year))
+    year   = request.args.get("year",   str(datetime.now().year))
     seller = request.args.get("seller", "").strip()
-    conn = get_db()
+    month  = request.args.get("month",  "").strip()
+    conn   = get_db()
+
+    # 날짜 조건
+    if month:
+        date_cond = f"{year}-{month.zfill(2)}%"
+    else:
+        date_cond = f"{year}%"
 
     if seller:
-        # 특정 매장 월별 실적
         rows = [dict(r) for r in conn.execute("""
             SELECT CAST(strftime('%m', sale_date) AS INTEGER) month,
-                   SUM(total) actual, COUNT(*) cnt, SUM(quantity) qty
+                   SUM(total) total, COUNT(*) cnt, SUM(quantity) qty
             FROM sales_data
             WHERE real_seller=? AND sale_date LIKE ? AND sale_date != ''
-            GROUP BY month ORDER BY month""", (seller, f"{year}%")).fetchall()]
+            GROUP BY month ORDER BY month""", (seller, date_cond)).fetchall()]
         conn.close()
         return jsonify(rows)
     else:
-        # 전체 매장 요약
         rows = [dict(r) for r in conn.execute("""
-            SELECT real_seller seller_name,
+            SELECT real_seller AS seller_name,
                    COUNT(*) cnt, SUM(total) total, SUM(quantity) qty
             FROM sales_data
-            WHERE sale_date LIKE ? AND real_seller != ''
-            GROUP BY real_seller ORDER BY total DESC""", (f"{year}%",)).fetchall()]
+            WHERE sale_date LIKE ? AND real_seller != '' AND real_seller IS NOT NULL
+            GROUP BY real_seller ORDER BY total DESC""", (date_cond,)).fetchall()]
         conn.close()
         return jsonify(rows)
 
@@ -675,10 +659,9 @@ def parse_xlsx_sales(file_bytes):
             real_seller = row_vals.get('AE', '').strip()
             buyer       = row_vals.get('D', '').strip()
 
-            # 베이비하우스 본사 → 수취인(D열)으로 매장 파악
-            if real_seller == '베이비하우스 본사' and buyer:
-                # 수취인에서 매장명 추출 (예: "베이비하우스_영통점 홍길동" → "베이비하우스_영통점")
-                real_seller = buyer.split()[0] if buyer else real_seller
+            # 베이비하우스 본사 → 수취인 전체 이름으로 매장 파악
+            if '베이비하우스' in real_seller and '본사' in real_seller and buyer:
+                real_seller = buyer  # 수취인 전체 이름 사용
 
             results.append({
                 'sale_date':    sale_date,
@@ -804,22 +787,39 @@ def api_sellers():
 @app.route("/api/sales-data/weekly")
 @login_required
 def sales_data_weekly():
-    year  = request.args.get("year",  str(datetime.now().year))
-    month = request.args.get("month", "")
-    conn  = get_db()
+    year   = request.args.get("year",   str(datetime.now().year))
+    month  = request.args.get("month",  "").strip()
+    seller = request.args.get("seller", "").strip()
+    conn   = get_db()
+
+    params = []
+    conds  = ["sale_date != ''"]
+
     if month:
-        where = f"sale_date LIKE '{year}-{month.zfill(2)}%'"
+        conds.append("sale_date LIKE ?")
+        params.append(f"{year}-{month.zfill(2)}%")
     else:
-        where = f"sale_date LIKE '{year}%'"
+        conds.append("sale_date LIKE ?")
+        params.append(f"{year}%")
+
+    if seller:
+        conds.append("real_seller = ?")
+        params.append(seller)
+
+    where = " AND ".join(conds)
 
     rows = [dict(r) for r in conn.execute(f"""
         SELECT
-            strftime('%W', sale_date) week_num,
-            strftime('%Y-%m-%d', sale_date, 'weekday 1', '-6 days') week_start,
-            COUNT(*) cnt, SUM(quantity) qty, SUM(total) total
+            strftime('%Y-%W', sale_date) AS week_key,
+            COUNT(*) cnt,
+            SUM(quantity) qty,
+            SUM(total) total,
+            MIN(sale_date) week_start,
+            MAX(sale_date) week_end
         FROM sales_data
-        WHERE {where} AND sale_date != ''
-        GROUP BY week_num ORDER BY week_num""").fetchall()]
+        WHERE {where}
+        GROUP BY week_key
+        ORDER BY week_key""", params).fetchall()]
     conn.close()
     return jsonify(rows)
 
