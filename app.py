@@ -375,22 +375,24 @@ def api_sales_by_store():
     month  = request.args.get("month",  "").strip()
     conn   = get_db()
 
-    # 날짜 조건
     if month:
         date_cond = f"{year}-{month.zfill(2)}%"
     else:
         date_cond = f"{year}%"
 
     if seller:
+        # 특정 매장 → 월별 실적 반환 (seller_name 포함)
         rows = [dict(r) for r in conn.execute("""
-            SELECT CAST(strftime('%m', sale_date) AS INTEGER) month,
-                   SUM(total) total, COUNT(*) cnt, SUM(quantity) qty
+            SELECT ? AS seller_name,
+                   CAST(strftime('%m', sale_date) AS INTEGER) AS month,
+                   COUNT(*) cnt, SUM(total) total, SUM(quantity) qty
             FROM sales_data
             WHERE real_seller=? AND sale_date LIKE ? AND sale_date != ''
-            GROUP BY month ORDER BY month""", (seller, date_cond)).fetchall()]
+            GROUP BY month ORDER BY month""", (seller, seller, date_cond)).fetchall()]
         conn.close()
         return jsonify(rows)
     else:
+        # 전체 매장 요약
         rows = [dict(r) for r in conn.execute("""
             SELECT real_seller AS seller_name,
                    COUNT(*) cnt, SUM(total) total, SUM(quantity) qty
@@ -782,6 +784,37 @@ def api_sellers():
         "SELECT * FROM sellers ORDER BY total_sales DESC").fetchall()]
     conn.close()
     return jsonify(rows)
+
+# ── 주별 세부 품목 API ─────────────────────────
+@app.route("/api/sales-data/weekly-detail")
+@login_required
+def sales_weekly_detail():
+    week_key = request.args.get("week_key", "")
+    seller   = request.args.get("seller",   "").strip()
+    conn     = get_db()
+
+    params = [week_key]
+    conds  = ["strftime('%Y-%W', sale_date) = ?", "sale_date != ''"]
+    if seller:
+        conds.append("real_seller = ?")
+        params.append(seller)
+
+    where = " AND ".join(conds)
+
+    items = [dict(r) for r in conn.execute(f"""
+        SELECT item_name, item_code, item_group,
+               SUM(quantity) qty, AVG(unit_price) avg_price, SUM(total) total, COUNT(*) cnt
+        FROM sales_data
+        WHERE {where}
+        GROUP BY item_name ORDER BY total DESC""", params).fetchall()]
+
+    summary = conn.execute(f"""
+        SELECT COUNT(*) cnt, SUM(quantity) qty, SUM(total) total,
+               MIN(sale_date) date_from, MAX(sale_date) date_to
+        FROM sales_data WHERE {where}""", params).fetchone()
+
+    conn.close()
+    return jsonify({"items": items, "summary": dict(summary), "week_key": week_key, "seller": seller})
 
 # ── 주별 실적 API ──────────────────────────────
 @app.route("/api/sales-data/weekly")

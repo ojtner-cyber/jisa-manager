@@ -836,61 +836,123 @@ async function loadSalesPage(){
   const selVal = document.getElementById('sales-branch')?.value||'';
   const seller = selVal ? decodeURIComponent(selVal) : '';
 
-  // 매장 드롭다운 채우기 (전체 기준)
+  // 매장 드롭다운 채우기
   const allRows = await api(`/api/sales-by-store?year=${year}`);
   if(!allRows) return;
   const sel=document.getElementById('sales-branch'), prev=sel.value;
   sel.innerHTML='<option value="">— 전체 매장 —</option>'+
-    allRows.map(r=>{
-      const nm=r.seller_name||'';
-      return `<option value="${encodeURIComponent(nm)}">${nm}</option>`;
-    }).join('');
+    allRows.map(r=>`<option value="${encodeURIComponent(r.seller_name||'')}">${r.seller_name||'—'}</option>`).join('');
   if(prev) sel.value=prev;
 
-  if(salesTab==='monthly'){
-    const params=new URLSearchParams({year});
-    if(month)  params.set('month', month);
-    if(seller) params.set('seller', seller);
+  if(salesTab==='monthly') await renderMonthly(year, month, seller);
+  else await renderWeekly(year, month, seller);
+}
+
+async function renderMonthly(year, month, seller){
+  const tbody=document.getElementById('sales-tbody');
+  if(seller){
+    // 특정 매장 → 월별 행 표시
+    const params=new URLSearchParams({year, seller});
+    if(month) params.set('month', month);
     const rows=await api(`/api/sales-by-store?${params}`);
     if(!rows) return;
-    const tbody=document.getElementById('sales-tbody');
+    if(!rows.length){
+      tbody.innerHTML=`<tr><td colspan="4" style="text-align:center;padding:40px;color:var(--ink-300)">해당 기간 데이터가 없습니다</td></tr>`;
+      return;
+    }
+    const safe=seller.replace(/'/g,"\\'");
+    tbody.innerHTML=rows.map(r=>{
+      const mo=r.month||'';
+      return `<tr style="cursor:pointer" onclick="openMonthDetail('${safe}','${year}','${mo}')" title="클릭하면 품목 세부">
+        <td style="width:35%"><strong>${seller}</strong>
+          <span style="color:var(--ink-300);font-size:12px;margin-left:8px">${mo}월</span>
+          <span style="font-size:11px;color:var(--accent-m);margin-left:4px">↗</span>
+        </td>
+        <td class="num" style="width:21%">${(r.cnt||0).toLocaleString()}건</td>
+        <td class="num" style="width:21%">${(r.qty||0).toLocaleString()}개</td>
+        <td class="num" style="width:23%;font-weight:700;color:var(--accent-m)">${r.total!=null?N(r.total)+'원':'—'}</td>
+      </tr>`;
+    }).join('');
+  } else {
+    // 전체 → 매장별 요약
+    const params=new URLSearchParams({year});
+    if(month) params.set('month', month);
+    const rows=await api(`/api/sales-by-store?${params}`);
+    if(!rows) return;
     if(!rows.length){
       tbody.innerHTML=`<tr><td colspan="4" style="text-align:center;padding:40px;color:var(--ink-300)">데이터가 없습니다. 판매현황 엑셀을 먼저 업로드해 주세요.</td></tr>`;
       return;
     }
     tbody.innerHTML=rows.map((r,i)=>{
       const nm=r.seller_name||'—';
-      const safeName=nm.replace(/'/g,"\\'");
-      return `<tr style="cursor:pointer" onclick="openMonthDetail('${safeName}','${year}','${month}')" title="클릭하면 품목 세부 확인">
-        <td style="width:40%"><span style="color:var(--ink-300);margin-right:8px;font-size:11px">${i+1}</span>
+      const safe=nm.replace(/'/g,"\\'");
+      return `<tr style="cursor:pointer" onclick="openMonthDetail('${safe}','${year}','${month}')" title="클릭하면 품목 세부">
+        <td style="width:35%"><span style="color:var(--ink-300);margin-right:8px;font-size:11px">${i+1}</span>
           <strong>${nm}</strong><span style="font-size:11px;color:var(--accent-m);margin-left:6px">↗</span>
         </td>
-        <td class="num" style="width:20%">${(r.cnt||0).toLocaleString()}건</td>
-        <td class="num" style="width:20%">${(r.qty||0).toLocaleString()}개</td>
-        <td class="num" style="width:20%;font-weight:700;color:var(--accent-m)">${r.total!=null?N(r.total)+'원':'—'}</td>
+        <td class="num" style="width:21%">${(r.cnt||0).toLocaleString()}건</td>
+        <td class="num" style="width:21%">${(r.qty||0).toLocaleString()}개</td>
+        <td class="num" style="width:23%;font-weight:700;color:var(--accent-m)">${r.total!=null?N(r.total)+'원':'—'}</td>
       </tr>`;
     }).join('');
-
-  } else {
-    // 주별 — 매장·월 필터 모두 적용
-    const params=new URLSearchParams({year});
-    if(month)  params.set('month', month);
-    if(seller) params.set('seller', seller);
-    const rows=await api(`/api/sales-data/weekly?${params}`);
-    if(!rows) return;
-    const tbody=document.getElementById('weekly-tbody');
-    if(!rows.length){
-      tbody.innerHTML=`<tr><td colspan="5" style="text-align:center;padding:40px;color:var(--ink-300)">데이터가 없습니다</td></tr>`;
-      return;
-    }
-    tbody.innerHTML=rows.map((r,i)=>`<tr>
-      <td style="width:10%"><strong>${i+1}주차</strong></td>
-      <td style="width:30%;color:var(--ink-300)">${r.week_start||'—'} ~ ${r.week_end||'—'}</td>
-      <td class="num" style="width:20%">${(r.cnt||0).toLocaleString()}건</td>
-      <td class="num" style="width:20%">${(r.qty||0).toLocaleString()}개</td>
-      <td class="num" style="width:20%;font-weight:700;color:var(--accent-m)">${N(r.total||0)}원</td>
-    </tr>`).join('');
   }
+}
+
+async function renderWeekly(year, month, seller){
+  const params=new URLSearchParams({year});
+  if(month)  params.set('month',  month);
+  if(seller) params.set('seller', seller);
+  const rows=await api(`/api/sales-data/weekly?${params}`);
+  const tbody=document.getElementById('weekly-tbody');
+  if(!rows||!rows.length){
+    tbody.innerHTML=`<tr><td colspan="5" style="text-align:center;padding:40px;color:var(--ink-300)">데이터가 없습니다</td></tr>`;
+    return;
+  }
+  const safe=(seller||'').replace(/'/g,"\\'");
+  tbody.innerHTML=rows.map((r,i)=>`<tr style="cursor:pointer" onclick="openWeekDetail('${r.week_key||''}','${safe}')" title="클릭하면 품목 세부">
+    <td style="width:10%"><strong>${i+1}주차</strong></td>
+    <td style="width:32%;color:var(--ink-300)">${r.week_start||'—'} ~ ${r.week_end||'—'}</td>
+    <td class="num" style="width:19%">${(r.cnt||0).toLocaleString()}건</td>
+    <td class="num" style="width:19%">${(r.qty||0).toLocaleString()}개</td>
+    <td class="num" style="width:20%;font-weight:700;color:var(--accent-m)">${N(r.total||0)}원</td>
+  </tr>`).join('');
+}
+
+function detailCards(d){
+  return `<div style="flex:1;background:var(--ink-50);border-radius:var(--r-md);padding:12px 16px">
+    <div style="font-size:10px;font-weight:700;color:var(--ink-300);letter-spacing:.5px;text-transform:uppercase;margin-bottom:4px">총 건수</div>
+    <div style="font-size:20px;font-weight:700;color:var(--ink-900)">${(d.cnt||0).toLocaleString()}건</div></div>
+  <div style="flex:1;background:var(--ink-50);border-radius:var(--r-md);padding:12px 16px">
+    <div style="font-size:10px;font-weight:700;color:var(--ink-300);letter-spacing:.5px;text-transform:uppercase;margin-bottom:4px">총 수량</div>
+    <div style="font-size:20px;font-weight:700;color:var(--ink-900)">${(d.qty||0).toLocaleString()}개</div></div>
+  <div style="flex:1;background:var(--accent-lt);border-radius:var(--r-md);padding:12px 16px">
+    <div style="font-size:10px;font-weight:700;color:var(--accent);letter-spacing:.5px;text-transform:uppercase;margin-bottom:4px">총 금액</div>
+    <div style="font-size:20px;font-weight:700;color:var(--accent-m)">${N(d.total||0)}원</div></div>`;
+}
+
+function detailItemRows(items){
+  const s='padding:9px 12px;border-bottom:1px solid rgba(0,0,0,.04)';
+  return items.map((r,i)=>`<tr>
+    <td style="${s};color:var(--ink-300)">${i+1}</td>
+    <td style="${s};font-weight:600;max-width:200px;overflow:hidden;text-overflow:ellipsis">${r.item_name||'—'}</td>
+    <td style="${s}"><span class="badge b-blue" style="font-size:10px">${r.item_group||'—'}</span></td>
+    <td style="${s};text-align:right;font-weight:600">${(r.qty||0).toLocaleString()}</td>
+    <td style="${s};text-align:right;color:var(--ink-300)">${N(Math.round(r.avg_price||0))}</td>
+    <td style="${s};text-align:right;font-weight:700;color:var(--accent-m)">${N(r.total||0)}원</td>
+  </tr>`).join('');
+}
+
+async function openWeekDetail(weekKey, seller){
+  if(!weekKey) return;
+  const params=new URLSearchParams({week_key: weekKey});
+  if(seller) params.set('seller', seller);
+  const d=await api(`/api/sales-data/weekly-detail?${params}`);
+  if(!d) return;
+  const dr=d.summary.date_from?`${d.summary.date_from} ~ ${d.summary.date_to}`:weekKey;
+  document.getElementById('detail-title').textContent=`${seller||'전체'} — ${dr} 주별 품목 현황`;
+  document.getElementById('detail-summary-cards').innerHTML=detailCards(d.summary);
+  document.getElementById('detail-tbody').innerHTML=detailItemRows(d.items);
+  document.getElementById('detail-ov').classList.add('open');
 }
 
 async function openMonthDetail(seller,year,month){
@@ -901,28 +963,8 @@ async function openMonthDetail(seller,year,month){
   if(!d) return;
   document.getElementById('detail-title').textContent=
     `${seller||'전체'} — ${year}년 ${month?month+'월':'전체'} 품목 현황`;
-  document.getElementById('detail-summary-cards').innerHTML=`
-    <div style="flex:1;background:var(--ink-50);border-radius:var(--r-md);padding:12px 16px">
-      <div style="font-size:10px;font-weight:700;color:var(--ink-300);letter-spacing:.5px;text-transform:uppercase;margin-bottom:4px">총 건수</div>
-      <div style="font-size:20px;font-weight:700;color:var(--ink-900)">${(d.summary.cnt||0).toLocaleString()}건</div>
-    </div>
-    <div style="flex:1;background:var(--ink-50);border-radius:var(--r-md);padding:12px 16px">
-      <div style="font-size:10px;font-weight:700;color:var(--ink-300);letter-spacing:.5px;text-transform:uppercase;margin-bottom:4px">총 수량</div>
-      <div style="font-size:20px;font-weight:700;color:var(--ink-900)">${(d.summary.qty||0).toLocaleString()}개</div>
-    </div>
-    <div style="flex:1;background:var(--accent-lt);border-radius:var(--r-md);padding:12px 16px">
-      <div style="font-size:10px;font-weight:700;color:var(--accent);letter-spacing:.5px;text-transform:uppercase;margin-bottom:4px">총 금액</div>
-      <div style="font-size:20px;font-weight:700;color:var(--accent-m)">${N(d.summary.total||0)}원</div>
-    </div>`;
-  const s='padding:9px 12px;border-bottom:1px solid rgba(0,0,0,.04)';
-  document.getElementById('detail-tbody').innerHTML=d.items.map((r,i)=>`<tr>
-    <td style="${s};color:var(--ink-300)">${i+1}</td>
-    <td style="${s};font-weight:600;max-width:200px;overflow:hidden;text-overflow:ellipsis">${r.item_name||'—'}</td>
-    <td style="${s}"><span class="badge b-blue" style="font-size:10px">${r.item_group||'—'}</span></td>
-    <td style="${s};text-align:right;font-weight:600">${(r.qty||0).toLocaleString()}</td>
-    <td style="${s};text-align:right;color:var(--ink-300)">${N(Math.round(r.avg_price||0))}</td>
-    <td style="${s};text-align:right;font-weight:700;color:var(--accent-m)">${N(r.total||0)}원</td>
-  </tr>`).join('');
+  document.getElementById('detail-summary-cards').innerHTML=detailCards(d.summary);
+  document.getElementById('detail-tbody').innerHTML=detailItemRows(d.items);
   document.getElementById('detail-ov').classList.add('open');
 }
 
