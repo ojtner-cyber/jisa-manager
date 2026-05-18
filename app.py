@@ -9,6 +9,7 @@ from functools import wraps
 
 app = Flask(__name__)
 app.secret_key = os.environ.get("SECRET_KEY", "jisa-manager-secret-2025")
+app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024  # 50MB 허용
 
 # Render Disk 마운트 경로 우선 사용 → 없으면 스크립트 폴더
 _data_dir = "/data" if os.path.isdir("/data") else os.path.dirname(os.path.abspath(__file__))
@@ -686,13 +687,20 @@ def parse_xlsx_sales(file_bytes):
             })
     return results
 
+@app.errorhandler(413)
+def too_large(e):
+    return jsonify({"error": "파일이 너무 큽니다 (최대 50MB)"}), 413
+
 @app.route("/api/upload/xlsx/preview", methods=["POST"])
 @login_required
 def upload_xlsx_preview():
     f = request.files.get("file")
     if not f: return jsonify({"error": "파일이 없습니다"}), 400
+    if not f.filename.lower().endswith(('.xlsx', '.xls')):
+        return jsonify({"error": "xlsx 파일만 업로드 가능합니다"}), 400
     try:
-        rows = parse_xlsx_sales(f.read())
+        data = f.read()
+        rows = parse_xlsx_sales(data)
     except Exception as e:
         return jsonify({"error": f"파일 파싱 오류: {str(e)}"}), 400
 
@@ -740,9 +748,13 @@ def upload_xlsx_commit():
     f = request.files.get("file")
     if not f: return jsonify({"error": "파일이 없습니다"}), 400
     try:
-        rows = parse_xlsx_sales(f.read())
+        data = f.read()
+        rows = parse_xlsx_sales(data)
     except Exception as e:
-        return jsonify({"error": str(e)}), 400
+        return jsonify({"error": f"파싱 오류: {str(e)}"}), 400
+
+    if not rows:
+        return jsonify({"error": "유효한 데이터가 없습니다. 수량이 0 이하이거나 교환 처리된 행만 있을 수 있습니다."}), 400
 
     overwrite = request.form.get("overwrite", "0") == "1"
     batch = datetime.now().strftime("%Y%m%d%H%M%S")

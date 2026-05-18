@@ -976,13 +976,19 @@ function onXlsxSelect(e){const f=e.target.files[0];if(f)processXlsx(f);}
 
 async function processXlsx(file){
   if(!file.name.match(/\.(xlsx|xls)$/i)){toast('xlsx 파일만 업로드 가능합니다',false);return;}
+  if(file.size > 50*1024*1024){toast('파일이 너무 큽니다 (최대 50MB)',false);return;}
   xlsxFile = file;
-  toast('파일 분석 중...');
+  toast(`📊 파일 분석 중... (${(file.size/1024/1024).toFixed(1)}MB)`);
   const fd=new FormData();fd.append('file',file);
-  const r=await fetch('/api/upload/xlsx/preview',{method:'POST',body:fd});
-  const d=await r.json();
-  if(d.error){toast(d.error,false);return;}
-  showXlsxPreview(d);
+  try {
+    const r=await fetch('/api/upload/xlsx/preview',{method:'POST',body:fd});
+    const d=await r.json();
+    if(!r.ok||d.error){toast(d.error||`서버 오류 (${r.status})`,false);xlsxFile=null;return;}
+    showXlsxPreview(d);
+  } catch(e){
+    toast('업로드 실패 — 네트워크 오류 또는 파일이 너무 큽니다',false);
+    xlsxFile=null;
+  }
 }
 
 function showXlsxPreview(d){
