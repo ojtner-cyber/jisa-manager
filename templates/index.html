@@ -337,6 +337,8 @@ td.center{text-align:center}
       <div class="ph">
         <div><h2>판매처 관리</h2><p>판매처 정보 등록 · 수정 · 조회 (판매현황과 자동 연동)</p></div>
         <div class="ph-r">
+          <button class="btn btn-ghost btn-sm" onclick="document.getElementById('store-xlsx-input').click()" title="지역·담당자·전화번호가 담긴 xlsx 업로드">📋 매장정보 xlsx 업로드</button>
+          <input type="file" id="store-xlsx-input" accept=".xlsx" style="display:none" onchange="uploadStoreInfo(event)">
           <button class="btn btn-ghost btn-sm" onclick="importFromXlsx()" title="업로드된 판매현황에서 판매처 자동 등록">📊 판매현황에서 가져오기</button>
           <button class="btn btn-dark" onclick="openBM()">+ 판매처 추가</button>
         </div>
@@ -372,23 +374,32 @@ td.center{text-align:center}
     <!-- ██ 판매부수 ██ -->
     <div class="page" id="page-sales">
       <div class="ph">
-        <div><h2>판매부수 관리</h2><p>지사별 월별 목표 · 실적 입력</p></div>
+        <div><h2>판매 실적</h2><p>판매현황 데이터 기반 매장별 실적 조회</p></div>
         <div class="ph-r"><select class="ysel" id="sales-year" onchange="loadSalesPage()"></select></div>
       </div>
+
+      <!-- 매장 선택 시 월별 상세 -->
       <div class="fb">
-        <span class="flbl">지사 선택</span>
-        <select class="fs" id="sales-branch" onchange="loadSalesDetail()" style="min-width:200px"><option value="">— 지사를 선택하세요 —</option></select>
-        <button class="btn btn-green-lt btn-sm" onclick="saveSales()" style="margin-left:auto">💾 저장</button>
+        <span class="flbl">매장 선택</span>
+        <select class="fs" id="sales-branch" onchange="loadSalesDetail()" style="min-width:220px">
+          <option value="">— 매장을 선택하면 월별 실적이 표시됩니다 —</option>
+        </select>
       </div>
+
       <div id="sales-input" style="display:none;margin-bottom:20px">
-        <div class="slbl">월별 입력</div>
+        <div class="slbl">월별 실적 (판매현황 자동 집계)</div>
         <div class="mgrid" id="mgrid"></div>
-        <button class="btn btn-dark" onclick="saveSales()">저장하기</button>
       </div>
-      <div class="slbl" style="margin-top:20px">전체 지사 요약</div>
+
+      <div class="slbl" style="margin-top:8px">전체 매장 요약</div>
       <div class="tw">
         <table>
-          <thead><tr><th>지사명</th><th>지역</th><th class="num">목표</th><th class="num">실적</th><th style="min-width:160px">달성률</th><th class="num">차이</th></tr></thead>
+          <thead><tr>
+            <th>매장명</th>
+            <th class="num">판매 건수</th>
+            <th class="num">판매 수량</th>
+            <th class="num">판매 금액</th>
+          </tr></thead>
           <tbody id="sales-tbody"></tbody>
         </table>
       </div>
@@ -459,7 +470,7 @@ td.center{text-align:center}
 
       <div class="cr cr-1-1">
         <div class="cc">
-          <div class="cc-t">🏪 판매처별 TOP 20</div>
+          <div class="cc-t">🏪 판매처별 전체 현황</div>
           <div style="overflow-y:auto;max-height:320px">
             <table style="width:100%;border-collapse:collapse;font-size:12px">
               <thead><tr>
@@ -720,6 +731,28 @@ async function importFromXlsx(){
   loadBranches();
   toast(`✅ 완료! 신규 ${r.added}개 추가, 기존 ${r.updated}개 유지 (총 ${r.total}개 판매처)`);
 }
+
+async function uploadStoreInfo(e){
+  const file=e.target.files[0]; if(!file)return;
+  toast('매장 정보 분석 중...');
+  // 미리보기
+  const fdP=new FormData();fdP.append('file',file);
+  const prev=await fetch('/api/upload/stores?preview=1',{method:'POST',body:fdP});
+  const pd=await prev.json();
+  if(pd.error){toast(pd.error,false);return;}
+
+  if(!confirm(`총 ${pd.count}개 매장 정보를 업로드합니다.\n기존 매장은 전화번호·담당자·주소가 업데이트됩니다.\n계속하시겠습니까?`)){
+    e.target.value='';return;
+  }
+
+  const fd=new FormData();fd.append('file',file);
+  const r=await fetch('/api/upload/stores',{method:'POST',body:fd});
+  const d=await r.json();
+  e.target.value='';
+  if(!d.ok){toast(d.error||'저장 실패',false);return;}
+  loadBranches();
+  toast(`✅ 매장 정보 업로드 완료! 신규 ${d.added}개 추가, ${d.updated}개 업데이트`);
+}
 function openBM(row=null){
   document.getElementById('bm-id').value=row?row.id:'';
   document.getElementById('bm-title').textContent=row?'판매처 수정':'판매처 추가';
@@ -748,36 +781,47 @@ async function delBranch(id,name){
 }
 
 async function loadSalesPage(){
-  const y=document.getElementById('sales-year').value;
-  const branches=await api('/api/branches');if(!branches)return;
-  const sel=document.getElementById('sales-branch'),prev=sel.value;
-  sel.innerHTML='<option value="">— 지사를 선택하세요 —</option>'+branches.map(b=>`<option value="${b.id}">${b.name}</option>`).join('');
+  const year=document.getElementById('sales-year').value;
+  const storeRows=await api(`/api/sales-by-store?year=${year}`);
+  if(!storeRows)return;
+  const sel=document.getElementById('sales-branch');
+  const prev=sel.value;
+  sel.innerHTML='<option value="">— 매장을 선택하면 월별 실적이 표시됩니다 —</option>'+
+    storeRows.map(r=>`<option value="${encodeURIComponent(r.seller_name)}">${r.seller_name}</option>`).join('');
   if(prev)sel.value=prev;
-  const s=await api(`/api/sales?year=${y}`);if(!s)return;
-  const bm={};
-  s.forEach(r=>{if(!bm[r.branch_id])bm[r.branch_id]={name:r.branch_name,region:r.region,target:0,actual:0};bm[r.branch_id].target+=r.target||0;bm[r.branch_id].actual+=r.actual||0;});
-  const tb=document.getElementById('sales-tbody'),rows=Object.values(bm).sort((a,b)=>b.actual-a.actual);
-  if(!rows.length){tb.innerHTML=`<tr><td colspan="6"><div class="empty"><div class="empty-ic">↗</div><p>데이터가 없습니다</p></div></td></tr>`;return;}
-  tb.innerHTML=rows.map(r=>{const p=r.target>0?(r.actual/r.target*100).toFixed(1):null,c=PC(p),d=r.actual-r.target;
-    return `<tr><td class="td-main">${r.name}</td><td><span class="badge b-blue">${r.region||'—'}</span></td><td class="num">${N(r.target)}</td><td class="num">${N(r.actual)}</td><td><div class="prog"><div class="prog-t"><div class="prog-f" style="width:${Math.min(p||0,100)}%;background:${c}"></div></div><span class="prog-p" style="color:${c}">${p!=null?p+'%':'—'}</span></div></td><td class="num" style="color:${d>=0?'var(--green)':'var(--red)'}">${d>=0?'+':''}${N(d)}</td></tr>`;
-  }).join('');
+
+  const tbody=document.getElementById('sales-tbody');
+  if(!storeRows.length){
+    tbody.innerHTML=`<tr><td colspan="4"><div class="empty"><div class="empty-ic">📊</div><p>판매현황 데이터가 없습니다. 엑셀 업로드를 먼저 해주세요.</p></div></td></tr>`;
+    return;
+  }
+  tbody.innerHTML=storeRows.map((r,i)=>`<tr>
+    <td><span style="color:var(--ink-300);margin-right:8px;font-size:11px">${i+1}</span><strong>${r.seller_name}</strong></td>
+    <td class="num">${r.cnt.toLocaleString()}건</td>
+    <td class="num">${(r.qty||0).toLocaleString()}개</td>
+    <td class="num" style="font-weight:700;color:var(--accent-m)">${N(r.total)}원</td>
+  </tr>`).join('');
 }
+
 async function loadSalesDetail(){
-  const bid=document.getElementById('sales-branch').value,y=document.getElementById('sales-year').value;
-  if(!bid){document.getElementById('sales-input').style.display='none';return;}
-  const s=await api(`/api/sales?branch_id=${bid}&year=${y}`);if(!s)return;
-  const mp={};s.forEach(r=>{mp[r.month]={target:r.target,actual:r.actual};});
+  const raw=document.getElementById('sales-branch').value;
+  if(!raw){document.getElementById('sales-input').style.display='none';return;}
+  const seller=decodeURIComponent(raw);
+  const year=document.getElementById('sales-year').value;
+  const rows=await api(`/api/sales-by-store?year=${year}&seller=${encodeURIComponent(seller)}`);
+  if(!rows)return;
+  const map={};rows.forEach(r=>{map[r.month]=r;});
   document.getElementById('sales-input').style.display='block';
-  document.getElementById('mgrid').innerHTML=Array.from({length:12},(_,i)=>{const m=i+1,d=mp[m]||{target:'',actual:''};const p=d.target>0?(d.actual/d.target*100).toFixed(0):null;const c=PC(p);
-    return `<div class="mcell"><div class="mc-l">${m}월</div><div class="mc-s">목표</div><input type="number" id="t-${m}" value="${d.target||''}" placeholder="0" oninput="updP(${m})"><div class="mc-s">실적</div><input type="number" id="a-${m}" value="${d.actual||''}" placeholder="0" oninput="updP(${m})"><div class="mc-p" id="p-${m}" style="color:${c}">${p!=null?p+'%':'—'}</div></div>`;
+  document.getElementById('mgrid').innerHTML=Array.from({length:12},(_,i)=>{
+    const m=i+1,d=map[m]||{actual:0,cnt:0,qty:0};
+    return `<div class="mcell">
+      <div class="mc-l">${m}월</div>
+      <div class="mc-s">판매금액</div>
+      <div style="text-align:right;font-family:var(--fd);font-size:13px;font-weight:600;color:var(--accent-m);padding:4px 0">${N(d.actual)}</div>
+      <div class="mc-s">건수 / 수량</div>
+      <div style="text-align:right;font-size:11px;color:var(--ink-300);padding:2px 0">${d.cnt}건 / ${d.qty||0}개</div>
+    </div>`;
   }).join('');
-}
-function updP(m){const t=parseInt(document.getElementById(`t-${m}`).value)||0,a=parseInt(document.getElementById(`a-${m}`).value)||0,p=t>0?(a/t*100).toFixed(0):null,el=document.getElementById(`p-${m}`);el.textContent=p!=null?p+'%':'—';el.style.color=PC(p);}
-async function saveSales(){
-  const bid=document.getElementById('sales-branch').value,y=document.getElementById('sales-year').value;
-  if(!bid){toast('지사를 선택하세요',false);return;}
-  const rows=Array.from({length:12},(_,i)=>({branch_id:parseInt(bid),year:parseInt(y),month:i+1,target:parseInt(document.getElementById(`t-${i+1}`).value)||0,actual:parseInt(document.getElementById(`a-${i+1}`).value)||0}));
-  await api('/api/sales',{method:'POST',body:rows});loadSalesPage();toast('판매부수가 저장되었습니다');
 }
 
 let UD=[];
@@ -868,7 +912,7 @@ async function loadSalesData(){
   document.getElementById('sd-count').textContent=d.total_count.toLocaleString()+'건';
   document.getElementById('sd-qty').textContent=d.total_quantity.toLocaleString()+'개';
   document.getElementById('sd-total').textContent=N(d.total_amount)+'원';
-  document.getElementById('sd-sellers').textContent=d.by_seller.length+'개';
+  document.getElementById('sd-sellers').textContent=d.seller_count+'개';
 
   Chart.defaults.font.family='DM Sans,Noto Sans KR,sans-serif';
 

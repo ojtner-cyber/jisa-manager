@@ -180,16 +180,17 @@ def api_dashboard():
         monthly.append({"month": m, "target": monthly_target.get(m, 0),
                         "actual": sd_row["actual"] if sd_row else 0})
 
-    # TOP5 판매처 (sales_data 기반)
+    # TOP5 판매처 (real_seller 기준)
     top5 = [dict(r) for r in conn.execute("""
-        SELECT seller_name name, SUM(total) total FROM sales_data
-        WHERE sale_date LIKE ? GROUP BY seller_name ORDER BY total DESC LIMIT 5""",
+        SELECT real_seller name, SUM(total) total FROM sales_data
+        WHERE sale_date LIKE ? AND real_seller != ''
+        GROUP BY real_seller ORDER BY total DESC LIMIT 5""",
         (f"{y}%",)).fetchall()]
 
-    # 지역별 (branches + sales_data 조인)
+    # 지역별 (branches + sales_data 조인 — real_seller 기준)
     region_stats = [dict(r) for r in conn.execute("""
         SELECT b.region, SUM(sd.total) total
-        FROM sales_data sd JOIN branches b ON sd.seller_name=b.name
+        FROM sales_data sd JOIN branches b ON sd.real_seller=b.name
         WHERE sd.sale_date LIKE ?
         GROUP BY b.region ORDER BY total DESC""", (f"{y}%",)).fetchall()]
 
@@ -225,10 +226,10 @@ def api_branches():
     rows = [dict(r) for r in conn.execute(q, params).fetchall()]
     y = datetime.now().year
     for row in rows:
-        # 판매현황(sales_data)에서 실적 연동
+        # 판매현황(sales_data)에서 실적 연동 — real_seller 기준
         sd = conn.execute("""
             SELECT SUM(total) total FROM sales_data
-            WHERE seller_name=? AND sale_date LIKE ?""",
+            WHERE real_seller=? AND sale_date LIKE ?""",
             (row["name"], f"{y}%")).fetchone()
         row["year_actual"] = int(sd["total"] or 0)
     conn.close()
@@ -266,28 +267,199 @@ def api_branches_update(bid):
     conn.commit(); conn.close()
     return jsonify({"ok":True})
 
-# ── 판매처 xlsx 자동 등록 ─────────────────────
+# ── 매장 정보 xlsx 업로드 ─────────────────────
+def parse_region_from_address(addr):
+    """주소에서 지역 추출"""
+    addr = addr or ''
+    region_map = [
+        ('서울', '서울'), ('경기', '경기'), ('인천', '인천'), ('강원', '강원'),
+        ('충북', '충북'), ('충남', '충남'), ('대전', '대전'), ('세종', '세종'),
+        ('경북', '경북'), ('경남', '경남'), ('대구', '대구'), ('부산', '부산'),
+        ('울산', '울산'), ('전북', '전북'), ('전남', '전남'), ('광주', '광주'),
+        ('제주', '제주'),
+    ]
+    for key, region in region_map:
+        if key in addr:
+            return region
+    return ''
+
+@app.route("/api/upload/stores", methods=["POST"])
+@login_required
+def upload_stores():
+    """매장 정보 xlsx 업로드 — E열:실적용거래처명, F열:전화, M열:담당자, N열:주소, B열:업체구분"""
+    import zipfile, xml.etree.ElementTree as ET
+    f = request.files.get("file")
+    if not f: return jsonify({"error": "파일이 없습니다"}), 400
+
+    file_bytes = f.read()
+    stores = []
+    try:
+        with zipfile.ZipFile(io.BytesIO(file_bytes)) as z:
+            strings = []
+            if 'xl/sharedStrings.xml' in z.namelist():
+                sst = z.read('xl/sharedStrings.xml').decode('utf-8')
+                sr = ET.fromstring(sst)
+                ns2 = 'http://schemas.openxmlformats.org/spreadsheetml/2006/main'
+                for si in sr.findall(f'{{{ns2}}}si'):
+                    strings.append(''.join(t.text or '' for t in si.findall(f'.//{{{ns2}}}t')))
+
+            sheet_xml = z.read('xl/worksheets/sheet1.xml').decode('utf-8')
+            root = ET.fromstring(sheet_xml)
+            ns2 = 'http://schemas.openxmlformats.org/spreadsheetml/2006/main'
+
+            def cell_val(cell):
+                t = cell.get('t', '')
+                is_el = cell.find(f'{{{ns2}}}is')
+                v_el  = cell.find(f'{{{ns2}}}v')
+                if is_el is not None:
+                    return ''.join(x.text or '' for x in is_el.findall(f'.//{{{ns2}}}t'))
+                if t == 's' and v_el is not None:
+                    idx = int(v_el.text)
+                    return strings[idx] if idx < len(strings) else ''
+                return v_el.text or '' if v_el is not None else ''
+
+            current_group = ''
+            for row in root.findall(f'.//{{{ns2}}}row'):
+                rnum = int(row.get('r', 0))
+                if rnum < 5: continue  # 헤더 스킵
+
+                vals = {}
+                for c in row.findall(f'{{{ns2}}}c'):
+                    ref = c.get('r', '')
+                    col = ''.join(x for x in ref if x.isalpha())
+                    v = cell_val(c)
+                    if v: vals[col] = v
+
+                # B열에 업체구분이 있으면 그룹 업데이트
+                if 'B' in vals and vals['B'] not in ('업체구분', '※ 오프라인 거래처별 리스트'):
+                    current_group = vals['B']
+
+                name = vals.get('E', '').strip()
+                if not name: continue
+
+                phone   = vals.get('F', '').strip()
+                manager = vals.get('M', '').strip()
+                address = vals.get('N', '').strip()
+                region  = parse_region_from_address(address)
+
+                stores.append({
+                    'name':    name,
+                    'group':   current_group,
+                    'phone':   phone,
+                    'manager': manager,
+                    'address': address,
+                    'region':  region,
+                    'note':    current_group,
+                })
+    except Exception as e:
+        return jsonify({"error": f"파일 파싱 오류: {str(e)}"}), 400
+
+    # preview 모드
+    if request.args.get('preview') == '1':
+        return jsonify({"stores": stores, "count": len(stores)})
+
+    # 저장
+    conn = get_db()
+    added, updated = 0, 0
+    for s in stores:
+        existing = conn.execute("SELECT id FROM branches WHERE name=?", (s['name'],)).fetchone()
+        if existing:
+            conn.execute("""UPDATE branches SET phone=?,manager=?,address=?,region=?,note=?
+                WHERE id=?""", (s['phone'], s['manager'], s['address'], s['region'], s['note'], existing['id']))
+            updated += 1
+        else:
+            conn.execute("""INSERT INTO branches(name,region,manager,phone,address,status,note)
+                VALUES(?,?,?,?,?,?,?)""",
+                (s['name'], s['region'], s['manager'], s['phone'], s['address'], '운영중', s['note']))
+            added += 1
+    conn.commit(); conn.close()
+    return jsonify({"ok": True, "added": added, "updated": updated, "total": len(stores)})
+
+# ── 판매부수 페이지용 — 매장별 sales_data 실적 ──
+@app.route("/api/sales-by-store")
+@login_required
+def api_sales_by_store():
+    """매장별 월별 실적 (sales_data 기반)"""
+    year = request.args.get("year", str(datetime.now().year))
+    seller = request.args.get("seller", "").strip()
+    conn = get_db()
+
+    if seller:
+        # 특정 매장 월별 실적
+        rows = [dict(r) for r in conn.execute("""
+            SELECT CAST(strftime('%m', sale_date) AS INTEGER) month,
+                   SUM(total) actual, COUNT(*) cnt, SUM(quantity) qty
+            FROM sales_data
+            WHERE real_seller=? AND sale_date LIKE ? AND sale_date != ''
+            GROUP BY month ORDER BY month""", (seller, f"{year}%")).fetchall()]
+        conn.close()
+        return jsonify(rows)
+    else:
+        # 전체 매장 요약
+        rows = [dict(r) for r in conn.execute("""
+            SELECT real_seller seller_name,
+                   COUNT(*) cnt, SUM(total) total, SUM(quantity) qty
+            FROM sales_data
+            WHERE sale_date LIKE ? AND real_seller != ''
+            GROUP BY real_seller ORDER BY total DESC""", (f"{year}%",)).fetchall()]
+        conn.close()
+        return jsonify(rows)
+
+# ── 판매현황 — 판매처 수 전체 반환 ──────────────
+@app.route("/api/sales-data/summary")
+@login_required
+def sales_data_summary():
+    conn = get_db()
+    total = conn.execute("SELECT COUNT(*) c, SUM(total) t, SUM(quantity) q FROM sales_data").fetchone()
+    # 전체 판매처 (제한 없음)
+    by_seller = [dict(r) for r in conn.execute("""
+        SELECT real_seller seller_name, COUNT(*) cnt, SUM(quantity) qty, SUM(total) total
+        FROM sales_data WHERE real_seller != ''
+        GROUP BY real_seller ORDER BY total DESC""").fetchall()]
+    by_group = [dict(r) for r in conn.execute("""
+        SELECT item_group, COUNT(*) cnt, SUM(quantity) qty, SUM(total) total
+        FROM sales_data WHERE item_group != '' GROUP BY item_group ORDER BY total DESC""").fetchall()]
+    by_date = [dict(r) for r in conn.execute("""
+        SELECT sale_date, COUNT(*) cnt, SUM(total) total
+        FROM sales_data WHERE sale_date != '' GROUP BY sale_date ORDER BY sale_date""").fetchall()]
+    by_item = [dict(r) for r in conn.execute("""
+        SELECT item_name, SUM(quantity) qty, SUM(total) total
+        FROM sales_data GROUP BY item_name ORDER BY total DESC LIMIT 20""").fetchall()]
+    conn.close()
+    return jsonify({
+        "total_count": total["c"] or 0,
+        "total_amount": total["t"] or 0,
+        "total_quantity": total["q"] or 0,
+        "seller_count": len(by_seller),
+        "by_seller": by_seller,
+        "by_group": by_group,
+        "by_date": by_date,
+        "by_item": by_item,
+    })
+
+# ── xlsx 판매현황 — real_seller 기준으로 저장 ──
 @app.route("/api/branches/from-xlsx", methods=["POST"])
 @login_required
 def branches_from_xlsx():
-    """판매현황 xlsx에서 판매처 목록 자동 추출 & 등록"""
+    """판매현황 xlsx에서 실적용거래처명(real_seller) 기준으로 판매처 등록"""
     conn = get_db()
-    # sales_data에서 고유 판매처명 추출
     sellers = [dict(r) for r in conn.execute("""
-        SELECT seller_name, real_seller, COUNT(*) cnt, SUM(total) total
-        FROM sales_data GROUP BY seller_name ORDER BY seller_name""").fetchall()]
+        SELECT real_seller, COUNT(*) cnt, SUM(total) total
+        FROM sales_data WHERE real_seller != ''
+        GROUP BY real_seller ORDER BY real_seller""").fetchall()]
 
     added, updated = 0, 0
     for s in sellers:
-        name = s["seller_name"]
+        name = s["real_seller"]
         existing = conn.execute("SELECT id FROM branches WHERE name=?", (name,)).fetchone()
         if not existing:
-            conn.execute("""INSERT INTO branches(name,region,manager,phone,email,address,status,note)
-                VALUES(?,?,?,?,?,?,?,?)""", (name,"","","","","","운영중", s["real_seller"] or ""))
+            conn.execute("""INSERT INTO branches(name,region,manager,phone,address,status,note)
+                VALUES(?,?,?,?,?,?,?)""", (name,"","","","","운영중",""))
             added += 1
         else:
             updated += 1
     conn.commit(); conn.close()
+    return jsonify({"ok": True, "added": added, "updated": updated, "total": len(sellers)})
     return jsonify({"ok": True, "added": added, "updated": updated, "total": len(sellers)})
 
 @app.route("/api/branches/<int:bid>", methods=["DELETE"])
@@ -569,40 +741,6 @@ def upload_xlsx_commit():
 
     conn.commit(); conn.close()
     return jsonify({"ok": True, "rows": len(rows), "sellers": len(seller_set), "batch": batch})
-
-# ── 판매현황 조회 API ──────────────────────────
-@app.route("/api/sales-data/summary")
-@login_required
-def sales_data_summary():
-    conn = get_db()
-    # 전체 요약
-    total = conn.execute("SELECT COUNT(*) c, SUM(total) t, SUM(quantity) q FROM sales_data").fetchone()
-    # 판매처별
-    by_seller = [dict(r) for r in conn.execute("""
-        SELECT seller_name, COUNT(*) cnt, SUM(quantity) qty, SUM(total) total
-        FROM sales_data GROUP BY seller_name ORDER BY total DESC LIMIT 20""").fetchall()]
-    # 품목그룹별
-    by_group = [dict(r) for r in conn.execute("""
-        SELECT item_group, COUNT(*) cnt, SUM(quantity) qty, SUM(total) total
-        FROM sales_data WHERE item_group != '' GROUP BY item_group ORDER BY total DESC""").fetchall()]
-    # 일별
-    by_date = [dict(r) for r in conn.execute("""
-        SELECT sale_date, COUNT(*) cnt, SUM(total) total
-        FROM sales_data WHERE sale_date != '' GROUP BY sale_date ORDER BY sale_date""").fetchall()]
-    # 품목별 TOP20
-    by_item = [dict(r) for r in conn.execute("""
-        SELECT item_name, SUM(quantity) qty, SUM(total) total
-        FROM sales_data GROUP BY item_name ORDER BY total DESC LIMIT 20""").fetchall()]
-    conn.close()
-    return jsonify({
-        "total_count": total["c"] or 0,
-        "total_amount": total["t"] or 0,
-        "total_quantity": total["q"] or 0,
-        "by_seller": by_seller,
-        "by_group": by_group,
-        "by_date": by_date,
-        "by_item": by_item,
-    })
 
 @app.route("/api/sellers")
 @login_required
