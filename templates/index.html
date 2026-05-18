@@ -291,7 +291,7 @@ td.center{text-align:center}
     <nav>
       <a onclick="showPage('dashboard')" id="nav-dashboard" class="active"><span class="ni">◫</span>대시보드</a>
       <a onclick="showPage('branches')" id="nav-branches"><span class="ni">⊞</span>판매처 관리</a>
-      <a onclick="showPage('sales')" id="nav-sales"><span class="ni">↗</span>판매부수</a>
+      <a onclick="showPage('sales')" id="nav-sales"><span class="ni">↗</span>판매실적</a>
       <a onclick="showPage('salesdata')" id="nav-salesdata"><span class="ni">★</span>판매현황</a>
       <a onclick="showPage('users')" id="nav-users"><span class="ni">◎</span>권한 관리</a>
     </nav>
@@ -371,37 +371,73 @@ td.center{text-align:center}
       </div>
     </div>
 
-    <!-- ██ 판매부수 ██ -->
+    <!-- ██ 판매실적 ██ -->
     <div class="page" id="page-sales">
       <div class="ph">
-        <div><h2>판매 실적</h2><p>판매현황 데이터 기반 매장별 실적 조회</p></div>
+        <div><h2>판매실적</h2><p>판매현황 데이터 기반 실적 조회</p></div>
         <div class="ph-r"><select class="ysel" id="sales-year" onchange="loadSalesPage()"></select></div>
       </div>
 
-      <!-- 매장 선택 시 월별 상세 -->
-      <div class="fb">
-        <span class="flbl">매장 선택</span>
-        <select class="fs" id="sales-branch" onchange="loadSalesDetail()" style="min-width:220px">
-          <option value="">— 매장을 선택하면 월별 실적이 표시됩니다 —</option>
+      <!-- 탭: 월별 / 주별 -->
+      <div style="display:flex;gap:0;margin-bottom:16px;border-bottom:1.5px solid var(--ink-100)">
+        <button id="tab-monthly" onclick="switchSalesTab('monthly')"
+          style="padding:10px 22px;font-size:13px;font-weight:600;border:none;background:none;cursor:pointer;color:var(--accent-m);border-bottom:2.5px solid var(--accent-m);margin-bottom:-1.5px;font-family:var(--fb)">
+          📅 월별 실적
+        </button>
+        <button id="tab-weekly" onclick="switchSalesTab('weekly')"
+          style="padding:10px 22px;font-size:13px;font-weight:600;border:none;background:none;cursor:pointer;color:var(--ink-300);border-bottom:2.5px solid transparent;margin-bottom:-1.5px;font-family:var(--fb)">
+          📆 주별 실적
+        </button>
+      </div>
+
+      <!-- 매장 필터 -->
+      <div class="fb" style="margin-bottom:14px">
+        <span class="flbl">매장 필터</span>
+        <select class="fs" id="sales-branch" onchange="loadSalesPage()" style="min-width:220px">
+          <option value="">— 전체 매장 —</option>
+        </select>
+        <span class="flbl" style="margin-left:8px">월 선택</span>
+        <select class="fs" id="sales-month" onchange="loadSalesPage()">
+          <option value="">전체</option>
+          <option value="1">1월</option><option value="2">2월</option>
+          <option value="3">3월</option><option value="4">4월</option>
+          <option value="5">5월</option><option value="6">6월</option>
+          <option value="7">7월</option><option value="8">8월</option>
+          <option value="9">9월</option><option value="10">10월</option>
+          <option value="11">11월</option><option value="12">12월</option>
         </select>
       </div>
 
-      <div id="sales-input" style="display:none;margin-bottom:20px">
-        <div class="slbl">월별 실적 (판매현황 자동 집계)</div>
-        <div class="mgrid" id="mgrid"></div>
+      <!-- 월별 탭 -->
+      <div id="sales-monthly-view">
+        <div class="slbl">전체 매장 요약 <span style="font-size:11px;color:var(--ink-300);font-weight:400">(월 클릭 시 품목 세부 확인)</span></div>
+        <div class="tw">
+          <table>
+            <thead><tr>
+              <th>매장명</th>
+              <th class="num">판매 건수</th>
+              <th class="num">판매 수량</th>
+              <th class="num">판매 금액</th>
+            </tr></thead>
+            <tbody id="sales-tbody"></tbody>
+          </table>
+        </div>
       </div>
 
-      <div class="slbl" style="margin-top:8px">전체 매장 요약</div>
-      <div class="tw">
-        <table>
-          <thead><tr>
-            <th>매장명</th>
-            <th class="num">판매 건수</th>
-            <th class="num">판매 수량</th>
-            <th class="num">판매 금액</th>
-          </tr></thead>
-          <tbody id="sales-tbody"></tbody>
-        </table>
+      <!-- 주별 탭 -->
+      <div id="sales-weekly-view" style="display:none">
+        <div class="slbl">주별 판매 현황</div>
+        <div class="tw">
+          <table>
+            <thead><tr>
+              <th>주차</th><th>시작일</th>
+              <th class="num">건수</th>
+              <th class="num">수량</th>
+              <th class="num">금액</th>
+            </tr></thead>
+            <tbody id="weekly-tbody"></tbody>
+          </table>
+        </div>
       </div>
     </div>
 
@@ -780,49 +816,122 @@ async function delBranch(id,name){
   await api(`/api/branches/${id}`,{method:'DELETE'});loadBranches();toast('삭제되었습니다');
 }
 
+let salesTab = 'monthly';
+
+function switchSalesTab(tab){
+  salesTab = tab;
+  const tabs = ['monthly','weekly'];
+  tabs.forEach(t=>{
+    const btn = document.getElementById(`tab-${t}`);
+    if(t===tab){
+      btn.style.color='var(--accent-m)';
+      btn.style.borderBottom='2.5px solid var(--accent-m)';
+    } else {
+      btn.style.color='var(--ink-300)';
+      btn.style.borderBottom='2.5px solid transparent';
+    }
+  });
+  document.getElementById('sales-monthly-view').style.display = tab==='monthly'?'block':'none';
+  document.getElementById('sales-weekly-view').style.display  = tab==='weekly' ?'block':'none';
+  loadSalesPage();
+}
+
 async function loadSalesPage(){
-  const year=document.getElementById('sales-year').value;
-  const storeRows=await api(`/api/sales-by-store?year=${year}`);
-  if(!storeRows)return;
-  const sel=document.getElementById('sales-branch');
-  const prev=sel.value;
-  sel.innerHTML='<option value="">— 매장을 선택하면 월별 실적이 표시됩니다 —</option>'+
+  const year   = document.getElementById('sales-year').value;
+  const month  = document.getElementById('sales-month')?.value || '';
+  const seller = decodeURIComponent(document.getElementById('sales-branch')?.value || '');
+
+  // 매장 셀렉트 채우기
+  const storeRows = await api(`/api/sales-by-store?year=${year}`);
+  if(!storeRows) return;
+  const sel = document.getElementById('sales-branch');
+  const prev = sel.value;
+  sel.innerHTML = '<option value="">— 전체 매장 —</option>' +
     storeRows.map(r=>`<option value="${encodeURIComponent(r.seller_name)}">${r.seller_name}</option>`).join('');
-  if(prev)sel.value=prev;
+  if(prev) sel.value = prev;
 
-  const tbody=document.getElementById('sales-tbody');
-  if(!storeRows.length){
-    tbody.innerHTML=`<tr><td colspan="4"><div class="empty"><div class="empty-ic">📊</div><p>판매현황 데이터가 없습니다. 엑셀 업로드를 먼저 해주세요.</p></div></td></tr>`;
-    return;
+  if(salesTab === 'monthly'){
+    // 월별 테이블
+    const params = new URLSearchParams({year});
+    if(month)  params.set('month',  month);
+    if(seller) params.set('seller', seller);
+    const rows = await api(`/api/sales-by-store?${params}`);
+    if(!rows) return;
+    const tbody = document.getElementById('sales-tbody');
+    if(!rows.length){
+      tbody.innerHTML=`<tr><td colspan="4"><div class="empty"><div class="empty-ic">📊</div><p>판매현황 데이터가 없습니다. 엑셀 업로드를 먼저 해주세요.</p></div></td></tr>`;
+      return;
+    }
+    tbody.innerHTML = rows.map((r,i)=>`<tr style="cursor:pointer" onclick="openMonthDetail('${r.seller_name}','${year}','${month}')" title="클릭하면 품목 세부 확인">
+      <td><span style="color:var(--ink-300);margin-right:8px;font-size:11px">${i+1}</span>
+        <strong>${r.seller_name}</strong>
+        <span style="font-size:11px;color:var(--accent-m);margin-left:6px">↗</span>
+      </td>
+      <td class="num">${r.cnt.toLocaleString()}건</td>
+      <td class="num">${(r.qty||0).toLocaleString()}개</td>
+      <td class="num" style="font-weight:700;color:var(--accent-m)">${N(r.total)}원</td>
+    </tr>`).join('');
+  } else {
+    // 주별 테이블
+    const params = new URLSearchParams({year});
+    if(month) params.set('month', month);
+    const rows = await api(`/api/sales-data/weekly?${params}`);
+    if(!rows) return;
+    const tbody = document.getElementById('weekly-tbody');
+    if(!rows.length){
+      tbody.innerHTML=`<tr><td colspan="5"><div class="empty"><div class="empty-ic">📆</div><p>데이터가 없습니다</p></div></td></tr>`;
+      return;
+    }
+    tbody.innerHTML = rows.map((r,i)=>`<tr>
+      <td><strong>${i+1}주차</strong> <span style="color:var(--ink-300);font-size:11px">(${r.week_num}주)</span></td>
+      <td style="color:var(--ink-300)">${r.week_start||'—'}</td>
+      <td class="num">${r.cnt.toLocaleString()}건</td>
+      <td class="num">${(r.qty||0).toLocaleString()}개</td>
+      <td class="num" style="font-weight:700;color:var(--accent-m)">${N(r.total)}원</td>
+    </tr>`).join('');
   }
-  tbody.innerHTML=storeRows.map((r,i)=>`<tr>
-    <td><span style="color:var(--ink-300);margin-right:8px;font-size:11px">${i+1}</span><strong>${r.seller_name}</strong></td>
-    <td class="num">${r.cnt.toLocaleString()}건</td>
-    <td class="num">${(r.qty||0).toLocaleString()}개</td>
-    <td class="num" style="font-weight:700;color:var(--accent-m)">${N(r.total)}원</td>
-  </tr>`).join('');
 }
 
-async function loadSalesDetail(){
-  const raw=document.getElementById('sales-branch').value;
-  if(!raw){document.getElementById('sales-input').style.display='none';return;}
-  const seller=decodeURIComponent(raw);
-  const year=document.getElementById('sales-year').value;
-  const rows=await api(`/api/sales-by-store?year=${year}&seller=${encodeURIComponent(seller)}`);
-  if(!rows)return;
-  const map={};rows.forEach(r=>{map[r.month]=r;});
-  document.getElementById('sales-input').style.display='block';
-  document.getElementById('mgrid').innerHTML=Array.from({length:12},(_,i)=>{
-    const m=i+1,d=map[m]||{actual:0,cnt:0,qty:0};
-    return `<div class="mcell">
-      <div class="mc-l">${m}월</div>
-      <div class="mc-s">판매금액</div>
-      <div style="text-align:right;font-family:var(--fd);font-size:13px;font-weight:600;color:var(--accent-m);padding:4px 0">${N(d.actual)}</div>
-      <div class="mc-s">건수 / 수량</div>
-      <div style="text-align:right;font-size:11px;color:var(--ink-300);padding:2px 0">${d.cnt}건 / ${d.qty||0}개</div>
+async function openMonthDetail(seller, year, month){
+  const params = new URLSearchParams({year});
+  if(month)  params.set('month', month);
+  if(seller) params.set('seller', seller);
+  const d = await api(`/api/sales-data/monthly-detail?${params}`);
+  if(!d) return;
+
+  const title = `${seller || '전체'} — ${year}년 ${month ? month+'월' : '전체'} 품목 현황`;
+  document.getElementById('detail-title').textContent = title;
+
+  // 요약 카드
+  document.getElementById('detail-summary-cards').innerHTML = `
+    <div style="flex:1;background:var(--ink-50);border-radius:var(--r-md);padding:12px 16px">
+      <div style="font-size:10px;font-weight:700;color:var(--ink-300);letter-spacing:.5px;text-transform:uppercase;margin-bottom:4px">총 건수</div>
+      <div style="font-size:20px;font-weight:700;color:var(--ink-900)">${(d.summary.cnt||0).toLocaleString()}건</div>
+    </div>
+    <div style="flex:1;background:var(--ink-50);border-radius:var(--r-md);padding:12px 16px">
+      <div style="font-size:10px;font-weight:700;color:var(--ink-300);letter-spacing:.5px;text-transform:uppercase;margin-bottom:4px">총 수량</div>
+      <div style="font-size:20px;font-weight:700;color:var(--ink-900)">${(d.summary.qty||0).toLocaleString()}개</div>
+    </div>
+    <div style="flex:1;background:var(--accent-lt);border-radius:var(--r-md);padding:12px 16px">
+      <div style="font-size:10px;font-weight:700;color:var(--accent);letter-spacing:.5px;text-transform:uppercase;margin-bottom:4px">총 금액</div>
+      <div style="font-size:20px;font-weight:700;color:var(--accent-m)">${N(d.summary.total)}원</div>
     </div>`;
-  }).join('');
+
+  // 품목 테이블
+  const td = 'padding:9px 12px;border-bottom:1px solid rgba(0,0,0,.04)';
+  document.getElementById('detail-tbody').innerHTML = d.items.map((r,i)=>`<tr>
+    <td style="${td};color:var(--ink-300)">${i+1}</td>
+    <td style="${td};font-weight:600;max-width:200px;overflow:hidden;text-overflow:ellipsis">${r.item_name}</td>
+    <td style="${td}"><span class="badge b-blue" style="font-size:10px">${r.item_group||'—'}</span></td>
+    <td style="${td};text-align:right;font-weight:600">${(r.qty||0).toLocaleString()}</td>
+    <td style="${td};text-align:right;color:var(--ink-300)">${N(Math.round(r.avg_price||0))}</td>
+    <td style="${td};text-align:right;font-weight:700;color:var(--accent-m)">${N(r.total)}원</td>
+  </tr>`).join('');
+
+  document.getElementById('detail-ov').classList.add('open');
 }
+
+async function loadSalesDetail(){ /* 하위 호환성 유지 */ }
 
 let UD=[];
 async function loadUsers(){
@@ -878,15 +987,20 @@ async function processXlsx(file){
 
 function showXlsxPreview(d){
   document.getElementById('xlsx-ov').classList.add('open');
-  document.getElementById('xlsx-count').textContent=`총 ${d.count.toLocaleString()}건 / 판매처 ${d.seller_count}개`;
-  document.getElementById('xlsx-range').textContent=`기간: ${d.date_range.from} ~ ${d.date_range.to}`;
+  const existingNote = d.existing_months && d.existing_months.length > 0
+    ? `<span style="color:var(--amber);font-size:12px">⚠️ 기존 데이터가 있는 월: ${d.existing_months.join(', ')} → 해당 월 데이터가 교체됩니다</span>`
+    : `<span style="color:var(--green);font-size:12px">✅ 새 월 데이터 — 기존 데이터에 누적됩니다</span>`;
 
-  const tbody=document.getElementById('xlsx-seller-preview');
-  tbody.innerHTML=d.sellers.slice(0,15).map((s,i)=>`<tr style="border-bottom:1px solid rgba(0,0,0,.04)">
+  document.getElementById('xlsx-count').innerHTML =
+    `총 <strong>${d.count.toLocaleString()}건</strong> · 판매처 ${d.seller_count}개 · 기간: ${d.date_range.from} ~ ${d.date_range.to}<br>${existingNote}`;
+  document.getElementById('xlsx-range').textContent = `업로드 월: ${(d.months||[]).join(', ')}`;
+
+  const tbody = document.getElementById('xlsx-seller-preview');
+  tbody.innerHTML = d.sellers.slice(0,15).map((s,i)=>`<tr style="border-bottom:1px solid rgba(0,0,0,.04)">
     <td style="padding:8px 12px;font-weight:600">${i+1}</td>
     <td style="padding:8px 12px;font-weight:600">${s.name}</td>
-    <td style="padding:8px 12px;color:var(--ink-300)">${s.real_name||'—'}</td>
     <td style="padding:8px 12px;text-align:right">${s.count}</td>
+    <td style="padding:8px 12px;text-align:right">${(s.qty||0).toLocaleString()}</td>
     <td style="padding:8px 12px;text-align:right;font-weight:600;color:var(--accent-m)">${N(s.total)}원</td>
   </tr>`).join('');
 }
@@ -900,7 +1014,8 @@ async function confirmXlsx(){
   if(!d.ok){toast(d.error||'저장 실패',false);return;}
   document.getElementById('xlsx-ov').classList.remove('open');
   xlsxFile=null;
-  toast(`✅ ${d.rows.toLocaleString()}건 저장 완료 (판매처 ${d.sellers}개 등록)`);
+  const monthsStr = (d.months||[]).join(', ');
+  toast(`✅ ${d.rows.toLocaleString()}건 저장 완료 (${monthsStr})`);
   showPage('salesdata');
 }
 
@@ -1038,21 +1153,51 @@ function cancelUpload(){
         <table style="width:100%;border-collapse:collapse;font-size:12px">
           <thead><tr style="background:var(--ink-50);position:sticky;top:0">
             <th style="padding:8px 12px;text-align:left;font-size:10px;font-weight:700;color:var(--ink-300);text-transform:uppercase">#</th>
-            <th style="padding:8px 12px;text-align:left;font-size:10px;font-weight:700;color:var(--ink-300);text-transform:uppercase">판매처명</th>
-            <th style="padding:8px 12px;text-align:left;font-size:10px;font-weight:700;color:var(--ink-300);text-transform:uppercase">실적용거래처</th>
+            <th style="padding:8px 12px;text-align:left;font-size:10px;font-weight:700;color:var(--ink-300);text-transform:uppercase">판매처명(실적용)</th>
             <th style="padding:8px 12px;text-align:right;font-size:10px;font-weight:700;color:var(--ink-300);text-transform:uppercase">건수</th>
+            <th style="padding:8px 12px;text-align:right;font-size:10px;font-weight:700;color:var(--ink-300);text-transform:uppercase">수량</th>
             <th style="padding:8px 12px;text-align:right;font-size:10px;font-weight:700;color:var(--ink-300);text-transform:uppercase">금액</th>
           </tr></thead>
           <tbody id="xlsx-seller-preview"></tbody>
         </table>
       </div>
-      <div style="font-size:12px;color:var(--red);background:var(--red-lt);border-radius:var(--r-md);padding:10px 14px;margin-top:12px">
-        ⚠️ 저장 시 기존 판매현황 데이터가 모두 삭제되고 새 데이터로 교체됩니다.
+      <div style="font-size:12px;color:var(--amber);background:var(--amber-lt);border-radius:var(--r-md);padding:10px 14px;margin-top:12px">
+        ⚠️ 같은 월의 기존 데이터는 교체되고, 다른 월 데이터는 유지됩니다 (누적 저장)
       </div>
     </div>
     <div class="mf">
       <button class="btn btn-ghost" onclick="document.getElementById('xlsx-ov').classList.remove('open')">취소</button>
       <button class="btn btn-dark" onclick="confirmXlsx()">✅ 저장하기</button>
+    </div>
+  </div>
+</div>
+
+<!-- ══ 품목 세부 모달 ══ -->
+<div class="ov" id="detail-ov">
+  <div class="modal" style="width:680px">
+    <div class="mh">
+      <h3 id="detail-title">품목 세부 현황</h3>
+      <button class="mc" onclick="document.getElementById('detail-ov').classList.remove('open')">✕</button>
+    </div>
+    <div class="mb">
+      <div style="display:flex;gap:12px;margin-bottom:16px" id="detail-summary-cards"></div>
+      <div style="font-size:11px;font-weight:700;color:var(--ink-300);letter-spacing:.5px;text-transform:uppercase;margin-bottom:8px">품목별 판매 내역</div>
+      <div style="overflow-y:auto;max-height:400px;border:1px solid var(--ink-100);border-radius:var(--r-md)">
+        <table style="width:100%;border-collapse:collapse;font-size:12px">
+          <thead><tr style="background:var(--ink-50);position:sticky;top:0">
+            <th style="padding:9px 12px;text-align:left;font-size:10px;font-weight:700;color:var(--ink-300);text-transform:uppercase">#</th>
+            <th style="padding:9px 12px;text-align:left;font-size:10px;font-weight:700;color:var(--ink-300);text-transform:uppercase">품목명</th>
+            <th style="padding:9px 12px;text-align:left;font-size:10px;font-weight:700;color:var(--ink-300);text-transform:uppercase">그룹</th>
+            <th style="padding:9px 12px;text-align:right;font-size:10px;font-weight:700;color:var(--ink-300);text-transform:uppercase">수량</th>
+            <th style="padding:9px 12px;text-align:right;font-size:10px;font-weight:700;color:var(--ink-300);text-transform:uppercase">평균단가</th>
+            <th style="padding:9px 12px;text-align:right;font-size:10px;font-weight:700;color:var(--ink-300);text-transform:uppercase">합계</th>
+          </tr></thead>
+          <tbody id="detail-tbody"></tbody>
+        </table>
+      </div>
+    </div>
+    <div class="mf">
+      <button class="btn btn-ghost" onclick="document.getElementById('detail-ov').classList.remove('open')">닫기</button>
     </div>
   </div>
 </div>

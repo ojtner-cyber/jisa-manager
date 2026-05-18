@@ -10,11 +10,10 @@ from functools import wraps
 app = Flask(__name__)
 app.secret_key = os.environ.get("SECRET_KEY", "jisa-manager-secret-2025")
 
-# Render 환경: /opt/render/project/src 하위에 data 폴더 사용 (영구 디스크 마운트 시)
-# 로컬: 스크립트와 같은 폴더
-_base = os.environ.get("DATA_DIR", os.path.dirname(os.path.abspath(__file__)))
-DB_FILE   = os.path.join(_base, "jisa.db")
-GOAL_FILE = os.path.join(_base, "sales_goals.json")
+# Render Disk 마운트 경로 우선 사용 → 없으면 스크립트 폴더
+_data_dir = "/data" if os.path.isdir("/data") else os.path.dirname(os.path.abspath(__file__))
+DB_FILE   = os.path.join(_data_dir, "jisa.db")
+GOAL_FILE = os.path.join(_data_dir, "sales_goals.json")
 
 REGIONS = ["서울","경기","인천","강원","충북","충남","대전","세종","경북","경남","대구","부산","울산","전북","전남","광주","제주"]
 
@@ -595,21 +594,19 @@ def api_me():
 
 # ── 엑셀(.xlsx) 판매현황 업로드 ───────────────
 def parse_xlsx_sales(file_bytes):
-    """ZIP 기반으로 xlsx 직접 파싱 (스타일 오류 무시)"""
+    """xlsx 파싱 — 수량 -1 제외, 특이사항 '교환' 제외, 베이비하우스 본사 → 수취인으로 매장 파악"""
     import zipfile, xml.etree.ElementTree as ET, re
     from datetime import datetime as dt
 
     results = []
     with zipfile.ZipFile(io.BytesIO(file_bytes)) as z:
-        # 공유문자열
         strings = []
         if 'xl/sharedStrings.xml' in z.namelist():
             sst = z.read('xl/sharedStrings.xml').decode('utf-8')
             sst_root = ET.fromstring(sst)
             ns2 = 'http://schemas.openxmlformats.org/spreadsheetml/2006/main'
             for si in sst_root.findall(f'{{{ns2}}}si'):
-                t_els = si.findall(f'.//{{{ns2}}}t')
-                strings.append(''.join(t.text or '' for t in t_els))
+                strings.append(''.join(t.text or '' for t in si.findall(f'.//{{{ns2}}}t')))
 
         sheet_xml = z.read('xl/worksheets/sheet1.xml').decode('utf-8')
         root = ET.fromstring(sheet_xml)
@@ -617,7 +614,7 @@ def parse_xlsx_sales(file_bytes):
 
         for row in root.findall(f'.//{{{ns2}}}row'):
             rnum = int(row.get('r', 0))
-            if rnum <= 2: continue  # 헤더 행 스킵
+            if rnum <= 2: continue
 
             row_vals = {}
             for cell in row.findall(f'{{{ns2}}}c'):
@@ -625,11 +622,10 @@ def parse_xlsx_sales(file_bytes):
                 col = ''.join(c for c in ref if c.isalpha())
                 t = cell.get('t', '')
                 is_el = cell.find(f'{{{ns2}}}is')
-                v_el = cell.find(f'{{{ns2}}}v')
+                v_el  = cell.find(f'{{{ns2}}}v')
                 val = ''
                 if is_el is not None:
-                    t_els = is_el.findall(f'.//{{{ns2}}}t')
-                    val = ''.join(x.text or '' for x in t_els)
+                    val = ''.join(x.text or '' for x in is_el.findall(f'.//{{{ns2}}}t'))
                 elif t == 's' and v_el is not None:
                     idx = int(v_el.text)
                     val = strings[idx] if idx < len(strings) else ''
@@ -639,9 +635,22 @@ def parse_xlsx_sales(file_bytes):
                     row_vals[col] = val
 
             if not row_vals.get('C'):
-                continue  # 판매처명 없으면 스킵
+                continue
 
-            # 일자 파싱 (2026/05/03 -5 형태)
+            # 수량 파싱 및 -1 제외
+            try:
+                qty = int(float(row_vals.get('I', 0) or 0))
+            except:
+                qty = 0
+            if qty <= 0:
+                continue  # 수량 -1 또는 0 제외
+
+            # 특이사항(P열)에 '교환' 포함 시 제외
+            note = row_vals.get('P', '').strip()
+            if '교환' in note:
+                continue
+
+            # 일자 파싱
             raw_date = row_vals.get('B', '')
             sale_date = re.sub(r'\s*-\d+$', '', raw_date).strip()
             try:
@@ -650,20 +659,30 @@ def parse_xlsx_sales(file_bytes):
             except:
                 sale_date = ''
 
+            # 실적용거래처명(AE열) 처리
+            real_seller = row_vals.get('AE', '').strip()
+            buyer       = row_vals.get('D', '').strip()
+
+            # 베이비하우스 본사 → 수취인(D열)으로 매장 파악
+            if real_seller == '베이비하우스 본사' and buyer:
+                # 수취인에서 매장명 추출 (예: "베이비하우스_영통점 홍길동" → "베이비하우스_영통점")
+                real_seller = buyer.split()[0] if buyer else real_seller
+
             results.append({
                 'sale_date':    sale_date,
                 'seller_name':  row_vals.get('C', '').strip(),
                 'item_code':    row_vals.get('G', '').strip(),
                 'item_name':    row_vals.get('H', '').strip(),
                 'item_group':   row_vals.get('AA', '').strip(),
-                'quantity':     int(float(row_vals.get('I', 1) or 1)),
+                'quantity':     qty,
                 'unit_price':   int(float(row_vals.get('K', 0) or 0)),
                 'supply_price': int(float(row_vals.get('L', 0) or 0)),
                 'vat':          int(float(row_vals.get('M', 0) or 0)),
                 'total':        int(float(row_vals.get('N', 0) or 0)),
-                'buyer':        row_vals.get('D', '').strip(),
+                'buyer':        buyer,
                 'buyer_phone':  row_vals.get('E', '').strip(),
-                'real_seller':  row_vals.get('AE', '').strip(),
+                'real_seller':  real_seller,
+                'note':         note,
             })
     return results
 
@@ -677,25 +696,42 @@ def upload_xlsx_preview():
     except Exception as e:
         return jsonify({"error": f"파일 파싱 오류: {str(e)}"}), 400
 
-    # 판매처 목록 추출
+    # 날짜 범위
+    dates = [r['sale_date'] for r in rows if r['sale_date']]
+    d_from = min(dates, default='')
+    d_to   = max(dates, default='')
+
+    # 기간 파악 (월 단위)
+    months = sorted(set(d[:7] for d in dates if d))
+
+    # real_seller 기준 집계
     sellers = {}
     for r in rows:
-        name = r['seller_name']
+        name = r['real_seller'] or r['seller_name']
         if name not in sellers:
-            sellers[name] = {'count': 0, 'total': 0, 'real_name': r.get('real_seller', '')}
+            sellers[name] = {'count': 0, 'total': 0, 'qty': 0}
         sellers[name]['count'] += 1
         sellers[name]['total'] += r['total']
+        sellers[name]['qty']   += r['quantity']
+
+    # 이미 저장된 해당 월 데이터 여부 확인
+    conn = get_db()
+    existing_months = []
+    for m in months:
+        cnt = conn.execute("SELECT COUNT(*) FROM sales_data WHERE sale_date LIKE ?",
+                           (f"{m}%",)).fetchone()[0]
+        if cnt > 0:
+            existing_months.append(m)
+    conn.close()
 
     return jsonify({
         "count": len(rows),
         "seller_count": len(sellers),
-        "sellers": [{"name": k, "count": v['count'], "total": v['total'],
-                     "real_name": v['real_name']} for k, v in sorted(sellers.items())],
-        "sample": rows[:5],
-        "date_range": {
-            "from": min((r['sale_date'] for r in rows if r['sale_date']), default=''),
-            "to":   max((r['sale_date'] for r in rows if r['sale_date']), default=''),
-        }
+        "months": months,
+        "existing_months": existing_months,
+        "sellers": [{"name": k, "count": v['count'], "total": v['total'], "qty": v['qty']}
+                    for k, v in sorted(sellers.items(), key=lambda x: -x[1]['total'])],
+        "date_range": {"from": d_from, "to": d_to},
     })
 
 @app.route("/api/upload/xlsx/commit", methods=["POST"])
@@ -708,39 +744,29 @@ def upload_xlsx_commit():
     except Exception as e:
         return jsonify({"error": str(e)}), 400
 
+    overwrite = request.form.get("overwrite", "0") == "1"
     batch = datetime.now().strftime("%Y%m%d%H%M%S")
     conn = get_db()
 
-    # 기존 데이터 삭제 (전체 덮어쓰기)
-    conn.execute("DELETE FROM sales_data")
-    conn.execute("DELETE FROM sellers")
-
-    # 판매처 등록
-    seller_set = {}
-    for r in rows:
-        name = r['seller_name']
-        if name not in seller_set:
-            seller_set[name] = {'total': 0, 'count': 0, 'real_name': r.get('real_seller', '')}
-        seller_set[name]['total'] += r['total']
-        seller_set[name]['count'] += 1
-
-    today = date.today().isoformat()
-    for name, info in seller_set.items():
-        conn.execute("""INSERT OR IGNORE INTO sellers(name, real_name, first_seen, total_sales)
-                        VALUES(?,?,?,?)""", (name, info['real_name'], today, info['total']))
+    # 해당 월 데이터만 교체 (누적 방식)
+    dates = [r['sale_date'] for r in rows if r['sale_date']]
+    months = sorted(set(d[:7] for d in dates if d))
+    for m in months:
+        conn.execute("DELETE FROM sales_data WHERE sale_date LIKE ?", (f"{m}%",))
 
     # 판매 데이터 저장
     for r in rows:
         conn.execute("""INSERT INTO sales_data
             (sale_date,seller_name,item_code,item_name,item_group,quantity,
-             unit_price,supply_price,vat,total,buyer,buyer_phone,real_seller,upload_batch)
-            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+             unit_price,supply_price,vat,total,buyer,buyer_phone,real_seller,upload_batch,note)
+            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (r['sale_date'], r['seller_name'], r['item_code'], r['item_name'],
              r['item_group'], r['quantity'], r['unit_price'], r['supply_price'],
-             r['vat'], r['total'], r['buyer'], r['buyer_phone'], r['real_seller'], batch))
+             r['vat'], r['total'], r['buyer'], r['buyer_phone'],
+             r['real_seller'], batch, r.get('note', '')))
 
     conn.commit(); conn.close()
-    return jsonify({"ok": True, "rows": len(rows), "sellers": len(seller_set), "batch": batch})
+    return jsonify({"ok": True, "rows": len(rows), "months": months, "batch": batch})
 
 @app.route("/api/sellers")
 @login_required
@@ -750,6 +776,64 @@ def api_sellers():
         "SELECT * FROM sellers ORDER BY total_sales DESC").fetchall()]
     conn.close()
     return jsonify(rows)
+
+# ── 주별 실적 API ──────────────────────────────
+@app.route("/api/sales-data/weekly")
+@login_required
+def sales_data_weekly():
+    year  = request.args.get("year",  str(datetime.now().year))
+    month = request.args.get("month", "")
+    conn  = get_db()
+    if month:
+        where = f"sale_date LIKE '{year}-{month.zfill(2)}%'"
+    else:
+        where = f"sale_date LIKE '{year}%'"
+
+    rows = [dict(r) for r in conn.execute(f"""
+        SELECT
+            strftime('%W', sale_date) week_num,
+            strftime('%Y-%m-%d', sale_date, 'weekday 1', '-6 days') week_start,
+            COUNT(*) cnt, SUM(quantity) qty, SUM(total) total
+        FROM sales_data
+        WHERE {where} AND sale_date != ''
+        GROUP BY week_num ORDER BY week_num""").fetchall()]
+    conn.close()
+    return jsonify(rows)
+
+# ── 월별 세부 품목 API ─────────────────────────
+@app.route("/api/sales-data/monthly-detail")
+@login_required
+def sales_monthly_detail():
+    year   = request.args.get("year",   str(datetime.now().year))
+    month  = request.args.get("month",  "")
+    seller = request.args.get("seller", "").strip()
+    conn   = get_db()
+
+    params = [f"{year}-{month.zfill(2)}%"] if month else [f"{year}%"]
+    where  = "sale_date LIKE ?"
+    if seller:
+        where  += " AND real_seller=?"
+        params.append(seller)
+
+    # 품목별 집계
+    items = [dict(r) for r in conn.execute(f"""
+        SELECT item_name, item_code, item_group,
+               SUM(quantity) qty, AVG(unit_price) avg_price, SUM(total) total, COUNT(*) cnt
+        FROM sales_data
+        WHERE {where} AND sale_date != ''
+        GROUP BY item_name ORDER BY total DESC""", params).fetchall()]
+
+    # 요약
+    summary = conn.execute(f"""
+        SELECT COUNT(*) cnt, SUM(quantity) qty, SUM(total) total
+        FROM sales_data WHERE {where} AND sale_date != ''""", params).fetchone()
+
+    conn.close()
+    return jsonify({
+        "items": items,
+        "summary": dict(summary),
+        "year": year, "month": month, "seller": seller
+    })
 
 # ── 엑셀 템플릿 다운로드 ───────────────────────
 @app.route("/api/template/branches")
