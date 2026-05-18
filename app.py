@@ -72,6 +72,7 @@ def init_db():
         buyer_phone TEXT,
         real_seller TEXT,
         upload_batch TEXT,
+        note TEXT DEFAULT '',
         created_at TEXT DEFAULT CURRENT_TIMESTAMP)""")
     conn.execute("""CREATE TABLE IF NOT EXISTS sellers (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -80,6 +81,16 @@ def init_db():
         first_seen TEXT,
         total_sales INTEGER DEFAULT 0,
         created_at TEXT DEFAULT CURRENT_TIMESTAMP)""")
+
+    # ── 기존 DB 마이그레이션 (컬럼 누락 시 자동 추가) ──
+    try:
+        existing_cols = [r[1] for r in conn.execute("PRAGMA table_info(sales_data)").fetchall()]
+        if 'note' not in existing_cols:
+            conn.execute("ALTER TABLE sales_data ADD COLUMN note TEXT DEFAULT ''")
+        if 'upload_batch' not in existing_cols:
+            conn.execute("ALTER TABLE sales_data ADD COLUMN upload_batch TEXT DEFAULT ''")
+    except Exception:
+        pass
     # 기본 계정 생성
     conn.execute("INSERT OR IGNORE INTO users(email,password,name,role) VALUES(?,?,?,?)",
         ("test@visang.com","visang123!","관리자","admin"))
