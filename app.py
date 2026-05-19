@@ -279,6 +279,59 @@ def parse_region_from_address(addr):
             return region
     return ''
 
+def detect_region_from_name(name):
+    """매장명에서 지역 자동 추출"""
+    name = name or ''
+    region_keywords = [
+        # 특별시/광역시
+        ('서울', '서울'), ('강남', '서울'), ('강북', '서울'), ('강서', '서울'),
+        ('강동', '서울'), ('마포', '서울'), ('용산', '서울'), ('성북', '서울'),
+        ('송파', '서울'), ('노원', '서울'), ('은평', '서울'), ('도봉', '서울'),
+        ('관악', '서울'), ('동작', '서울'), ('영등포', '서울'), ('구로', '서울'),
+        ('금천', '서울'), ('양천', '서울'), ('마곡', '서울'), ('목동', '서울'),
+        ('부산', '부산'), ('해운대', '부산'), ('동래', '부산'), ('사하', '부산'),
+        ('연제', '부산'), ('수영', '부산'), ('금정', '부산'), ('남구', '부산'),
+        ('대구', '대구'), ('달성', '대구'), ('수성', '대구'), ('달서', '대구'),
+        ('인천', '인천'), ('부평', '인천'), ('송도', '인천'), ('계양', '인천'),
+        ('광주', '광주'), ('북구', '광주'), ('서구', '광주'),
+        ('대전', '대전'), ('유성', '대전'), ('서대전', '대전'),
+        ('울산', '울산'),
+        ('세종', '세종'),
+        # 경기
+        ('수원', '경기'), ('성남', '경기'), ('고양', '경기'), ('용인', '경기'),
+        ('부천', '경기'), ('안산', '경기'), ('안양', '경기'), ('남양주', '경기'),
+        ('화성', '경기'), ('평택', '경기'), ('의정부', '경기'), ('시흥', '경기'),
+        ('파주', '경기'), ('김포', '경기'), ('광명', '경기'), ('광주', '경기'),
+        ('군포', '경기'), ('하남', '경기'), ('오산', '경기'), ('이천', '경기'),
+        ('양주', '경기'), ('구리', '경기'), ('안성', '경기'), ('포천', '경기'),
+        ('의왕', '경기'), ('여주', '경기'), ('동두천', '경기'), ('과천', '경기'),
+        ('가평', '경기'), ('양평', '경기'), ('연천', '경기'), ('영통', '경기'),
+        ('동탄', '경기'), ('판교', '경기'), ('분당', '경기'), ('일산', '경기'),
+        ('서수원', '경기'), ('다산', '경기'), ('미사', '경기'),
+        # 강원
+        ('강원', '강원'), ('춘천', '강원'), ('원주', '강원'), ('강릉', '강원'),
+        ('속초', '강원'), ('동해', '강원'), ('삼척', '강원'), ('태백', '강원'),
+        # 충청
+        ('청주', '충북'), ('충주', '충북'), ('제천', '충북'),
+        ('천안', '충남'), ('아산', '충남'), ('서산', '충남'), ('당진', '충남'),
+        ('홍성', '충남'), ('공주', '충남'), ('보령', '충남'),
+        # 전라
+        ('전주', '전북'), ('익산', '전북'), ('군산', '전북'), ('완주', '전북'),
+        ('목포', '전남'), ('여수', '전남'), ('순천', '전남'), ('나주', '전남'),
+        ('광양', '전남'),
+        # 경상
+        ('포항', '경북'), ('경주', '경북'), ('구미', '경북'), ('안동', '경북'),
+        ('영천', '경북'), ('경산', '경북'),
+        ('창원', '경남'), ('진주', '경남'), ('김해', '경남'), ('양산', '경남'),
+        ('거제', '경남'), ('통영', '경남'), ('밀양', '경남'),
+        # 제주
+        ('제주', '제주'), ('서귀포', '제주'),
+    ]
+    for keyword, region in region_keywords:
+        if keyword in name:
+            return region
+    return ''
+
 @app.route("/api/upload/stores", methods=["POST"])
 @login_required
 def upload_stores():
@@ -453,12 +506,17 @@ def branches_from_xlsx():
     added, updated = 0, 0
     for s in sellers:
         name = s["real_seller"]
+        region = detect_region_from_name(name)
         existing = conn.execute("SELECT id FROM branches WHERE name=?", (name,)).fetchone()
         if not existing:
             conn.execute("""INSERT INTO branches(name,region,manager,phone,address,status,note)
-                VALUES(?,?,?,?,?,?,?)""", (name,"","","","","운영중",""))
+                VALUES(?,?,?,?,?,?,?)""", (name, region,"","","","운영중",""))
             added += 1
         else:
+            # 지역이 비어있으면 자동 채우기
+            if region:
+                conn.execute("UPDATE branches SET region=? WHERE id=? AND (region='' OR region IS NULL)",
+                             (region, existing["id"]))
             updated += 1
     conn.commit(); conn.close()
     return jsonify({"ok": True, "added": added, "updated": updated, "total": len(sellers)})
@@ -801,10 +859,9 @@ def api_sellers():
 @app.route("/api/admin/normalize-sellers", methods=["POST"])
 @login_required
 def normalize_sellers():
-    """기존 sales_data의 real_seller 언더바를 공백으로 정규화"""
+    """sales_data의 real_seller 언더바→공백 정규화 + 지역 자동 배정"""
     conn = get_db()
-    # 언더바가 있는 real_seller 모두 수정
-    rows = conn.execute("SELECT DISTINCT real_seller FROM sales_data WHERE real_seller LIKE '%_%'").fetchall()
+    rows = conn.execute("SELECT DISTINCT real_seller FROM sales_data WHERE real_seller != ''").fetchall()
     updated = 0
     for r in rows:
         old = r[0]
@@ -812,8 +869,71 @@ def normalize_sellers():
         if old != new:
             conn.execute("UPDATE sales_data SET real_seller=? WHERE real_seller=?", (new, old))
             updated += 1
+    # branches 지역 자동 배정
+    branches = conn.execute("SELECT id, name FROM branches WHERE region='' OR region IS NULL").fetchall()
+    region_updated = 0
+    for b in branches:
+        region = detect_region_from_name(b["name"])
+        if region:
+            conn.execute("UPDATE branches SET region=? WHERE id=?", (region, b["id"]))
+            region_updated += 1
     conn.commit(); conn.close()
-    return jsonify({"ok": True, "normalized": updated})
+    return jsonify({"ok": True, "normalized": updated, "region_updated": region_updated})
+
+@app.route("/api/admin/merge-branches", methods=["POST"])
+@login_required
+def merge_branches():
+    """띄어쓰기 차이로 중복된 판매처 통합 (실적 있는 쪽 기준)"""
+    conn = get_db()
+    branches = [dict(r) for r in conn.execute("SELECT id, name FROM branches ORDER BY name").fetchall()]
+
+    def normalize(name):
+        return name.replace('_', '').replace(' ', '').lower()
+
+    # 정규화된 이름으로 그룹화
+    groups = {}
+    for b in branches:
+        key = normalize(b['name'])
+        if key not in groups:
+            groups[key] = []
+        groups[key].append(b)
+
+    merged = 0
+    for key, group in groups.items():
+        if len(group) < 2:
+            continue
+        # 실적이 있는 쪽 선택 (year_actual 기준)
+        y = datetime.now().year
+        best = None
+        best_sales = -1
+        for b in group:
+            sales = conn.execute("SELECT COALESCE(SUM(total),0) FROM sales_data WHERE real_seller=? AND sale_date LIKE ?",
+                                 (b['name'], f"{y}%")).fetchone()[0]
+            if sales > best_sales:
+                best_sales = sales
+                best = b
+        # 나머지를 best로 리다이렉트
+        for b in group:
+            if b['id'] == best['id']:
+                continue
+            # sales_data의 real_seller 업데이트
+            conn.execute("UPDATE sales_data SET real_seller=? WHERE real_seller=?",
+                         (best['name'], b['name']))
+            # branches 삭제
+            conn.execute("DELETE FROM branches WHERE id=?", (b['id'],))
+            merged += 1
+    conn.commit(); conn.close()
+    # 지역 자동 배정
+    conn2 = get_db()
+    branches_no_region = conn2.execute("SELECT id, name FROM branches WHERE region='' OR region IS NULL").fetchall()
+    region_updated = 0
+    for b in branches_no_region:
+        region = detect_region_from_name(b["name"])
+        if region:
+            conn2.execute("UPDATE branches SET region=? WHERE id=?", (region, b["id"]))
+            region_updated += 1
+    conn2.commit(); conn2.close()
+    return jsonify({"ok": True, "merged": merged, "region_updated": region_updated})
 
 # ── 주별 세부 품목 API ─────────────────────────
 @app.route("/api/sales-data/weekly-detail")

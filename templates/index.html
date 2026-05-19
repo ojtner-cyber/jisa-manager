@@ -430,6 +430,7 @@ td.center{text-align:center}
           <button class="btn btn-ghost btn-sm" onclick="document.getElementById('store-xlsx-input').click()" title="지역·담당자·전화번호가 담긴 xlsx 업로드">📋 매장정보 xlsx 업로드</button>
           <input type="file" id="store-xlsx-input" accept=".xlsx" style="display:none" onchange="uploadStoreInfo(event)">
           <button class="btn btn-ghost btn-sm" onclick="importFromXlsx()" title="업로드된 판매현황에서 판매처 자동 등록">📊 판매현황에서 가져오기</button>
+          <button class="btn btn-ghost btn-sm" onclick="mergeBranches()" title="띄어쓰기/언더바 차이로 중복된 판매처 통합">🔀 중복 판매처 통합</button>
           <button class="btn btn-dark" onclick="openBM()">+ 판매처 추가</button>
         </div>
       </div>
@@ -898,6 +899,14 @@ async function importFromXlsx(){
   toast(`✅ 완료! 신규 ${r.added}개 추가, 기존 ${r.updated}개 유지 (총 ${r.total}개 판매처)`);
 }
 
+async function mergeBranches(){
+  if(!confirm('띄어쓰기/언더바 차이로 중복된 판매처를 통합합니다.\n예: "베이비하우스 영통점" + "베이비하우스_영통점" → 실적 있는 쪽으로 통합\n계속하시겠습니까?')) return;
+  const r = await api('/api/admin/merge-branches', {method:'POST', body:{}});
+  if(!r||!r.ok){toast('오류가 발생했습니다', false); return;}
+  loadBranches();
+  toast(`✅ 중복 판매처 ${r.merged}개 통합 완료 (지역 ${r.region_updated||0}개 자동 배정)`);
+}
+
 async function uploadStoreInfo(e){
   const file=e.target.files[0]; if(!file)return;
   toast('매장 정보 분석 중...');
@@ -1122,12 +1131,31 @@ async function loadSalesDetail(){}
 
 // ── 판매실적 검색 필터 ──────────────────────────
 function filterSalesTable(){
-  const q = (document.getElementById('sales-q')?.value||'').toLowerCase();
-  const rows = document.querySelectorAll('#sales-tbody tr');
-  rows.forEach(tr=>{
-    const nm = tr.querySelector('td strong')?.textContent||'';
-    tr.style.display = nm.toLowerCase().includes(q) ? '' : 'none';
-  });
+  const q = (document.getElementById('sales-q')?.value||'').trim().toLowerCase();
+  if(salesTab === 'monthly'){
+    // 월별: strong 태그 텍스트로 필터
+    document.querySelectorAll('#sales-tbody tr').forEach(tr=>{
+      const nm = tr.querySelector('td strong')?.textContent||'';
+      tr.style.display = nm.toLowerCase().includes(q) ? '' : 'none';
+    });
+  } else if(salesTab === 'weekly'){
+    // 주별: 검색어가 있으면 매장 선택 후 재조회
+    if(q){
+      // 드롭다운에서 매칭되는 매장 찾기
+      const opts = document.querySelectorAll('#sales-branch option');
+      let matched = '';
+      for(const o of opts){
+        if(o.value && o.textContent.toLowerCase().includes(q)){matched=o.value;break;}
+      }
+      if(matched){
+        document.getElementById('sales-branch').value = matched;
+        loadSalesPage();
+      }
+    } else {
+      document.getElementById('sales-branch').value = '';
+      loadSalesPage();
+    }
+  }
 }
 
 // ── 매출순위 ────────────────────────────────────
