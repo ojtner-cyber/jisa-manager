@@ -96,31 +96,80 @@ nav a.active{background:rgba(79,70,229,.2);color:#fff;font-weight:600;box-shadow
 .page.active{display:block;animation:fadeUp .2s ease}
 @keyframes fadeUp{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
 
-/* RESPONSIVE */
+/* RESPONSIVE — 모바일 완전 개선 */
 @media(max-width:768px){
-  #app{flex-direction:column}
-  #sidebar{width:100%!important;flex-direction:row;height:auto;overflow-x:auto;flex-shrink:0}
-  #sidebar.collapsed{width:100%!important;height:48px}
-  .sb-wrap{flex-direction:row;height:auto;align-items:center;overflow:hidden}
-  .sb-top{padding:10px 16px;flex-shrink:0}
+  /* 레이아웃 */
+  #app{flex-direction:column;height:100vh;overflow:hidden}
+  #sidebar{width:100%!important;height:auto!important;flex-direction:column;flex-shrink:0;overflow:visible}
+  .sb-wrap{flex-direction:row;align-items:center;padding:0;overflow-x:auto;height:auto;flex-wrap:nowrap}
+  .sb-top{padding:8px 12px;flex-shrink:0}
+  .sb-text h1{font-size:11px}.sb-text p{display:none}
+  .sb-mark{width:26px;height:26px;font-size:12px}
   .sb-div{display:none}
   .sb-lbl{display:none}
-  nav{display:flex;flex-direction:row;flex-wrap:nowrap;overflow-x:auto;padding:6px 4px}
-  nav a{margin:2px 4px;white-space:nowrap;padding:7px 12px;width:auto}
+  nav{display:flex;flex-direction:row;flex-wrap:nowrap;overflow-x:auto;padding:4px 6px;gap:2px;-webkit-overflow-scrolling:touch;scrollbar-width:none}
+  nav::-webkit-scrollbar{display:none}
+  nav a{margin:2px 2px;white-space:nowrap;padding:6px 10px;width:auto;font-size:12px;flex-shrink:0}
+  nav a .ni{display:none}
   .sb-foot{display:none}
   .sb-toggle{display:none}
-  #main{height:calc(100vh - 110px);overflow-y:auto}
-  .page{padding:16px 14px 40px}
-  .kpi-grid{grid-template-columns:repeat(2,1fr)}
+
+  /* 메인 스크롤 영역 */
+  #main{flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch}
+  .page{padding:14px 12px 60px}
+
+  /* KPI 카드: 2x2 그리드 */
+  .kpi-grid{grid-template-columns:repeat(2,1fr);gap:8px;margin-bottom:12px}
+  .kpi{padding:14px 12px}
+  .kpi-val{font-size:20px}
+  .kpi-ic{font-size:16px;margin-bottom:6px}
+
+  /* 차트 */
   .cr-2-1,.cr-1-1{grid-template-columns:1fr}
-  .ph{flex-direction:column;gap:10px}
-  .ph-r{width:100%;flex-wrap:wrap}
-  .fb{flex-wrap:wrap;gap:8px}
-  .tw{overflow-x:auto}
+  .cr{gap:10px}
+  .cc{padding:14px}
+  canvas{max-height:180px}
+
+  /* 페이지 헤더 */
+  .ph{flex-direction:column;gap:8px;margin-bottom:16px}
+  .ph-r{width:100%;flex-wrap:wrap;gap:6px}
+  .ph-r .btn,.ph-r .ysel{font-size:12px;padding:7px 10px}
+
+  /* 필터 바 */
+  .fb{flex-wrap:wrap;gap:8px;padding:10px 12px}
+  .fb .fs,.fb .fi{font-size:12px;padding:6px 8px;flex:1;min-width:100px}
+  .fdiv{display:none}
+
+  /* 테이블 */
+  .tw{overflow-x:auto;-webkit-overflow-scrolling:touch;border-radius:var(--r-md)}
+  .tw table{min-width:400px;font-size:12px}
+  thead th{padding:8px 10px;font-size:9px}
+  td{padding:10px;font-size:12px}
+
+  /* 탭 버튼 */
+  .sales-tabs button{padding:8px 12px!important;font-size:12px!important}
+
+  /* 모달 */
+  .modal{border-radius:var(--r-lg) var(--r-lg) 0 0;position:fixed;bottom:0;left:0;right:0;width:100%!important;max-height:85vh;margin:0}
+  .ov{align-items:flex-end}
+
+  /* 로그인 */
   .ll{display:none}
-  .lr{width:100%;padding:40px 24px}
-  .upload-grid{grid-template-columns:1fr}
-  .expgrid{grid-template-columns:1fr}
+  .lr{width:100%;padding:32px 20px}
+  .lr-title{font-size:22px}
+
+  /* 업로드 */
+  .upload-grid,.expgrid{grid-template-columns:1fr}
+
+  /* 모달 그리드 */
+  .mg{grid-template-columns:1fr!important}
+
+  /* 요약 카드 */
+  #detail-summary-cards{flex-direction:column!important;gap:8px}
+
+  /* 판매탭 */
+  #sales-monthly-view .tw table,
+  #sales-weekly-view .tw table{min-width:360px}
 }
 
 /* PAGE HEADER */
@@ -437,11 +486,11 @@ td.center{text-align:center}
 
       <!-- 매장 필터 -->
       <div class="fb" style="margin-bottom:14px">
-        <span class="flbl">매장 필터</span>
-        <select class="fs" id="sales-branch" onchange="loadSalesPage()" style="min-width:220px">
+        <span class="flbl">매장</span>
+        <select class="fs" id="sales-branch" onchange="loadSalesPage()" style="min-width:180px">
           <option value="">— 전체 매장 —</option>
         </select>
-        <span class="flbl" style="margin-left:8px">월 선택</span>
+        <span class="flbl">월</span>
         <select class="fs" id="sales-month" onchange="loadSalesPage()">
           <option value="">전체</option>
           <option value="1">1월</option><option value="2">2월</option>
@@ -451,18 +500,21 @@ td.center{text-align:center}
           <option value="9">9월</option><option value="10">10월</option>
           <option value="11">11월</option><option value="12">12월</option>
         </select>
+        <div class="fdiv"></div>
+        <input class="fi" type="text" id="sales-q" placeholder="매장명 검색" style="width:150px"
+               oninput="filterSalesTable()" onkeydown="if(event.key==='Enter')filterSalesTable()">
       </div>
 
       <!-- 월별 탭 -->
       <div id="sales-monthly-view">
-        <div class="slbl">전체 매장 요약 <span style="font-size:11px;color:var(--ink-300);font-weight:400">(월 클릭 시 품목 세부 확인)</span></div>
+        <div class="slbl">전체 매장 요약 <span style="font-size:11px;color:var(--ink-300);font-weight:400">(행 클릭 시 품목 세부 확인)</span></div>
         <div class="tw">
           <table style="table-layout:fixed">
             <thead><tr>
-              <th style="width:35%">매장명</th>
-              <th class="num" style="width:21%">판매 건수</th>
-              <th class="num" style="width:21%">판매 수량</th>
-              <th class="num" style="width:23%">판매 금액</th>
+              <th style="width:35%;text-align:left">매장명</th>
+              <th style="width:21%;text-align:right;padding-right:14px">판매 건수</th>
+              <th style="width:21%;text-align:right;padding-right:14px">판매 수량</th>
+              <th style="width:23%;text-align:right;padding-right:14px">판매 금액</th>
             </tr></thead>
             <tbody id="sales-tbody"></tbody>
           </table>
@@ -959,14 +1011,14 @@ async function renderMonthly(year, month, seller){
     tbody.innerHTML=rows.map(r=>{
       const mo=r.month||'';
       return `<tr style="cursor:pointer" onclick="openMonthDetail('${safe}','${year}','${mo}')" title="클릭하면 품목 세부">
-        <td style="width:35%">
+        <td style="width:35%;text-align:left">
           <strong style="color:var(--ink-900)">${seller}</strong>
           <span style="color:var(--ink-300);font-size:12px;margin-left:8px">${mo}월</span>
           <span style="font-size:11px;color:var(--accent-m);margin-left:4px">↗</span>
         </td>
-        <td class="num" style="width:21%">${(r.cnt||0).toLocaleString()}건</td>
-        <td class="num" style="width:21%">${(r.qty||0).toLocaleString()}개</td>
-        <td class="num" style="width:23%;font-weight:700;color:var(--accent-m)">${r.total!=null?N(r.total)+'원':'—'}</td>
+        <td style="width:21%;text-align:right;padding-right:14px;font-family:var(--fd);font-weight:500">${(r.cnt||0).toLocaleString()}건</td>
+        <td style="width:21%;text-align:right;padding-right:14px;font-family:var(--fd);font-weight:500">${(r.qty||0).toLocaleString()}개</td>
+        <td style="width:23%;text-align:right;padding-right:14px;font-family:var(--fd);font-weight:700;color:var(--accent-m)">${r.total!=null?N(r.total)+'원':'—'}</td>
       </tr>`;
     }).join('');
   } else {
@@ -983,12 +1035,12 @@ async function renderMonthly(year, month, seller){
       const nm=r.seller_name||'—';
       const safe=nm.replace(/'/g,"\\'");
       return `<tr style="cursor:pointer" onclick="openMonthDetail('${safe}','${year}','${month}')" title="클릭하면 품목 세부">
-        <td style="width:35%"><span style="color:var(--ink-300);margin-right:8px;font-size:11px">${i+1}</span>
+        <td style="width:35%;text-align:left"><span style="color:var(--ink-300);margin-right:8px;font-size:11px">${i+1}</span>
           <strong style="color:var(--ink-900)">${nm}</strong><span style="font-size:11px;color:var(--accent-m);margin-left:6px">↗</span>
         </td>
-        <td class="num" style="width:21%">${(r.cnt||0).toLocaleString()}건</td>
-        <td class="num" style="width:21%">${(r.qty||0).toLocaleString()}개</td>
-        <td class="num" style="width:23%;font-weight:700;color:var(--accent-m)">${r.total!=null?N(r.total)+'원':'—'}</td>
+        <td style="width:21%;text-align:right;padding-right:14px;font-family:var(--fd);font-weight:500">${(r.cnt||0).toLocaleString()}건</td>
+        <td style="width:21%;text-align:right;padding-right:14px;font-family:var(--fd);font-weight:500">${(r.qty||0).toLocaleString()}개</td>
+        <td style="width:23%;text-align:right;padding-right:14px;font-family:var(--fd);font-weight:700;color:var(--accent-m)">${r.total!=null?N(r.total)+'원':'—'}</td>
       </tr>`;
     }).join('');
   }
@@ -1065,6 +1117,16 @@ async function openMonthDetail(seller,year,month){
 }
 
 async function loadSalesDetail(){}
+
+// ── 판매실적 검색 필터 ──────────────────────────
+function filterSalesTable(){
+  const q = (document.getElementById('sales-q')?.value||'').toLowerCase();
+  const rows = document.querySelectorAll('#sales-tbody tr');
+  rows.forEach(tr=>{
+    const nm = tr.querySelector('td strong')?.textContent||'';
+    tr.style.display = nm.toLowerCase().includes(q) ? '' : 'none';
+  });
+}
 
 // ── 매출순위 ────────────────────────────────────
 async function renderRanking(){

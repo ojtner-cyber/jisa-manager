@@ -666,6 +666,10 @@ def parse_xlsx_sales(file_bytes):
             real_seller = row_vals.get('AE', '').strip()
             buyer       = row_vals.get('D', '').strip()
 
+            # 수취인에 "고객님" 포함 시 제외 (개인 고객 주문)
+            if '고객님' in buyer:
+                continue
+
             # 베이비하우스_본사 → 수취인명 전체로 대체
             # 예: 실적용거래처명=베이비하우스_본사, 수취인=베이비하우스 목포 → 베이비하우스 목포
             if '본사' in real_seller and buyer:
