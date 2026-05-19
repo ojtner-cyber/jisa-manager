@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>지사 관리 시스템</title>
+<title>매장 관리 시스템</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
 <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,wght@0,300;0,400;0,500;0,600;1,400&family=Noto+Sans+KR:wght@300;400;500;600;700&display=swap" rel="stylesheet">
 <style>
@@ -252,7 +252,7 @@ td.center{text-align:center}
     <div class="ll-grid"></div>
     <div class="ll-glow"></div>
     <div class="ll-content">
-      <div class="ll-badge"><div class="dot"></div><span>VISANG · HEADOFFICE SYSTEM</span></div>
+      <div class="ll-badge"><div class="dot"></div><span>ENFIX · HEADOFFICE SYSTEM</span></div>
       <h1 class="ll-h1">지사를<br>한눈에<br><em>관리하다</em></h1>
       <p class="ll-p">지사 정보 · 판매부수 · 권한까지<br>본사 전용 통합 관리 플랫폼</p>
       <div class="ll-feat">
@@ -265,15 +265,15 @@ td.center{text-align:center}
   <div class="lr">
     <div class="lr-logo">
       <div class="lr-logo-mark">🏢</div>
-      <span class="lr-logo-txt">지사 관리 시스템</span>
+      <span class="lr-logo-txt">매장 관리 시스템</span>
     </div>
     <h2 class="lr-title">로그인</h2>
     <p class="lr-sub">계속하려면 로그인하세요</p>
-    <div class="lf"><label>이메일</label><input type="email" id="l-email" value="test@visang.com" placeholder="email@visang.com"></div>
-    <div class="lf"><label>비밀번호</label><input type="password" id="l-pw" value="visang123!" placeholder="••••••••"></div>
+    <div class="lf"><label>이메일</label><input type="email" id="l-email" value="hwkim@enfix.com" placeholder="email@visang.com"></div>
+    <div class="lf"><label>비밀번호</label><input type="password" id="l-pw" value="hwkim123!" placeholder="••••••••"></div>
     <button class="login-btn" onclick="doLogin()"><span>로그인</span><span>→</span></button>
     <div class="login-err" id="login-err"></div>
-    <div class="login-hint"><strong>테스트 계정</strong><br>test@visang.com &nbsp;/&nbsp; visang123!</div>
+    <div class="login-hint"><strong>테스트 계정</strong><br>hwkim@enfix.com &nbsp;/&nbsp; hwkim123!</div>
   </div>
 </div>
 
@@ -283,7 +283,7 @@ td.center{text-align:center}
     <div class="sb-top">
       <div class="sb-logo">
         <div class="sb-mark">🏢</div>
-        <div class="sb-text"><h1>지사 관리 시스템</h1><p>VISANG · HEADOFFICE</p></div>
+        <div class="sb-text"><h1>매장 관리 시스템</h1><p>ENFIX · HEADOFFICE</p></div>
       </div>
     </div>
     <div class="sb-div"></div>
@@ -412,12 +412,12 @@ td.center{text-align:center}
       <div id="sales-monthly-view">
         <div class="slbl">전체 매장 요약 <span style="font-size:11px;color:var(--ink-300);font-weight:400">(월 클릭 시 품목 세부 확인)</span></div>
         <div class="tw">
-          <table>
+          <table style="table-layout:fixed">
             <thead><tr>
-              <th>매장명</th>
-              <th class="num">판매 건수</th>
-              <th class="num">판매 수량</th>
-              <th class="num">판매 금액</th>
+              <th style="width:35%">매장명</th>
+              <th class="num" style="width:21%">판매 건수</th>
+              <th class="num" style="width:21%">판매 수량</th>
+              <th class="num" style="width:23%">판매 금액</th>
             </tr></thead>
             <tbody id="sales-tbody"></tbody>
           </table>
@@ -428,12 +428,13 @@ td.center{text-align:center}
       <div id="sales-weekly-view" style="display:none">
         <div class="slbl">주별 판매 현황</div>
         <div class="tw">
-          <table>
+          <table style="table-layout:fixed">
             <thead><tr>
-              <th>주차</th><th>시작일</th>
-              <th class="num">건수</th>
-              <th class="num">수량</th>
-              <th class="num">금액</th>
+              <th style="width:10%">주차</th>
+              <th style="width:32%">기간</th>
+              <th class="num" style="width:19%">건수</th>
+              <th class="num" style="width:19%">수량</th>
+              <th class="num" style="width:20%">금액</th>
             </tr></thead>
             <tbody id="weekly-tbody"></tbody>
           </table>
@@ -864,7 +865,8 @@ async function renderMonthly(year, month, seller){
     tbody.innerHTML=rows.map(r=>{
       const mo=r.month||'';
       return `<tr style="cursor:pointer" onclick="openMonthDetail('${safe}','${year}','${mo}')" title="클릭하면 품목 세부">
-        <td style="width:35%"><strong>${seller}</strong>
+        <td style="width:35%">
+          <strong style="color:var(--ink-900)">${seller}</strong>
           <span style="color:var(--ink-300);font-size:12px;margin-left:8px">${mo}월</span>
           <span style="font-size:11px;color:var(--accent-m);margin-left:4px">↗</span>
         </td>
@@ -888,7 +890,7 @@ async function renderMonthly(year, month, seller){
       const safe=nm.replace(/'/g,"\\'");
       return `<tr style="cursor:pointer" onclick="openMonthDetail('${safe}','${year}','${month}')" title="클릭하면 품목 세부">
         <td style="width:35%"><span style="color:var(--ink-300);margin-right:8px;font-size:11px">${i+1}</span>
-          <strong>${nm}</strong><span style="font-size:11px;color:var(--accent-m);margin-left:6px">↗</span>
+          <strong style="color:var(--ink-900)">${nm}</strong><span style="font-size:11px;color:var(--accent-m);margin-left:6px">↗</span>
         </td>
         <td class="num" style="width:21%">${(r.cnt||0).toLocaleString()}건</td>
         <td class="num" style="width:21%">${(r.qty||0).toLocaleString()}개</td>

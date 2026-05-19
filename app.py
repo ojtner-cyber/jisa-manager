@@ -1,5 +1,5 @@
 """
-지사 관리 시스템 v1.0
+매장 관리 시스템 v1.0
 Flask + SQLite | 본사 전용 지사 관리 플랫폼
 """
 from flask import Flask, render_template, request, jsonify, session, redirect, url_for, send_file
@@ -8,7 +8,7 @@ from datetime import date, datetime
 from functools import wraps
 
 app = Flask(__name__)
-app.secret_key = os.environ.get("SECRET_KEY", "jisa-manager-secret-2025")
+app.secret_key = os.environ.get("SECRET_KEY", "enfix-manager-secret-2025")
 app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024  # 50MB 허용
 
 # Render Disk 마운트 경로 우선 사용 → 없으면 스크립트 폴더
@@ -94,9 +94,9 @@ def init_db():
 
     # 기본 계정만 생성 (샘플 데이터 없음)
     conn.execute("INSERT OR IGNORE INTO users(email,password,name,role) VALUES(?,?,?,?)",
-        ("test@visang.com","visang123!","관리자","admin"))
+        ("hwkim@enfix.com","hwkim123!","관리자","admin"))
     conn.execute("INSERT OR IGNORE INTO users(email,password,name,role) VALUES(?,?,?,?)",
-        ("user@visang.com","visang123!","일반사용자","user"))
+        ("user@visang.com","hwkim123!","일반사용자","user"))
     conn.commit(); conn.close()
 
 # ── 인증 ──────────────────────────────────────
@@ -661,9 +661,10 @@ def parse_xlsx_sales(file_bytes):
             real_seller = row_vals.get('AE', '').strip()
             buyer       = row_vals.get('D', '').strip()
 
-            # 베이비하우스 본사 → 수취인 전체 이름으로 매장 파악
-            if '베이비하우스' in real_seller and '본사' in real_seller and buyer:
-                real_seller = buyer  # 수취인 전체 이름 사용
+            # 베이비하우스_본사 → 수취인명 전체로 대체
+            # 예: 실적용거래처명=베이비하우스_본사, 수취인=베이비하우스 목포 → 베이비하우스 목포
+            if '본사' in real_seller and buyer:
+                real_seller = buyer
 
             results.append({
                 'sale_date':    sale_date,
@@ -805,13 +806,14 @@ def sales_weekly_detail():
         SELECT item_name, item_code, item_group,
                SUM(quantity) qty, AVG(unit_price) avg_price, SUM(total) total, COUNT(*) cnt
         FROM sales_data
-        WHERE {where}
+        WHERE {where} AND strftime('%w', sale_date) BETWEEN '1' AND '5'
         GROUP BY item_name ORDER BY total DESC""", params).fetchall()]
 
     summary = conn.execute(f"""
         SELECT COUNT(*) cnt, SUM(quantity) qty, SUM(total) total,
                MIN(sale_date) date_from, MAX(sale_date) date_to
-        FROM sales_data WHERE {where}""", params).fetchone()
+        FROM sales_data WHERE {where}
+          AND strftime('%w', sale_date) BETWEEN '1' AND '5'""", params).fetchone()
 
     conn.close()
     return jsonify({"items": items, "summary": dict(summary), "week_key": week_key, "seller": seller})
@@ -851,6 +853,7 @@ def sales_data_weekly():
             MAX(sale_date) week_end
         FROM sales_data
         WHERE {where}
+          AND strftime('%w', sale_date) BETWEEN '1' AND '5'
         GROUP BY week_key
         ORDER BY week_key""", params).fetchall()]
     conn.close()
