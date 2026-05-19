@@ -666,6 +666,8 @@ td.center{text-align:center}
       </div>
       <div style="background:var(--accent-lt);border:1px solid rgba(79,70,229,.2);border-radius:var(--r-md);padding:14px 18px;margin-bottom:24px;font-size:13px;color:var(--accent);line-height:1.7">
         💡 <strong>사용 방법:</strong> 양식 다운로드 → 데이터 입력 → 파일 업로드 → 미리보기 확인 → 저장
+        <span style="margin-left:16px">|</span>
+        <button class="btn btn-ghost btn-sm" style="margin-left:10px" onclick="normalizeSellers()">🔧 매장명 언더바 통합</button>
       </div>
 
       <!-- xlsx 판매현황 업로드 (신규) -->
@@ -1362,6 +1364,13 @@ async function confirmUpload(){
   const t=uploadType; cancelUpload();
   if(t==='branches')toast(`✅ 지사 ${r.total}개 저장 완료 (신규 ${r.added}개)`);
   else toast(`✅ 판매부수 ${r.total}개 지사 저장 완료`);
+}
+
+async function normalizeSellers(){
+  if(!confirm('기존 저장된 데이터에서 매장명의 언더바(_)를 공백으로 통일합니다.\n예: 베이비하우스_영통점 → 베이비하우스 영통점\n계속하시겠습니까?')) return;
+  const r = await api('/api/admin/normalize-sellers', {method:'POST', body:{}});
+  if(r && r.ok) toast(`✅ ${r.normalized}개 매장명 통합 완료`);
+  else toast('오류가 발생했습니다', false);
 }
 function cancelUpload(){
   document.getElementById('preview-area').style.display='none';

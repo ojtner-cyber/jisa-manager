@@ -666,14 +666,17 @@ def parse_xlsx_sales(file_bytes):
             real_seller = row_vals.get('AE', '').strip()
             buyer       = row_vals.get('D', '').strip()
 
-            # 수취인에 "고객님" 포함 시 제외 (개인 고객 주문)
-            if '고객님' in buyer:
-                continue
+            # 베이비하우스_본사 → 수취인명으로 대체
+            # 단, 수취인에 "고객님"이 포함된 경우는 제외 (개인 고객 주문)
+            if '본사' in real_seller:
+                if buyer and '고객님' in buyer:
+                    continue  # 베이비하우스_본사이고 수취인이 "고객님"인 경우만 제외
+                elif buyer:
+                    real_seller = buyer
 
-            # 베이비하우스_본사 → 수취인명 전체로 대체
-            # 예: 실적용거래처명=베이비하우스_본사, 수취인=베이비하우스 목포 → 베이비하우스 목포
-            if '본사' in real_seller and buyer:
-                real_seller = buyer
+            # 언더바 정규화: "베이비하우스_영통점" → "베이비하우스 영통점"
+            # 실적용거래처명의 언더바를 공백으로 통일
+            real_seller = real_seller.replace('_', ' ')
 
             results.append({
                 'sale_date':    sale_date,
@@ -794,6 +797,23 @@ def api_sellers():
         "SELECT * FROM sellers ORDER BY total_sales DESC").fetchall()]
     conn.close()
     return jsonify(rows)
+
+@app.route("/api/admin/normalize-sellers", methods=["POST"])
+@login_required
+def normalize_sellers():
+    """기존 sales_data의 real_seller 언더바를 공백으로 정규화"""
+    conn = get_db()
+    # 언더바가 있는 real_seller 모두 수정
+    rows = conn.execute("SELECT DISTINCT real_seller FROM sales_data WHERE real_seller LIKE '%_%'").fetchall()
+    updated = 0
+    for r in rows:
+        old = r[0]
+        new = old.replace('_', ' ')
+        if old != new:
+            conn.execute("UPDATE sales_data SET real_seller=? WHERE real_seller=?", (new, old))
+            updated += 1
+    conn.commit(); conn.close()
+    return jsonify({"ok": True, "normalized": updated})
 
 # ── 주별 세부 품목 API ─────────────────────────
 @app.route("/api/sales-data/weekly-detail")
