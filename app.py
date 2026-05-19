@@ -835,14 +835,13 @@ def sales_weekly_detail():
         SELECT item_name, item_code, item_group,
                SUM(quantity) qty, AVG(unit_price) avg_price, SUM(total) total, COUNT(*) cnt
         FROM sales_data
-        WHERE {where} AND strftime('%w', sale_date) BETWEEN '1' AND '5'
+        WHERE {where}
         GROUP BY item_name ORDER BY total DESC""", params).fetchall()]
 
     summary = conn.execute(f"""
         SELECT COUNT(*) cnt, SUM(quantity) qty, SUM(total) total,
                MIN(sale_date) date_from, MAX(sale_date) date_to
-        FROM sales_data WHERE {where}
-          AND strftime('%w', sale_date) BETWEEN '1' AND '5'""", params).fetchone()
+        FROM sales_data WHERE {where}""", params).fetchone()
 
     conn.close()
     return jsonify({"items": items, "summary": dict(summary), "week_key": week_key, "seller": seller})
@@ -878,40 +877,28 @@ def sales_data_weekly():
             COUNT(*) cnt,
             SUM(quantity) qty,
             SUM(total) total,
-            -- 해당 주의 월요일 계산
-            date(MIN(sale_date), 'weekday 0', '-6 days') AS week_mon,
-            -- 해당 주의 금요일 계산
-            date(MIN(sale_date), 'weekday 0', '-2 days') AS week_fri
+            MIN(sale_date) AS min_date
         FROM sales_data
-        WHERE {where}
-          AND strftime('%w', sale_date) BETWEEN '1' AND '5'
+        WHERE {where} AND sale_date != ''
         GROUP BY week_key
         ORDER BY week_key""", params).fetchall()]
 
-    # week_mon/week_fri 보정: SQLite weekday 0=일요일이므로 직접 계산
+    # 주차별 일요일~토요일 범위 계산
     from datetime import datetime as dt, timedelta
     for r in rows:
         try:
-            # week_key: 2026-05 형식
-            yr, wk = r['week_key'].split('-')
-            # 해당 연도+주차의 월요일 계산
-            jan1 = dt.strptime(f"{yr}-01-01", "%Y-%m-%d")
-            # ISO 주차와 다를 수 있으므로 MIN(sale_date) 기반으로 계산
-            # week_mon을 sale_date의 최소값 기반으로 정확히 계산
-            if r.get('week_mon'):
-                mon = dt.strptime(r['week_mon'], "%Y-%m-%d")
-                # 해당 날짜의 월요일 찾기
-                wd = mon.weekday()  # 0=월, 6=일
-                actual_mon = mon - timedelta(days=wd)
-                actual_fri = actual_mon + timedelta(days=4)
-                r['week_start'] = actual_mon.strftime("%Y-%m-%d")
-                r['week_end']   = actual_fri.strftime("%Y-%m-%d")
-            else:
-                r['week_start'] = ''
-                r['week_end']   = ''
+            min_d = dt.strptime(r['min_date'], "%Y-%m-%d")
+            # 해당 날짜가 속한 주의 일요일 찾기 (weekday: 0=월 ~ 6=일)
+            wd = min_d.weekday()  # 0=월요일
+            # 일요일로 이동 (월요일이면 -1, 화요일이면 -2 ... 일요일이면 0)
+            days_to_sun = (wd + 1) % 7  # 일요일까지 거슬러 올라갈 일수
+            week_sun = min_d - timedelta(days=days_to_sun)
+            week_sat = week_sun + timedelta(days=6)
+            r['week_start'] = week_sun.strftime("%Y-%m-%d")
+            r['week_end']   = week_sat.strftime("%Y-%m-%d")
         except Exception:
-            r['week_start'] = r.get('week_mon', '')
-            r['week_end']   = r.get('week_fri', '')
+            r['week_start'] = r.get('min_date', '')
+            r['week_end']   = ''
     conn.close()
     return jsonify(rows)
 
