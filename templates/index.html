@@ -61,15 +61,26 @@ html,body{height:100%;font-family:var(--fb);background:var(--paper);color:var(--
 #app.show{display:flex}
 
 /* SIDEBAR */
-#sidebar{width:228px;background:var(--ink-900);display:flex;flex-direction:column;flex-shrink:0;overflow:hidden}
+#sidebar{width:228px;background:var(--ink-900);display:flex;flex-direction:column;flex-shrink:0;overflow:hidden;transition:width .25s ease}
+#sidebar.collapsed{width:56px}
+#sidebar.collapsed .sb-text,.sb-lbl-wrap,.sb-foot-detail{display:block}
+#sidebar.collapsed .sb-text{display:none}
+#sidebar.collapsed .sb-lbl{display:none}
+#sidebar.collapsed nav a span:not(.ni){display:none}
+#sidebar.collapsed nav a{justify-content:center;padding:9px 0}
+#sidebar.collapsed .sb-foot-detail{display:none}
+#sidebar.collapsed .sb-div{margin:8px 10px}
+.sb-toggle{position:absolute;top:18px;right:-12px;width:24px;height:24px;border-radius:50%;background:var(--paper);border:1.5px solid var(--ink-100);cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:10px;color:var(--ink-500);z-index:10;box-shadow:var(--sh-sm);transition:.2s}
+.sb-toggle:hover{background:var(--accent-m);color:#fff;border-color:var(--accent-m)}
+.sb-wrap{position:relative;display:flex;flex-direction:column;height:100%}
 .sb-top{padding:22px 18px 14px}
 .sb-logo{display:flex;align-items:center;gap:10px}
-.sb-mark{width:30px;height:30px;border-radius:7px;background:linear-gradient(135deg,var(--accent-m),var(--accent));display:flex;align-items:center;justify-content:center;font-size:14px;box-shadow:0 2px 8px rgba(79,70,229,.4)}
+.sb-mark{width:30px;height:30px;border-radius:7px;background:linear-gradient(135deg,var(--accent-m),var(--accent));display:flex;align-items:center;justify-content:center;font-size:14px;box-shadow:0 2px 8px rgba(79,70,229,.4);flex-shrink:0}
 .sb-text h1{font-family:var(--fd);font-size:13px;font-weight:600;color:#fff;letter-spacing:.1px}
 .sb-text p{font-size:10px;color:rgba(255,255,255,.22);margin-top:1px;letter-spacing:.3px}
 .sb-div{height:1px;background:rgba(255,255,255,.05);margin:12px 18px}
 .sb-lbl{font-size:9.5px;font-weight:700;color:rgba(255,255,255,.2);letter-spacing:1.2px;text-transform:uppercase;padding:8px 18px 4px}
-nav a{display:flex;align-items:center;gap:9px;padding:9px 18px;margin:1px 8px;border-radius:var(--r-md);color:rgba(255,255,255,.38);font-size:13px;font-weight:500;text-decoration:none;cursor:pointer;border:none;background:none;width:calc(100% - 16px);font-family:var(--fb);transition:.15s}
+nav a{display:flex;align-items:center;gap:9px;padding:9px 18px;margin:1px 8px;border-radius:var(--r-md);color:rgba(255,255,255,.38);font-size:13px;font-weight:500;text-decoration:none;cursor:pointer;border:none;background:none;width:calc(100% - 16px);font-family:var(--fb);transition:.15s;white-space:nowrap;overflow:hidden}
 nav a .ni{font-size:13px;width:18px;text-align:center;flex-shrink:0}
 nav a:hover{background:rgba(255,255,255,.05);color:rgba(255,255,255,.7)}
 nav a.active{background:rgba(79,70,229,.2);color:#fff;font-weight:600;box-shadow:inset 0 0 0 1px rgba(79,70,229,.28)}
@@ -80,10 +91,37 @@ nav a.active{background:rgba(79,70,229,.2);color:#fff;font-weight:600;box-shadow
 .sb-out:hover{color:rgba(255,255,255,.45)}
 
 /* MAIN */
-#main{flex:1;overflow-y:auto;background:var(--ink-50)}
-.page{display:none;padding:32px 40px 60px}
+#main{flex:1;overflow-y:auto;background:var(--ink-50);min-width:0}
+.page{display:none;padding:24px 28px 60px}
 .page.active{display:block;animation:fadeUp .2s ease}
 @keyframes fadeUp{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
+
+/* RESPONSIVE */
+@media(max-width:768px){
+  #app{flex-direction:column}
+  #sidebar{width:100%!important;flex-direction:row;height:auto;overflow-x:auto;flex-shrink:0}
+  #sidebar.collapsed{width:100%!important;height:48px}
+  .sb-wrap{flex-direction:row;height:auto;align-items:center;overflow:hidden}
+  .sb-top{padding:10px 16px;flex-shrink:0}
+  .sb-div{display:none}
+  .sb-lbl{display:none}
+  nav{display:flex;flex-direction:row;flex-wrap:nowrap;overflow-x:auto;padding:6px 4px}
+  nav a{margin:2px 4px;white-space:nowrap;padding:7px 12px;width:auto}
+  .sb-foot{display:none}
+  .sb-toggle{display:none}
+  #main{height:calc(100vh - 110px);overflow-y:auto}
+  .page{padding:16px 14px 40px}
+  .kpi-grid{grid-template-columns:repeat(2,1fr)}
+  .cr-2-1,.cr-1-1{grid-template-columns:1fr}
+  .ph{flex-direction:column;gap:10px}
+  .ph-r{width:100%;flex-wrap:wrap}
+  .fb{flex-wrap:wrap;gap:8px}
+  .tw{overflow-x:auto}
+  .ll{display:none}
+  .lr{width:100%;padding:40px 24px}
+  .upload-grid{grid-template-columns:1fr}
+  .expgrid{grid-template-columns:1fr}
+}
 
 /* PAGE HEADER */
 .ph{display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:28px}
@@ -253,11 +291,11 @@ td.center{text-align:center}
     <div class="ll-glow"></div>
     <div class="ll-content">
       <div class="ll-badge"><div class="dot"></div><span>ENFIX · HEADOFFICE SYSTEM</span></div>
-      <h1 class="ll-h1">지사를<br>한눈에<br><em>관리하다</em></h1>
-      <p class="ll-p">지사 정보 · 판매부수 · 권한까지<br>본사 전용 통합 관리 플랫폼</p>
+      <h1 class="ll-h1">매장<br><em>관리</em><br>플랫폼</h1>
+      <p class="ll-p">매장 정보 · 매출관리 · 권한관리<br>엔픽스 전용 통합 관리 플랫폼</p>
       <div class="ll-feat">
         <div class="ll-feat-item">실시간 대시보드 & 통계</div>
-        <div class="ll-feat-item">월별 판매부수 추적</div>
+        <div class="ll-feat-item">매출 실적 추적</div>
         <div class="ll-feat-item">CSV 데이터 내보내기</div>
       </div>
     </div>
@@ -280,6 +318,8 @@ td.center{text-align:center}
 <!-- ══ APP ══ -->
 <div id="app">
   <div id="sidebar">
+    <div class="sb-wrap">
+    <button class="sb-toggle" id="sb-toggle-btn" onclick="toggleSidebar()" title="사이드바 접기/펼치기">◀</button>
     <div class="sb-top">
       <div class="sb-logo">
         <div class="sb-mark">🏢</div>
@@ -305,8 +345,9 @@ td.center{text-align:center}
       <div class="sb-name" id="sb-name">—</div>
       <div class="sb-role" id="sb-role">—</div>
       <button class="sb-out" onclick="doLogout()">로그아웃 →</button>
-    </div>
-  </div>
+    </div><!-- /sb-foot -->
+    </div><!-- /sb-wrap -->
+  </div><!-- /sidebar -->
 
   <div id="main">
 
@@ -363,7 +404,7 @@ td.center{text-align:center}
       <div class="tw">
         <table>
           <thead><tr>
-            <th>판매처명</th><th>지역</th><th>담당자</th><th>전화번호</th>
+            <th>판매처명</th><th>대표자</th><th>지역</th><th>담당자</th><th>전화번호</th>
             <th>상태</th><th class="num">연간 실적</th><th>메모</th><th class="center">—</th>
           </tr></thead>
           <tbody id="branch-tbody"></tbody>
@@ -378,7 +419,7 @@ td.center{text-align:center}
         <div class="ph-r"><select class="ysel" id="sales-year" onchange="loadSalesPage()"></select></div>
       </div>
 
-      <!-- 탭: 월별 / 주별 -->
+      <!-- 탭: 월별 / 주별 / 매출순위 -->
       <div style="display:flex;gap:0;margin-bottom:16px;border-bottom:1.5px solid var(--ink-100)">
         <button id="tab-monthly" onclick="switchSalesTab('monthly')"
           style="padding:10px 22px;font-size:13px;font-weight:600;border:none;background:none;cursor:pointer;color:var(--accent-m);border-bottom:2.5px solid var(--accent-m);margin-bottom:-1.5px;font-family:var(--fb)">
@@ -387,6 +428,10 @@ td.center{text-align:center}
         <button id="tab-weekly" onclick="switchSalesTab('weekly')"
           style="padding:10px 22px;font-size:13px;font-weight:600;border:none;background:none;cursor:pointer;color:var(--ink-300);border-bottom:2.5px solid transparent;margin-bottom:-1.5px;font-family:var(--fb)">
           📆 주별 실적
+        </button>
+        <button id="tab-ranking" onclick="switchSalesTab('ranking')"
+          style="padding:10px 22px;font-size:13px;font-weight:600;border:none;background:none;cursor:pointer;color:var(--ink-300);border-bottom:2.5px solid transparent;margin-bottom:-1.5px;font-family:var(--fb)">
+          🏆 매출순위
         </button>
       </div>
 
@@ -437,6 +482,31 @@ td.center{text-align:center}
               <th class="num" style="width:20%">금액</th>
             </tr></thead>
             <tbody id="weekly-tbody"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- 매출순위 탭 -->
+      <div id="sales-ranking-view" style="display:none">
+        <div class="fb" style="margin-bottom:14px">
+          <span class="flbl">기준</span>
+          <select class="fs" id="ranking-sort" onchange="renderRanking()">
+            <option value="total">판매금액 순</option>
+            <option value="cnt">판매건수 순</option>
+            <option value="qty">판매수량 순</option>
+          </select>
+        </div>
+        <div class="tw">
+          <table style="table-layout:fixed">
+            <thead><tr>
+              <th style="width:8%">순위</th>
+              <th style="width:37%">매장명</th>
+              <th class="num" style="width:18%">판매금액</th>
+              <th class="num" style="width:15%">건수</th>
+              <th class="num" style="width:13%">수량</th>
+              <th style="width:9%">비율</th>
+            </tr></thead>
+            <tbody id="ranking-tbody"></tbody>
           </table>
         </div>
       </div>
@@ -638,14 +708,18 @@ td.center{text-align:center}
       <div class="ms">기본 정보</div>
       <div class="mg">
         <div class="mr"><label>판매처명 *</label><input type="text" id="bm-name" placeholder="예: 베이비하우스 영통점"></div>
-        <div class="mr"><label>지역</label><select id="bm-region">{% for r in regions %}<option>{{r}}</option>{% endfor %}</select></div>
+        <div class="mr"><label>대표자명</label><input type="text" id="bm-ceo" placeholder="대표자 이름"></div>
       </div>
       <div class="mg" style="margin-top:16px">
+        <div class="mr"><label>지역</label><select id="bm-region">{% for r in regions %}<option>{{r}}</option>{% endfor %}</select></div>
         <div class="mr"><label>담당자</label><input type="text" id="bm-manager" placeholder="담당자명"></div>
+      </div>
         <div class="mr"><label>전화번호</label><input type="text" id="bm-phone" placeholder="010-0000-0000"></div>
       </div>
-      <div class="mr" style="margin-top:16px"><label>이메일</label><input type="email" id="bm-email" placeholder="email@example.com"></div>
-      <div class="mr" style="margin-top:16px"><label>주소</label><input type="text" id="bm-address" placeholder="주소"></div>
+      <div class="mg" style="margin-top:16px">
+        <div class="mr"><label>이메일</label><input type="email" id="bm-email" placeholder="email@example.com"></div>
+        <div class="mr"><label>주소</label><input type="text" id="bm-address" placeholder="주소"></div>
+      </div>
       <div class="mg" style="margin-top:16px">
         <div class="mr"><label>상태</label><select id="bm-status"><option>운영중</option><option>일시중단</option><option>폐지</option></select></div>
         <div class="mr"><label>메모</label><input type="text" id="bm-note" placeholder="실적용거래처명 등"></div>
@@ -747,6 +821,7 @@ async function loadBranches(){
     const sb=b.status==='운영중'?'b-green':b.status==='일시중단'?'b-amber':'b-red';
     return `<tr>
       <td class="td-main">${b.name}</td>
+      <td style="color:var(--ink-500)">${b.ceo||'—'}</td>
       <td>${b.region?`<span class="badge b-blue">${b.region}</span>`:'—'}</td>
       <td>${b.manager||'—'}</td>
       <td style="color:var(--ink-300)">${b.phone||'—'}</td>
@@ -793,8 +868,9 @@ async function uploadStoreInfo(e){
 function openBM(row=null){
   document.getElementById('bm-id').value=row?row.id:'';
   document.getElementById('bm-title').textContent=row?'판매처 수정':'판매처 추가';
-  ['bm-name','bm-manager','bm-phone','bm-email','bm-address','bm-note'].forEach(id=>{
-    const k=id.replace('bm-','');document.getElementById(id).value=row?(row[k]||''):'';
+  ['bm-name','bm-ceo','bm-manager','bm-phone','bm-email','bm-address','bm-note'].forEach(id=>{
+    const k=id.replace('bm-','');
+    document.getElementById(id).value=row?(row[k]||''):'';
   });
   document.getElementById('bm-region').value=row?row.region:'서울';
   document.getElementById('bm-status').value=row?row.status:'운영중';
@@ -805,10 +881,16 @@ async function editBranch(id){const r=await api(`/api/branches/${id}`);if(r)open
 async function saveBranch(){
   const id=document.getElementById('bm-id').value,name=document.getElementById('bm-name').value.trim();
   if(!name){toast('판매처명을 입력하세요',false);return;}
-  const body={name,region:document.getElementById('bm-region').value,
-    manager:document.getElementById('bm-manager').value,phone:document.getElementById('bm-phone').value,
-    email:document.getElementById('bm-email').value,address:document.getElementById('bm-address').value,
-    status:document.getElementById('bm-status').value,note:document.getElementById('bm-note').value};
+  const body={
+    name, ceo:document.getElementById('bm-ceo').value,
+    region:document.getElementById('bm-region').value,
+    manager:document.getElementById('bm-manager').value,
+    phone:document.getElementById('bm-phone').value,
+    email:document.getElementById('bm-email').value,
+    address:document.getElementById('bm-address').value,
+    status:document.getElementById('bm-status').value,
+    note:document.getElementById('bm-note').value
+  };
   if(id)await api(`/api/branches/${id}`,{method:'PUT',body});else await api('/api/branches',{method:'POST',body});
   closeBM();loadBranches();toast(id?'판매처 정보가 수정되었습니다':'판매처가 추가되었습니다');
 }
@@ -817,18 +899,30 @@ async function delBranch(id,name){
   await api(`/api/branches/${id}`,{method:'DELETE'});loadBranches();toast('삭제되었습니다');
 }
 
+// ── 사이드바 토글 ──────────────────────────────
+function toggleSidebar(){
+  const sb=document.getElementById('sidebar');
+  const btn=document.getElementById('sb-toggle-btn');
+  sb.classList.toggle('collapsed');
+  btn.textContent = sb.classList.contains('collapsed') ? '▶' : '◀';
+}
+
 let salesTab = 'monthly';
+let rankingData = [];
 
 function switchSalesTab(tab){
   salesTab = tab;
-  ['monthly','weekly'].forEach(t=>{
+  ['monthly','weekly','ranking'].forEach(t=>{
     const btn=document.getElementById(`tab-${t}`);
+    if(!btn) return;
     btn.style.color = t===tab?'var(--accent-m)':'var(--ink-300)';
     btn.style.borderBottom = t===tab?'2.5px solid var(--accent-m)':'2.5px solid transparent';
   });
   document.getElementById('sales-monthly-view').style.display=tab==='monthly'?'block':'none';
   document.getElementById('sales-weekly-view').style.display =tab==='weekly' ?'block':'none';
-  loadSalesPage();
+  document.getElementById('sales-ranking-view').style.display=tab==='ranking'?'block':'none';
+  if(tab==='ranking') renderRanking();
+  else loadSalesPage();
 }
 
 async function loadSalesPage(){
@@ -971,6 +1065,42 @@ async function openMonthDetail(seller,year,month){
 }
 
 async function loadSalesDetail(){}
+
+// ── 매출순위 ────────────────────────────────────
+async function renderRanking(){
+  const year   = document.getElementById('sales-year').value;
+  const month  = document.getElementById('sales-month')?.value||'';
+  const params = new URLSearchParams({year});
+  if(month) params.set('month', month);
+  const rows = await api(`/api/sales-by-store?${params}`);
+  if(!rows) return;
+  rankingData = [...rows];
+
+  const sort = document.getElementById('ranking-sort')?.value || 'total';
+  const sorted = [...rankingData].sort((a,b)=>(b[sort]||0)-(a[sort]||0));
+  const maxTotal = sorted[0]?.total || 1;
+
+  const MEDALS = ['🥇','🥈','🥉'];
+  const tbody = document.getElementById('ranking-tbody');
+  tbody.innerHTML = sorted.map((r,i)=>{
+    const pct = ((r.total||0)/maxTotal*100).toFixed(1);
+    const medal = i < 3 ? MEDALS[i] : `${i+1}`;
+    const barColor = i===0?'var(--amber)':i===1?'var(--ink-300)':i===2?'#CD7F32':'var(--accent-m)';
+    return `<tr>
+      <td style="text-align:center;font-size:${i<3?'16px':'13px'};font-weight:700">${medal}</td>
+      <td>
+        <strong style="color:var(--ink-900)">${r.seller_name||'—'}</strong>
+        <div style="height:4px;background:var(--ink-100);border-radius:20px;margin-top:6px;overflow:hidden">
+          <div style="height:100%;width:${pct}%;background:${barColor};border-radius:20px;transition:.5s"></div>
+        </div>
+      </td>
+      <td class="num" style="font-weight:700;color:var(--accent-m)">${N(r.total||0)}원</td>
+      <td class="num">${(r.cnt||0).toLocaleString()}건</td>
+      <td class="num">${(r.qty||0).toLocaleString()}개</td>
+      <td style="text-align:center;font-size:12px;color:var(--ink-300)">${pct}%</td>
+    </tr>`;
+  }).join('');
+}
 
 let UD=[];
 async function loadUsers(){

@@ -36,6 +36,7 @@ def init_db():
     conn.execute("""CREATE TABLE IF NOT EXISTS branches (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         name TEXT NOT NULL,
+        ceo TEXT,
         region TEXT,
         manager TEXT,
         phone TEXT,
@@ -89,6 +90,10 @@ def init_db():
             conn.execute("ALTER TABLE sales_data ADD COLUMN note TEXT DEFAULT ''")
         if 'upload_batch' not in existing_cols:
             conn.execute("ALTER TABLE sales_data ADD COLUMN upload_batch TEXT DEFAULT ''")
+        # branches 테이블 마이그레이션
+        branch_cols = [r[1] for r in conn.execute("PRAGMA table_info(branches)").fetchall()]
+        if 'ceo' not in branch_cols:
+            conn.execute("ALTER TABLE branches ADD COLUMN ceo TEXT DEFAULT ''")
     except Exception:
         pass
 
@@ -231,9 +236,9 @@ def api_branches():
 def api_branches_add():
     d = request.json
     conn = get_db()
-    conn.execute("""INSERT INTO branches(name,region,manager,phone,email,address,status,note)
-        VALUES(?,?,?,?,?,?,?,?)""",
-        (d["name"],d.get("region",""),d.get("manager",""),d.get("phone",""),
+    conn.execute("""INSERT INTO branches(name,ceo,region,manager,phone,email,address,status,note)
+        VALUES(?,?,?,?,?,?,?,?,?)""",
+        (d["name"],d.get("ceo",""),d.get("region",""),d.get("manager",""),d.get("phone",""),
          d.get("email",""),d.get("address",""),d.get("status","운영중"),d.get("note","")))
     conn.commit(); conn.close()
     return jsonify({"ok":True})
@@ -251,9 +256,9 @@ def api_branch_get(bid):
 def api_branches_update(bid):
     d = request.json
     conn = get_db()
-    conn.execute("""UPDATE branches SET name=?,region=?,manager=?,phone=?,email=?,
+    conn.execute("""UPDATE branches SET name=?,ceo=?,region=?,manager=?,phone=?,email=?,
         address=?,status=?,note=? WHERE id=?""",
-        (d["name"],d.get("region",""),d.get("manager",""),d.get("phone",""),
+        (d["name"],d.get("ceo",""),d.get("region",""),d.get("manager",""),d.get("phone",""),
          d.get("email",""),d.get("address",""),d.get("status","운영중"),d.get("note",""),bid))
     conn.commit(); conn.close()
     return jsonify({"ok":True})
@@ -849,13 +854,40 @@ def sales_data_weekly():
             COUNT(*) cnt,
             SUM(quantity) qty,
             SUM(total) total,
-            MIN(sale_date) week_start,
-            MAX(sale_date) week_end
+            -- 해당 주의 월요일 계산
+            date(MIN(sale_date), 'weekday 0', '-6 days') AS week_mon,
+            -- 해당 주의 금요일 계산
+            date(MIN(sale_date), 'weekday 0', '-2 days') AS week_fri
         FROM sales_data
         WHERE {where}
           AND strftime('%w', sale_date) BETWEEN '1' AND '5'
         GROUP BY week_key
         ORDER BY week_key""", params).fetchall()]
+
+    # week_mon/week_fri 보정: SQLite weekday 0=일요일이므로 직접 계산
+    from datetime import datetime as dt, timedelta
+    for r in rows:
+        try:
+            # week_key: 2026-05 형식
+            yr, wk = r['week_key'].split('-')
+            # 해당 연도+주차의 월요일 계산
+            jan1 = dt.strptime(f"{yr}-01-01", "%Y-%m-%d")
+            # ISO 주차와 다를 수 있으므로 MIN(sale_date) 기반으로 계산
+            # week_mon을 sale_date의 최소값 기반으로 정확히 계산
+            if r.get('week_mon'):
+                mon = dt.strptime(r['week_mon'], "%Y-%m-%d")
+                # 해당 날짜의 월요일 찾기
+                wd = mon.weekday()  # 0=월, 6=일
+                actual_mon = mon - timedelta(days=wd)
+                actual_fri = actual_mon + timedelta(days=4)
+                r['week_start'] = actual_mon.strftime("%Y-%m-%d")
+                r['week_end']   = actual_fri.strftime("%Y-%m-%d")
+            else:
+                r['week_start'] = ''
+                r['week_end']   = ''
+        except Exception:
+            r['week_start'] = r.get('week_mon', '')
+            r['week_end']   = r.get('week_fri', '')
     conn.close()
     return jsonify(rows)
 
