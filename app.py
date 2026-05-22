@@ -6,6 +6,13 @@ from flask import Flask, render_template, request, jsonify, session, redirect, u
 import sqlite3, json, os, csv, io
 from datetime import date, datetime
 from functools import wraps
+try:
+    import openpyxl
+    from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+    from openpyxl.utils import get_column_letter
+    HAS_OPENPYXL = True
+except ImportError:
+    HAS_OPENPYXL = False
 
 app = Flask(__name__)
 app.secret_key = os.environ.get("SECRET_KEY", "enfix-manager-secret-2025")
@@ -450,17 +457,271 @@ def api_sales_by_store():
         conn.close()
         return jsonify(rows)
     else:
-        # 전체 매장 요약
+        # 전체 매장 요약 — 브랜드별 그룹 정렬 (베이비하우스 → 링크맘 → 기타)
         rows = [dict(r) for r in conn.execute("""
             SELECT real_seller AS seller_name,
                    COUNT(*) cnt, SUM(total) total, SUM(quantity) qty
             FROM sales_data
             WHERE sale_date LIKE ? AND real_seller != '' AND real_seller IS NOT NULL
-            GROUP BY real_seller ORDER BY total DESC""", (date_cond,)).fetchall()]
+            GROUP BY real_seller ORDER BY real_seller""", (date_cond,)).fetchall()]
         conn.close()
+
+        def brand_sort_key(r):
+            nm = (r['seller_name'] or '').replace('_', ' ').lower()
+            if '베이비하우스' in nm: return (0, -r['total'])
+            if '링크맘' in nm:      return (1, -r['total'])
+            if '베이비파크' in nm:  return (2, -r['total'])
+            if '베네피아' in nm:    return (3, -r['total'])
+            return (9, -r['total'])
+
+        rows.sort(key=brand_sort_key)
         return jsonify(rows)
 
 # ── 판매현황 — 판매처 수 전체 반환 ──────────────
+# ── 판매실적 엑셀 내보내기 ────────────────────────
+@app.route("/api/export/sales-monthly")
+@login_required
+def export_sales_monthly():
+    year   = request.args.get("year",   str(datetime.now().year))
+    month  = request.args.get("month",  "")
+    seller = request.args.get("seller", "").strip()
+    date_cond = f"{year}-{month.zfill(2)}%" if month else f"{year}%"
+    conn = get_db()
+    if seller:
+        rows = [dict(r) for r in conn.execute("""
+            SELECT ? AS seller_name, CAST(strftime('%m', sale_date) AS INTEGER) AS month,
+                   COUNT(*) cnt, SUM(total) total, SUM(quantity) qty
+            FROM sales_data WHERE real_seller=? AND sale_date LIKE ? AND sale_date != ''
+            GROUP BY month ORDER BY month""", (seller, seller, date_cond)).fetchall()]
+    else:
+        rows = [dict(r) for r in conn.execute("""
+            SELECT real_seller AS seller_name, COUNT(*) cnt, SUM(total) total, SUM(quantity) qty
+            FROM sales_data WHERE sale_date LIKE ? AND real_seller != ''
+            GROUP BY real_seller ORDER BY total DESC""", (date_cond,)).fetchall()]
+    conn.close()
+    buf = io.StringIO()
+    w = csv.writer(buf)
+    if seller:
+        w.writerow(['매장명', '월', '판매건수', '판매수량', '판매금액'])
+        for r in rows:
+            w.writerow([r['seller_name'], f"{r['month']}월", r['cnt'], r['qty'], r['total']])
+    else:
+        w.writerow(['매장명', '판매건수', '판매수량', '판매금액'])
+        for r in rows:
+            w.writerow([r['seller_name'], r['cnt'], r['qty'], r['total']])
+    buf.seek(0)
+    fname = f"월별실적_{year}{'_'+month+'월' if month else ''}.csv"
+    return send_file(io.BytesIO(buf.getvalue().encode('utf-8-sig')), mimetype='text/csv',
+                     as_attachment=True, download_name=fname)
+
+@app.route("/api/export/sales-weekly")
+@login_required
+def export_sales_weekly():
+    year   = request.args.get("year",   str(datetime.now().year))
+    month  = request.args.get("month",  "")
+    seller = request.args.get("seller", "").strip()
+    from datetime import datetime as dt2, timedelta
+    qp = ["sale_date != ''"]
+    pp = []
+    if month: qp.append("sale_date LIKE ?"); pp.append(f"{year}-{month.zfill(2)}%")
+    else:     qp.append("sale_date LIKE ?"); pp.append(f"{year}%")
+    if seller: qp.append("real_seller = ?"); pp.append(seller)
+    conn = get_db()
+    rows = [dict(r) for r in conn.execute(f"""
+        SELECT strftime('%Y-%W', sale_date) AS week_key,
+               COUNT(*) cnt, SUM(quantity) qty, SUM(total) total, MIN(sale_date) AS min_date
+        FROM sales_data WHERE {' AND '.join(qp)} AND sale_date != ''
+        GROUP BY week_key ORDER BY week_key""", pp).fetchall()]
+    conn.close()
+    def wr(ds):
+        d = dt2.strptime(ds, "%Y-%m-%d"); wd=d.weekday()
+        sun=d-timedelta(days=(wd+1)%7)
+        return sun.strftime("%Y-%m-%d"), (sun+timedelta(days=6)).strftime("%Y-%m-%d")
+    for r in rows:
+        try: r['ws'],r['we']=wr(r['min_date'])
+        except: r['ws']=r['we']=''
+    buf = io.StringIO(); w = csv.writer(buf)
+    w.writerow(['주차','기간 시작','기간 종료','판매건수','판매수량','판매금액'])
+    for i,r in enumerate(rows):
+        w.writerow([f"{i+1}주차",r['ws'],r['we'],r['cnt'],r['qty'],r['total']])
+    buf.seek(0)
+    fname = f"주별실적_{year}{'_'+month+'월' if month else ''}.csv"
+    return send_file(io.BytesIO(buf.getvalue().encode('utf-8-sig')), mimetype='text/csv',
+                     as_attachment=True, download_name=fname)
+
+@app.route("/api/export/sales-ranking")
+@login_required
+def export_sales_ranking():
+    year  = request.args.get("year",  str(datetime.now().year))
+    month = request.args.get("month", "")
+    date_cond = f"{year}-{month.zfill(2)}%" if month else f"{year}%"
+    conn = get_db()
+    rows = [dict(r) for r in conn.execute("""
+        SELECT real_seller AS seller_name, COUNT(*) cnt, SUM(total) total, SUM(quantity) qty
+        FROM sales_data WHERE sale_date LIKE ? AND real_seller != ''
+        GROUP BY real_seller ORDER BY total DESC""", (date_cond,)).fetchall()]
+    conn.close()
+    buf = io.StringIO(); w = csv.writer(buf)
+    w.writerow(['순위','매장명','판매금액','판매건수','판매수량'])
+    for i,r in enumerate(rows):
+        w.writerow([i+1,r['seller_name'],r['total'],r['cnt'],r['qty']])
+    buf.seek(0)
+    fname = f"매출순위_{year}{'_'+month+'월' if month else ''}.csv"
+    return send_file(io.BytesIO(buf.getvalue().encode('utf-8-sig')), mimetype='text/csv',
+                     as_attachment=True, download_name=fname)
+
+# ── xlsx 엑셀 내보내기 헬퍼 ──────────────────────
+def make_xlsx(headers, rows_data, sheet_name="데이터"):
+    wb = openpyxl.Workbook()
+    ws = wb.active; ws.title = sheet_name
+    hdr_fill = PatternFill(start_color="4F46E5", end_color="4F46E5", fill_type="solid")
+    hdr_font = Font(color="FFFFFF", bold=True, size=11)
+    thin = Side(style='thin', color='E5E7EB')
+    bdr  = Border(left=thin, right=thin, top=thin, bottom=thin)
+    for col, hdr in enumerate(headers, 1):
+        c = ws.cell(row=1, column=col, value=hdr)
+        c.fill=hdr_fill; c.font=hdr_font
+        c.alignment=Alignment(horizontal="center",vertical="center"); c.border=bdr
+    ws.row_dimensions[1].height = 24
+    even_fill = PatternFill(start_color="F9FAFB", end_color="F9FAFB", fill_type="solid")
+    for ri, row in enumerate(rows_data, 2):
+        for ci, val in enumerate(row, 1):
+            c = ws.cell(row=ri, column=ci, value=val)
+            c.border = bdr
+            if ri % 2 == 0: c.fill = even_fill
+            if isinstance(val,(int,float)) and ci > 1:
+                c.alignment = Alignment(horizontal="right")
+                if '금액' in headers[ci-1]: c.number_format = '#,##0'
+    for col in ws.columns:
+        ml = max((len(str(c.value or '')) for c in col), default=8)
+        ws.column_dimensions[get_column_letter(col[0].column)].width = min(ml+4, 40)
+    buf = io.BytesIO(); wb.save(buf); buf.seek(0)
+    return buf
+
+@app.route("/api/export/xlsx/monthly")
+@login_required
+def export_xlsx_monthly():
+    year=request.args.get("year",str(datetime.now().year))
+    month=request.args.get("month",""); seller=request.args.get("seller","").strip()
+    date_cond = f"{year}-{month.zfill(2)}%" if month else f"{year}%"
+    conn = get_db()
+    if seller:
+        rows=[dict(r) for r in conn.execute("""SELECT ? AS seller_name,
+            CAST(strftime('%m',sale_date) AS INTEGER) AS month,
+            COUNT(*) cnt,SUM(quantity) qty,SUM(total) total
+            FROM sales_data WHERE real_seller=? AND sale_date LIKE ? AND sale_date!=''
+            GROUP BY month ORDER BY month""",(seller,seller,date_cond)).fetchall()]
+        hdrs=['매장명','월','판매건수','판매수량','판매금액(원)']
+        data=[[r['seller_name'],f"{r['month']}월",r['cnt'],r['qty'],r['total']] for r in rows]
+        sn=f"{seller[:10]}_월별"
+    else:
+        rows=[dict(r) for r in conn.execute("""SELECT real_seller AS seller_name,
+            COUNT(*) cnt,SUM(quantity) qty,SUM(total) total
+            FROM sales_data WHERE sale_date LIKE ? AND real_seller!=''
+            GROUP BY real_seller ORDER BY total DESC""",(date_cond,)).fetchall()]
+        hdrs=['매장명','판매건수','판매수량','판매금액(원)']
+        data=[[r['seller_name'],r['cnt'],r['qty'],r['total']] for r in rows]; sn="월별실적"
+    conn.close()
+    buf=make_xlsx(hdrs,data,sn)
+    fname=f"월별실적_{year}{'_'+month+'월' if month else ''}.xlsx"
+    return send_file(buf,mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                     as_attachment=True,download_name=fname)
+
+@app.route("/api/export/xlsx/weekly")
+@login_required
+def export_xlsx_weekly():
+    from datetime import datetime as dt2, timedelta
+    year=request.args.get("year",str(datetime.now().year))
+    month=request.args.get("month",""); seller=request.args.get("seller","").strip()
+    qp=["sale_date != ''"];pp=[]
+    if month: qp.append("sale_date LIKE ?");pp.append(f"{year}-{month.zfill(2)}%")
+    else:     qp.append("sale_date LIKE ?");pp.append(f"{year}%")
+    if seller: qp.append("real_seller = ?");pp.append(seller)
+    conn=get_db()
+    rows=[dict(r) for r in conn.execute(f"""SELECT strftime('%Y-%W',sale_date) AS week_key,
+        COUNT(*) cnt,SUM(quantity) qty,SUM(total) total,MIN(sale_date) AS min_date
+        FROM sales_data WHERE {' AND '.join(qp)} AND sale_date!=''
+        GROUP BY week_key ORDER BY week_key""",pp).fetchall()]
+    conn.close()
+    def wr(ds):
+        d=dt2.strptime(ds,"%Y-%m-%d"); sun=d-timedelta(days=(d.weekday()+1)%7)
+        return sun.strftime("%Y-%m-%d"),(sun+timedelta(days=6)).strftime("%Y-%m-%d")
+    hdrs=['주차','시작일(일)','종료일(토)','판매건수','판매수량','판매금액(원)']
+    data=[]
+    for i,r in enumerate(rows):
+        try: ws_,we_=wr(r['min_date'])
+        except: ws_=we_=''
+        data.append([f"{i+1}주차",ws_,we_,r['cnt'],r['qty'],r['total']])
+    buf=make_xlsx(hdrs,data,"주별실적")
+    fname=f"주별실적_{year}{'_'+month+'월' if month else ''}.xlsx"
+    return send_file(buf,mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                     as_attachment=True,download_name=fname)
+
+@app.route("/api/export/xlsx/ranking")
+@login_required
+def export_xlsx_ranking():
+    year=request.args.get("year",str(datetime.now().year)); month=request.args.get("month","")
+    date_cond=f"{year}-{month.zfill(2)}%" if month else f"{year}%"
+    conn=get_db()
+    rows=[dict(r) for r in conn.execute("""SELECT real_seller AS seller_name,
+        COUNT(*) cnt,SUM(total) total,SUM(quantity) qty
+        FROM sales_data WHERE sale_date LIKE ? AND real_seller!=''
+        GROUP BY real_seller ORDER BY total DESC""",(date_cond,)).fetchall()]
+    conn.close()
+    hdrs=['순위','매장명','판매금액(원)','판매건수','판매수량']
+    data=[[i+1,r['seller_name'],r['total'],r['cnt'],r['qty']] for i,r in enumerate(rows)]
+    buf=make_xlsx(hdrs,data,"매출순위")
+    fname=f"매출순위_{year}{'_'+month+'월' if month else ''}.xlsx"
+    return send_file(buf,mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                     as_attachment=True,download_name=fname)
+
+# ── 제품별 관리 API ────────────────────────────────
+@app.route("/api/products/groups")
+@login_required
+def api_product_groups():
+    conn = get_db()
+    groups = [dict(r) for r in conn.execute("""
+        SELECT item_group, COUNT(DISTINCT item_name) item_cnt,
+               SUM(quantity) qty, SUM(total) total
+        FROM sales_data WHERE item_group != '' AND item_group IS NOT NULL
+        GROUP BY item_group ORDER BY total DESC""").fetchall()]
+    conn.close()
+    return jsonify(groups)
+
+@app.route("/api/products/items")
+@login_required
+def api_product_items():
+    group=request.args.get("group",""); seller=request.args.get("seller","").strip()
+    year=request.args.get("year",str(datetime.now().year)); month=request.args.get("month","")
+    conn=get_db()
+    date_cond=f"{year}-{month.zfill(2)}%" if month else f"{year}%"
+    params=[date_cond]; conds=["sale_date LIKE ?","sale_date != ''"]
+    if group:  conds.append("item_group=?");  params.append(group)
+    if seller: conds.append("real_seller=?"); params.append(seller)
+    rows=[dict(r) for r in conn.execute(f"""SELECT item_name,item_group,item_code,
+        SUM(quantity) qty,AVG(unit_price) avg_price,SUM(total) total,COUNT(*) cnt
+        FROM sales_data WHERE {' AND '.join(conds)}
+        GROUP BY item_name ORDER BY total DESC""",params).fetchall()]
+    conn.close()
+    return jsonify(rows)
+
+@app.route("/api/products/by-seller")
+@login_required
+def api_product_by_seller():
+    group=request.args.get("group",""); item=request.args.get("item","")
+    year=request.args.get("year",str(datetime.now().year)); month=request.args.get("month","")
+    conn=get_db()
+    date_cond=f"{year}-{month.zfill(2)}%" if month else f"{year}%"
+    params=[date_cond]; conds=["sale_date LIKE ?","sale_date != ''","real_seller != ''"]
+    if group: conds.append("item_group=?"); params.append(group)
+    if item:  conds.append("item_name=?");  params.append(item)
+    rows=[dict(r) for r in conn.execute(f"""SELECT real_seller seller_name,
+        SUM(quantity) qty,SUM(total) total,COUNT(*) cnt
+        FROM sales_data WHERE {' AND '.join(conds)}
+        GROUP BY real_seller ORDER BY total DESC""",params).fetchall()]
+    conn.close()
+    return jsonify(rows)
+
 @app.route("/api/sales-data/summary")
 @login_required
 def sales_data_summary():
@@ -1002,24 +1263,54 @@ def sales_data_weekly():
         WHERE {where} AND sale_date != ''
         GROUP BY week_key
         ORDER BY week_key""", params).fetchall()]
+    conn.close()
 
     # 주차별 일요일~토요일 범위 계산
     from datetime import datetime as dt, timedelta
+
+    def get_week_range(date_str):
+        d = dt.strptime(date_str, "%Y-%m-%d")
+        wd = d.weekday()  # 0=월
+        days_to_sun = (wd + 1) % 7
+        sun = d - timedelta(days=days_to_sun)
+        sat = sun + timedelta(days=6)
+        return sun.strftime("%Y-%m-%d"), sat.strftime("%Y-%m-%d")
+
     for r in rows:
         try:
-            min_d = dt.strptime(r['min_date'], "%Y-%m-%d")
-            # 해당 날짜가 속한 주의 일요일 찾기 (weekday: 0=월 ~ 6=일)
-            wd = min_d.weekday()  # 0=월요일
-            # 일요일로 이동 (월요일이면 -1, 화요일이면 -2 ... 일요일이면 0)
-            days_to_sun = (wd + 1) % 7  # 일요일까지 거슬러 올라갈 일수
-            week_sun = min_d - timedelta(days=days_to_sun)
-            week_sat = week_sun + timedelta(days=6)
-            r['week_start'] = week_sun.strftime("%Y-%m-%d")
-            r['week_end']   = week_sat.strftime("%Y-%m-%d")
+            r['week_start'], r['week_end'] = get_week_range(r['min_date'])
         except Exception:
             r['week_start'] = r.get('min_date', '')
             r['week_end']   = ''
-    conn.close()
+
+    # 선택 월이 있으면 해당 월의 모든 주차를 채움 (데이터 없는 주도 표시)
+    if month and rows:
+        import calendar
+        yr_int = int(year)
+        mo_int = int(month)
+        # 해당 월의 첫날~마지막날
+        first_day = dt(yr_int, mo_int, 1)
+        last_day  = dt(yr_int, mo_int, calendar.monthrange(yr_int, mo_int)[1])
+
+        # 해당 월에 포함된 모든 주(일~토) 목록 생성
+        all_weeks = {}
+        cur = first_day
+        while cur <= last_day:
+            wk_start, wk_end = get_week_range(cur.strftime("%Y-%m-%d"))
+            wk_key = cur.strftime("%Y-%W")
+            if wk_key not in all_weeks:
+                all_weeks[wk_key] = {'week_key': wk_key, 'week_start': wk_start, 'week_end': wk_end,
+                                     'cnt': 0, 'qty': 0, 'total': 0, 'min_date': cur.strftime("%Y-%m-%d")}
+            cur += timedelta(days=1)
+
+        # 실제 데이터로 채우기
+        data_map = {r['week_key']: r for r in rows}
+        for wk_key in all_weeks:
+            if wk_key in data_map:
+                all_weeks[wk_key] = data_map[wk_key]
+
+        rows = sorted(all_weeks.values(), key=lambda x: x['week_key'])
+
     return jsonify(rows)
 
 # ── 월별 세부 품목 API ─────────────────────────
