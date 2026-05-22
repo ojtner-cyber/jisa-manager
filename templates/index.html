@@ -455,7 +455,8 @@ td.center{text-align:center}
       <div class="tw">
         <table>
           <thead><tr>
-            <th>판매처명</th><th>대표자</th><th>지역</th><th>담당자</th><th>전화번호</th>
+            <th>판매처명</th><th>대표자</th><th>대표자연락처</th><th>점장</th><th>점장연락처</th>
+            <th>전화번호</th><th>지역</th><th>담당자</th>
             <th>상태</th><th class="num">연간 실적</th><th>메모</th><th class="center">—</th>
           </tr></thead>
           <tbody id="branch-tbody"></tbody>
@@ -612,6 +613,7 @@ td.center{text-align:center}
       <div class="ph">
         <div><h2>판매현황</h2><p>엑셀 업로드 데이터 기반 판매처 · 품목 · 금액 분석</p></div>
         <div class="ph-r">
+          <select class="ysel" id="sd-year" onchange="loadSalesData()"></select>
           <button class="btn btn-dark btn-sm" onclick="showPage('upload')">↑ 엑셀 업로드</button>
         </div>
       </div>
@@ -900,7 +902,7 @@ async function api(url,opts={}){
 }
 function initYears(){
   const y=TY(),yrs=Array.from({length:5},(_,i)=>y-i);
-  ['dash-year','sales-year','ex-year','prod-year'].forEach(id=>{
+  ['dash-year','sales-year','ex-year','prod-year','sd-year'].forEach(id=>{
     const s=document.getElementById(id);
     if(s)s.innerHTML=yrs.map(yr=>`<option${yr===y?' selected':''}>${yr}</option>`).join('');
   });
@@ -1060,13 +1062,16 @@ async function loadBranches(){
     const sb=b.status==='운영중'?'b-green':b.status==='일시중단'?'b-amber':'b-red';
     return `<tr>
       <td class="td-main">${b.name}</td>
-      <td style="color:var(--ink-500)">${b.ceo||'—'}</td>
-      <td>${b.region?`<span class="badge b-blue">${b.region}</span>`:'—'}</td>
-      <td>${b.manager||'—'}</td>
+      <td style="color:var(--ink-700)">${b.ceo||'—'}</td>
+      <td style="color:var(--ink-300)">${b.ceo_phone||'—'}</td>
+      <td style="color:var(--ink-700)">${b.store_manager||'—'}</td>
+      <td style="color:var(--ink-300)">${b.store_manager_phone||'—'}</td>
       <td style="color:var(--ink-300)">${b.phone||'—'}</td>
+      <td>${b.region?`<span class="badge b-blue">${b.region}</span>`:'—'}</td>
+      <td style="color:var(--ink-300)">${b.manager||'—'}</td>
       <td><span class="badge ${sb}">${b.status}</span></td>
       <td class="num" style="font-weight:700;color:var(--accent-m)">${N(b.year_actual)}원</td>
-      <td style="color:var(--ink-300);max-width:120px;overflow:hidden;text-overflow:ellipsis">${b.note||'—'}</td>
+      <td style="color:var(--ink-300);max-width:100px;overflow:hidden;text-overflow:ellipsis">${b.note||'—'}</td>
       <td class="center" style="white-space:nowrap">
         <button class="btn btn-ghost btn-xs" onclick="editBranch(${b.id})">수정</button>
         <button class="btn btn-red-lt btn-xs" style="margin-left:4px" onclick="delBranch(${b.id},'${b.name}')">삭제</button>
@@ -1365,14 +1370,14 @@ async function renderRanking(){
 
   const sort = document.getElementById('ranking-sort')?.value || 'total';
   const sorted = [...rankingData].sort((a,b)=>(b[sort]||0)-(a[sort]||0));
-  const maxTotal = sorted[0]?.total || 1;
+  const totalSum = sorted.reduce((s,r)=>(s+(r.total||0)),0) || 1;  // 전체 합계 기준
 
   const MEDALS = ['🥇','🥈','🥉'];
   const tbody = document.getElementById('ranking-tbody');
   tbody.innerHTML = sorted.map((r,i)=>{
-    const pct = ((r.total||0)/maxTotal*100).toFixed(1);
-    const medal = i < 3 ? MEDALS[i] : `${i+1}`;
+    const pct = ((r.total||0)/totalSum*100).toFixed(1);
     const barColor = i===0?'var(--amber)':i===1?'var(--ink-300)':i===2?'#CD7F32':'var(--accent-m)';
+    const medal = i < 3 ? MEDALS[i] : `${i+1}`;
     return `<tr>
       <td style="text-align:center;font-size:${i<3?'16px':'13px'};font-weight:700">${medal}</td>
       <td>
@@ -1485,7 +1490,8 @@ async function confirmXlsx(){
 let cSdDate, cSdGroup;
 
 async function loadSalesData(){
-  const d=await api('/api/sales-data/summary');if(!d)return;
+  const year = document.getElementById('sd-year')?.value || new Date().getFullYear();
+  const d=await api(`/api/sales-data/summary?year=${year}`);if(!d)return;
   document.getElementById('sd-count').textContent=d.total_count.toLocaleString()+'건';
   document.getElementById('sd-qty').textContent=d.total_quantity.toLocaleString()+'개';
   document.getElementById('sd-total').textContent=N(d.total_amount)+'원';

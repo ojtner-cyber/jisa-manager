@@ -602,6 +602,46 @@ def export_sales_ranking():
                      as_attachment=True, download_name=fname)
 
 # ── xlsx 엑셀 내보내기 헬퍼 ──────────────────────
+
+# 품목그룹 정규화 매핑 (식탁의자→하이체어, 웨건, 보행기)
+GROUP_REMAP = {
+    '식탁의자': '하이체어',
+    '하이체어': '하이체어',
+    '웨건':     '웨건',
+    '유모차':   '유모차',
+    '카시트':   '카시트',
+    '보행기':   '보행기',
+}
+# 품목명으로 그룹 오버라이드
+ITEM_GROUP_OVERRIDE = {}  # 제품명 키워드 → 강제 그룹
+
+def remap_group(group, item_name=''):
+    """품목그룹 정규화"""
+    g = (group or '').strip()
+    item = (item_name or '').lower()
+    # 원더폴드 → 웨건
+    if '원더폴드' in item: return '웨건'
+    # 점퍼루/쏘서 → 보행기
+    if '점퍼루' in item or '쏘서' in item: return '보행기'
+    # 그룹 리매핑
+    return GROUP_REMAP.get(g, g or '기타')
+
+def normalize_item_name(name):
+    """제품명에서 색상/옵션 제거 — 언더바 뒤 색상명 통합
+    예: [줄즈]에어2_샌디타프 → [줄즈]에어2
+        [레카로]제논1_엘레강트베이지 → [레카로]제논1
+    """
+    if not name: return name
+    # 패턴: 브랜드+모델명_색상 → 브랜드+모델명
+    import re
+    # 언더바 뒤에 색상/옵션명이 오는 경우 제거
+    cleaned = re.sub(r'_[가-힣a-zA-Z]+$', '', name).strip()
+    return cleaned if cleaned else name
+
+def get_group_sort_key(group):
+    """품목그룹 정렬 순서: 유모차 → 카시트 → 웨건 → 하이체어 → 보행기 → 기타"""
+    order = {'유모차':0,'카시트':1,'웨건':2,'하이체어':3,'보행기':4}
+    return order.get(group, 9)
 def make_xlsx(headers, rows_data, sheet_name="데이터"):
     wb = openpyxl.Workbook()
     ws = wb.active; ws.title = sheet_name
@@ -679,33 +719,44 @@ def export_xlsx_monthly():
             if ri%2==0: c.fill=even
             if ci==len(hdrs) and isinstance(val,int): c.number_format='#,##0'
 
-    # ── 시트2: 제품별 상세 ──
+    # ── 시트2: 제품별 상세 (색상 통합, 그룹 정규화, 평균단가/공급가/부가세 제외) ──
     ws2 = wb.create_sheet("제품별 상세")
-    params=[date_cond]; conds=["sale_date LIKE ?","sale_date!=''"]
-    if seller: conds.append("real_seller=?"); params.append(seller)
-    items = [dict(r) for r in conn.execute(f"""
-        SELECT {'real_seller AS seller_name,' if not seller else '? AS seller_name,'}
-               item_group, item_name, SUM(quantity) qty, AVG(unit_price) avg_price,
-               SUM(supply_price) supply, SUM(vat) vat_sum, SUM(total) total, COUNT(*) cnt
-        FROM sales_data WHERE {' AND '.join(conds)}
-        GROUP BY {'real_seller,' if not seller else ''} item_name
-        ORDER BY {'real_seller,' if not seller else ''} total DESC""",
-        ([seller]+params if seller else params)).fetchall()]
+    params2=[date_cond]; conds2=["sale_date LIKE ?","sale_date!=''"]
+    if seller: conds2.append("real_seller=?"); params2.append(seller)
+
+    raw_items = [dict(r) for r in conn.execute(f"""
+        SELECT item_group, item_name, SUM(quantity) qty, SUM(total) total, COUNT(*) cnt
+        FROM sales_data WHERE {' AND '.join(conds2)}
+        GROUP BY item_name ORDER BY item_group, total DESC""", params2).fetchall()]
     conn.close()
 
-    item_hdrs=['매장명','품목그룹','제품명','판매건수','판매수량','평균단가','공급가액','부가세','합계금액']
+    # 제품명 정규화 (색상 제거) 후 재집계
+    merged = {}
+    for r in raw_items:
+        norm_name  = normalize_item_name(r['item_name'])
+        norm_group = remap_group(r['item_group'], r['item_name'])
+        key = (norm_group, norm_name)
+        if key not in merged:
+            merged[key] = {'item_group': norm_group, 'item_name': norm_name,
+                           'qty': 0, 'total': 0, 'cnt': 0}
+        merged[key]['qty']   += r['qty']
+        merged[key]['total'] += r['total']
+        merged[key]['cnt']   += r['cnt']
+
+    # 그룹 순서 정렬: 유모차→카시트→웨건→하이체어→보행기→기타
+    sorted_items = sorted(merged.values(),
+                          key=lambda x: (get_group_sort_key(x['item_group']), -x['total']))
+
+    item_hdrs=['품목그룹','제품명','판매건수','판매수량','합계금액(원)']
     for ci,h in enumerate(item_hdrs,1):
         c=ws2.cell(row=1,column=ci,value=h); hdr_style(c,"6366F1")
     ws2.row_dimensions[1].height=22
-    for ri,r in enumerate(items,2):
-        nm=r.get('seller_name',seller or '')
-        vals2=[nm,r.get('item_group',''),r.get('item_name',''),
-               r.get('cnt',0),r.get('qty',0),round(r.get('avg_price',0)),
-               r.get('supply',0),r.get('vat_sum',0),r.get('total',0)]
+    for ri,r in enumerate(sorted_items,2):
+        vals2=[r['item_group'],r['item_name'],r['cnt'],r['qty'],r['total']]
         for ci,val in enumerate(vals2,1):
-            c=ws2.cell(row=ri,column=ci,value=val); data_cell(c,ci>3)
+            c=ws2.cell(row=ri,column=ci,value=val); data_cell(c,ci>2)
             if ri%2==0: c.fill=even
-            if ci>=6 and isinstance(val,int): c.number_format='#,##0'
+            if ci==5 and isinstance(val,int): c.number_format='#,##0'
 
     # 컬럼 너비 자동
     for ws in [ws1,ws2]:
@@ -743,23 +794,31 @@ def export_xlsx_weekly():
         try: r['ws'],r['we']=wr(r['min_date'])
         except: r['ws']=r['we']=''
 
-    # 제품별 상세 (주차별)
+    # 제품별 상세 (주차별 — 색상 통합, 그룹 정규화)
     items_by_week={}
     for r in rows:
         wk=r['week_key']
-        ip=pp.copy(); ic=qp.copy()
-        ic[0]="sale_date != ''"
-        if len(ic)>1: ic[1]=f"strftime('%Y-%W',sale_date)='{wk}'"
-        else: ic.append(f"strftime('%Y-%W',sale_date)='{wk}'")
-        # 해당 주차 품목 조회
-        wparams=[p for p in pp if 'seller' in qp[qp.index(p)] if False] or []
-        w_conds=["sale_date!=''", f"strftime('%Y-%W',sale_date)=?"]
+        w_conds=["sale_date!=''", "strftime('%Y-%W',sale_date)=?"]
         w_params=[wk]
         if seller: w_conds.append("real_seller=?"); w_params.append(seller)
-        irows=conn.execute(f"""SELECT item_group,item_name,SUM(quantity) qty,
-            SUM(total) total,COUNT(*) cnt FROM sales_data
-            WHERE {' AND '.join(w_conds)} GROUP BY item_name ORDER BY total DESC""",w_params).fetchall()
-        items_by_week[wk]=[dict(x) for x in irows]
+        irows=conn.execute(f"""SELECT item_group, item_name,
+            SUM(quantity) qty, SUM(total) total, COUNT(*) cnt
+            FROM sales_data WHERE {' AND '.join(w_conds)}
+            GROUP BY item_name ORDER BY total DESC""", w_params).fetchall()
+        # 색상 통합
+        merged_w = {}
+        for ir in irows:
+            d=dict(ir)
+            norm_name  = normalize_item_name(d['item_name'])
+            norm_group = remap_group(d['item_group'], d['item_name'])
+            key=(norm_group,norm_name)
+            if key not in merged_w:
+                merged_w[key]={'item_group':norm_group,'item_name':norm_name,'qty':0,'total':0,'cnt':0}
+            merged_w[key]['qty']   += d['qty']
+            merged_w[key]['total'] += d['total']
+            merged_w[key]['cnt']   += d['cnt']
+        items_by_week[wk]=sorted(merged_w.values(),
+            key=lambda x:(get_group_sort_key(x['item_group']),-x['total']))
     conn.close()
 
     wb=openpyxl.Workbook()
@@ -782,7 +841,7 @@ def export_xlsx_weekly():
             if ci>3: c.alignment=Alignment(horizontal="right")
             if ci==6 and isinstance(v,int): c.number_format='#,##0'
 
-    # 시트2: 제품별 상세
+    # 시트2: 제품별 상세 (색상 통합, 평균단가/공급가/부가세 제외)
     ws2=wb.create_sheet("제품별 상세")
     item_hdrs=['주차','기간','품목그룹','제품명','판매건수','판매수량','판매금액(원)']
     for ci,h in enumerate(item_hdrs,1): hc(ws2.cell(row=1,column=ci,value=h),"6366F1")
@@ -876,22 +935,23 @@ def api_product_by_seller():
 @app.route("/api/sales-data/summary")
 @login_required
 def sales_data_summary():
-    conn = get_db()
-    total = conn.execute("SELECT COUNT(*) c, SUM(total) t, SUM(quantity) q FROM sales_data").fetchone()
-    # 전체 판매처 (제한 없음)
-    by_seller = [dict(r) for r in conn.execute("""
+    year  = request.args.get("year", "")
+    conn  = get_db()
+    where = f"AND sale_date LIKE '{year}%'" if year else ""
+    total = conn.execute(f"SELECT COUNT(*) c, SUM(total) t, SUM(quantity) q FROM sales_data WHERE 1=1 {where}").fetchone()
+    by_seller = [dict(r) for r in conn.execute(f"""
         SELECT real_seller seller_name, COUNT(*) cnt, SUM(quantity) qty, SUM(total) total
-        FROM sales_data WHERE real_seller != ''
+        FROM sales_data WHERE real_seller != '' {where}
         GROUP BY real_seller ORDER BY total DESC""").fetchall()]
-    by_group = [dict(r) for r in conn.execute("""
+    by_group = [dict(r) for r in conn.execute(f"""
         SELECT item_group, COUNT(*) cnt, SUM(quantity) qty, SUM(total) total
-        FROM sales_data WHERE item_group != '' GROUP BY item_group ORDER BY total DESC""").fetchall()]
-    by_date = [dict(r) for r in conn.execute("""
+        FROM sales_data WHERE item_group != '' {where} GROUP BY item_group ORDER BY total DESC""").fetchall()]
+    by_date = [dict(r) for r in conn.execute(f"""
         SELECT sale_date, COUNT(*) cnt, SUM(total) total
-        FROM sales_data WHERE sale_date != '' GROUP BY sale_date ORDER BY sale_date""").fetchall()]
-    by_item = [dict(r) for r in conn.execute("""
+        FROM sales_data WHERE sale_date != '' {where} GROUP BY sale_date ORDER BY sale_date""").fetchall()]
+    by_item = [dict(r) for r in conn.execute(f"""
         SELECT item_name, SUM(quantity) qty, SUM(total) total
-        FROM sales_data GROUP BY item_name ORDER BY total DESC LIMIT 20""").fetchall()]
+        FROM sales_data WHERE 1=1 {where} GROUP BY item_name ORDER BY total DESC LIMIT 20""").fetchall()]
     conn.close()
     return jsonify({
         "total_count": total["c"] or 0,
