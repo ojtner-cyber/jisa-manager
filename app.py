@@ -44,6 +44,9 @@ def init_db():
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         name TEXT NOT NULL,
         ceo TEXT,
+        ceo_phone TEXT,
+        store_manager TEXT,
+        store_manager_phone TEXT,
         region TEXT,
         manager TEXT,
         phone TEXT,
@@ -101,6 +104,12 @@ def init_db():
         branch_cols = [r[1] for r in conn.execute("PRAGMA table_info(branches)").fetchall()]
         if 'ceo' not in branch_cols:
             conn.execute("ALTER TABLE branches ADD COLUMN ceo TEXT DEFAULT ''")
+        if 'ceo_phone' not in branch_cols:
+            conn.execute("ALTER TABLE branches ADD COLUMN ceo_phone TEXT DEFAULT ''")
+        if 'store_manager' not in branch_cols:
+            conn.execute("ALTER TABLE branches ADD COLUMN store_manager TEXT DEFAULT ''")
+        if 'store_manager_phone' not in branch_cols:
+            conn.execute("ALTER TABLE branches ADD COLUMN store_manager_phone TEXT DEFAULT ''")
     except Exception:
         pass
 
@@ -243,10 +252,11 @@ def api_branches():
 def api_branches_add():
     d = request.json
     conn = get_db()
-    conn.execute("""INSERT INTO branches(name,ceo,region,manager,phone,email,address,status,note)
-        VALUES(?,?,?,?,?,?,?,?,?)""",
-        (d["name"],d.get("ceo",""),d.get("region",""),d.get("manager",""),d.get("phone",""),
-         d.get("email",""),d.get("address",""),d.get("status","운영중"),d.get("note","")))
+    conn.execute("""INSERT INTO branches(name,ceo,ceo_phone,store_manager,store_manager_phone,
+        region,manager,phone,email,address,status,note) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
+        (d["name"],d.get("ceo",""),d.get("ceo_phone",""),d.get("store_manager",""),
+         d.get("store_manager_phone",""),d.get("region",""),d.get("manager",""),
+         d.get("phone",""),d.get("email",""),d.get("address",""),d.get("status","운영중"),d.get("note","")))
     conn.commit(); conn.close()
     return jsonify({"ok":True})
 
@@ -263,10 +273,13 @@ def api_branch_get(bid):
 def api_branches_update(bid):
     d = request.json
     conn = get_db()
-    conn.execute("""UPDATE branches SET name=?,ceo=?,region=?,manager=?,phone=?,email=?,
-        address=?,status=?,note=? WHERE id=?""",
-        (d["name"],d.get("ceo",""),d.get("region",""),d.get("manager",""),d.get("phone",""),
-         d.get("email",""),d.get("address",""),d.get("status","운영중"),d.get("note",""),bid))
+    conn.execute("""UPDATE branches SET name=?,ceo=?,ceo_phone=?,store_manager=?,
+        store_manager_phone=?,region=?,manager=?,phone=?,email=?,address=?,status=?,note=?
+        WHERE id=?""",
+        (d["name"],d.get("ceo",""),d.get("ceo_phone",""),d.get("store_manager",""),
+         d.get("store_manager_phone",""),d.get("region",""),d.get("manager",""),
+         d.get("phone",""),d.get("email",""),d.get("address",""),d.get("status","운영중"),
+         d.get("note",""),bid))
     conn.commit(); conn.close()
     return jsonify({"ok":True})
 
@@ -342,28 +355,32 @@ def detect_region_from_name(name):
 @app.route("/api/upload/stores", methods=["POST"])
 @login_required
 def upload_stores():
-    """매장 정보 xlsx 업로드 — E열:실적용거래처명, F열:전화, M열:담당자, N열:주소, B열:업체구분"""
-    import zipfile, xml.etree.ElementTree as ET
+    """매장 정보 xlsx 업로드
+    B열:업체구분, D열:거래처명, E열:실적용거래처명, F열:매장전화,
+    G열:사장님이름, H열:사장연락처, I열:점장이름, J열:점장연락처,
+    M열:담당자, N열:주소, O열:이메일
+    """
+    import zipfile as zf2, xml.etree.ElementTree as ET2
     f = request.files.get("file")
     if not f: return jsonify({"error": "파일이 없습니다"}), 400
 
     file_bytes = f.read()
     stores = []
     try:
-        with zipfile.ZipFile(io.BytesIO(file_bytes)) as z:
+        with zf2.ZipFile(io.BytesIO(file_bytes)) as z:
             strings = []
             if 'xl/sharedStrings.xml' in z.namelist():
                 sst = z.read('xl/sharedStrings.xml').decode('utf-8')
-                sr = ET.fromstring(sst)
+                sr = ET2.fromstring(sst)
                 ns2 = 'http://schemas.openxmlformats.org/spreadsheetml/2006/main'
                 for si in sr.findall(f'{{{ns2}}}si'):
                     strings.append(''.join(t.text or '' for t in si.findall(f'.//{{{ns2}}}t')))
 
             sheet_xml = z.read('xl/worksheets/sheet1.xml').decode('utf-8')
-            root = ET.fromstring(sheet_xml)
+            root = ET2.fromstring(sheet_xml)
             ns2 = 'http://schemas.openxmlformats.org/spreadsheetml/2006/main'
 
-            def cell_val(cell):
+            def cell_val(cell, ns2=ns2, strings=strings):
                 t = cell.get('t', '')
                 is_el = cell.find(f'{{{ns2}}}is')
                 v_el  = cell.find(f'{{{ns2}}}v')
@@ -377,7 +394,7 @@ def upload_stores():
             current_group = ''
             for row in root.findall(f'.//{{{ns2}}}row'):
                 rnum = int(row.get('r', 0))
-                if rnum < 5: continue  # 헤더 스킵
+                if rnum < 5: continue  # 헤더 스킵 (4행이 헤더)
 
                 vals = {}
                 for c in row.findall(f'{{{ns2}}}c'):
@@ -390,22 +407,30 @@ def upload_stores():
                 if 'B' in vals and vals['B'] not in ('업체구분', '※ 오프라인 거래처별 리스트'):
                     current_group = vals['B']
 
-                name = vals.get('E', '').strip()
+                # E열: 실적용거래처명이 기준 (없으면 D열 사용)
+                name = vals.get('E', '').strip() or vals.get('D', '').strip()
                 if not name: continue
 
-                phone   = vals.get('F', '').strip()
-                manager = vals.get('M', '').strip()
+                # 이름 정제: "이정현사장님" → "이정현", "이준석점장님" → "이준석"
+                def clean_name(s):
+                    return s.replace('사장님','').replace('점장님','').replace('매니저님','').replace('실장','').replace('과장','').strip()
+
                 address = vals.get('N', '').strip()
-                region  = parse_region_from_address(address)
+                region  = parse_region_from_address(address) or detect_region_from_name(name)
 
                 stores.append({
-                    'name':    name,
-                    'group':   current_group,
-                    'phone':   phone,
-                    'manager': manager,
-                    'address': address,
-                    'region':  region,
-                    'note':    current_group,
+                    'name':                 name.replace('_', ' '),
+                    'group':                current_group,
+                    'phone':                vals.get('F', '').strip(),       # 매장 전화
+                    'ceo':                  clean_name(vals.get('G', '')),   # 사장님 이름
+                    'ceo_phone':            vals.get('H', '').strip(),       # 사장 연락처
+                    'store_manager':        clean_name(vals.get('I', '') or vals.get('K', '')),  # 점장
+                    'store_manager_phone':  vals.get('J', '').strip() or vals.get('L', '').strip(),  # 점장 연락처
+                    'manager':              vals.get('M', '').strip(),       # 담당자(본사)
+                    'address':              address,
+                    'region':               region,
+                    'email':                vals.get('O', '').strip(),
+                    'note':                 current_group,
                 })
     except Exception as e:
         return jsonify({"error": f"파일 파싱 오류: {str(e)}"}), 400
@@ -420,13 +445,19 @@ def upload_stores():
     for s in stores:
         existing = conn.execute("SELECT id FROM branches WHERE name=?", (s['name'],)).fetchone()
         if existing:
-            conn.execute("""UPDATE branches SET phone=?,manager=?,address=?,region=?,note=?
-                WHERE id=?""", (s['phone'], s['manager'], s['address'], s['region'], s['note'], existing['id']))
+            conn.execute("""UPDATE branches SET phone=?,ceo=?,ceo_phone=?,store_manager=?,
+                store_manager_phone=?,manager=?,address=?,region=?,email=?,note=?
+                WHERE id=?""", (s['phone'],s['ceo'],s['ceo_phone'],s['store_manager'],
+                s['store_manager_phone'],s['manager'],s['address'],s['region'],s['email'],
+                s['note'],existing['id']))
             updated += 1
         else:
-            conn.execute("""INSERT INTO branches(name,region,manager,phone,address,status,note)
-                VALUES(?,?,?,?,?,?,?)""",
-                (s['name'], s['region'], s['manager'], s['phone'], s['address'], '운영중', s['note']))
+            conn.execute("""INSERT INTO branches(name,region,ceo,ceo_phone,store_manager,
+                store_manager_phone,manager,phone,address,email,status,note)
+                VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (s['name'],s['region'],s['ceo'],s['ceo_phone'],s['store_manager'],
+                 s['store_manager_phone'],s['manager'],s['phone'],s['address'],
+                 s['email'],'운영중',s['note']))
             added += 1
     conn.commit(); conn.close()
     return jsonify({"ok": True, "added": added, "updated": updated, "total": len(stores)})
@@ -605,24 +636,84 @@ def export_xlsx_monthly():
     month=request.args.get("month",""); seller=request.args.get("seller","").strip()
     date_cond = f"{year}-{month.zfill(2)}%" if month else f"{year}%"
     conn = get_db()
+
+    wb = openpyxl.Workbook()
+    # 스타일 정의
+    def hdr_style(cell, color="4F46E5"):
+        cell.fill = PatternFill(start_color=color,end_color=color,fill_type="solid")
+        cell.font = Font(color="FFFFFF",bold=True,size=10)
+        cell.alignment = Alignment(horizontal="center",vertical="center")
+        cell.border = Border(left=Side(style='thin',color='E5E7EB'),right=Side(style='thin',color='E5E7EB'),
+                             top=Side(style='thin',color='E5E7EB'),bottom=Side(style='thin',color='E5E7EB'))
+
+    def data_cell(cell, right=False):
+        cell.border = Border(left=Side(style='thin',color='F3F4F6'),right=Side(style='thin',color='F3F4F6'),
+                             top=Side(style='thin',color='F3F4F6'),bottom=Side(style='thin',color='F3F4F6'))
+        if right: cell.alignment = Alignment(horizontal="right")
+
+    # ── 시트1: 매장별 요약 ──
+    ws1 = wb.active; ws1.title = "매장별 요약"
     if seller:
-        rows=[dict(r) for r in conn.execute("""SELECT ? AS seller_name,
-            CAST(strftime('%m',sale_date) AS INTEGER) AS month,
-            COUNT(*) cnt,SUM(quantity) qty,SUM(total) total
+        rows_sum = [dict(r) for r in conn.execute("""
+            SELECT ? AS seller_name, CAST(strftime('%m',sale_date) AS INTEGER) AS month,
+                   COUNT(*) cnt, SUM(quantity) qty, SUM(total) total
             FROM sales_data WHERE real_seller=? AND sale_date LIKE ? AND sale_date!=''
             GROUP BY month ORDER BY month""",(seller,seller,date_cond)).fetchall()]
-        hdrs=['매장명','월','판매건수','판매수량','판매금액(원)']
-        data=[[r['seller_name'],f"{r['month']}월",r['cnt'],r['qty'],r['total']] for r in rows]
-        sn=f"{seller[:10]}_월별"
+        hdrs = ['매장명','월','판매건수','판매수량','판매금액(원)']
+        data = [[r['seller_name'],f"{r['month']}월",r['cnt'],r['qty'],r['total']] for r in rows_sum]
     else:
-        rows=[dict(r) for r in conn.execute("""SELECT real_seller AS seller_name,
-            COUNT(*) cnt,SUM(quantity) qty,SUM(total) total
+        rows_sum = [dict(r) for r in conn.execute("""
+            SELECT real_seller AS seller_name, COUNT(*) cnt, SUM(quantity) qty, SUM(total) total
             FROM sales_data WHERE sale_date LIKE ? AND real_seller!=''
             GROUP BY real_seller ORDER BY total DESC""",(date_cond,)).fetchall()]
-        hdrs=['매장명','판매건수','판매수량','판매금액(원)']
-        data=[[r['seller_name'],r['cnt'],r['qty'],r['total']] for r in rows]; sn="월별실적"
+        hdrs = ['매장명','판매건수','판매수량','판매금액(원)']
+        data = [[r['seller_name'],r['cnt'],r['qty'],r['total']] for r in rows_sum]
+
+    for ci,h in enumerate(hdrs,1):
+        c=ws1.cell(row=1,column=ci,value=h); hdr_style(c)
+    ws1.row_dimensions[1].height=22
+    even=PatternFill(start_color="F9FAFB",end_color="F9FAFB",fill_type="solid")
+    for ri,row in enumerate(data,2):
+        for ci,val in enumerate(row,1):
+            c=ws1.cell(row=ri,column=ci,value=val); data_cell(c,ci>1)
+            if ri%2==0: c.fill=even
+            if ci==len(hdrs) and isinstance(val,int): c.number_format='#,##0'
+
+    # ── 시트2: 제품별 상세 ──
+    ws2 = wb.create_sheet("제품별 상세")
+    params=[date_cond]; conds=["sale_date LIKE ?","sale_date!=''"]
+    if seller: conds.append("real_seller=?"); params.append(seller)
+    items = [dict(r) for r in conn.execute(f"""
+        SELECT {'real_seller AS seller_name,' if not seller else '? AS seller_name,'}
+               item_group, item_name, SUM(quantity) qty, AVG(unit_price) avg_price,
+               SUM(supply_price) supply, SUM(vat) vat_sum, SUM(total) total, COUNT(*) cnt
+        FROM sales_data WHERE {' AND '.join(conds)}
+        GROUP BY {'real_seller,' if not seller else ''} item_name
+        ORDER BY {'real_seller,' if not seller else ''} total DESC""",
+        ([seller]+params if seller else params)).fetchall()]
     conn.close()
-    buf=make_xlsx(hdrs,data,sn)
+
+    item_hdrs=['매장명','품목그룹','제품명','판매건수','판매수량','평균단가','공급가액','부가세','합계금액']
+    for ci,h in enumerate(item_hdrs,1):
+        c=ws2.cell(row=1,column=ci,value=h); hdr_style(c,"6366F1")
+    ws2.row_dimensions[1].height=22
+    for ri,r in enumerate(items,2):
+        nm=r.get('seller_name',seller or '')
+        vals2=[nm,r.get('item_group',''),r.get('item_name',''),
+               r.get('cnt',0),r.get('qty',0),round(r.get('avg_price',0)),
+               r.get('supply',0),r.get('vat_sum',0),r.get('total',0)]
+        for ci,val in enumerate(vals2,1):
+            c=ws2.cell(row=ri,column=ci,value=val); data_cell(c,ci>3)
+            if ri%2==0: c.fill=even
+            if ci>=6 and isinstance(val,int): c.number_format='#,##0'
+
+    # 컬럼 너비 자동
+    for ws in [ws1,ws2]:
+        for col in ws.columns:
+            ml=max((len(str(c.value or '')) for c in col),default=8)
+            ws.column_dimensions[get_column_letter(col[0].column)].width=min(ml+3,35)
+
+    buf=io.BytesIO(); wb.save(buf); buf.seek(0)
     fname=f"월별실적_{year}{'_'+month+'월' if month else ''}.xlsx"
     return send_file(buf,mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
                      as_attachment=True,download_name=fname)
@@ -638,21 +729,81 @@ def export_xlsx_weekly():
     else:     qp.append("sale_date LIKE ?");pp.append(f"{year}%")
     if seller: qp.append("real_seller = ?");pp.append(seller)
     conn=get_db()
-    rows=[dict(r) for r in conn.execute(f"""SELECT strftime('%Y-%W',sale_date) AS week_key,
-        COUNT(*) cnt,SUM(quantity) qty,SUM(total) total,MIN(sale_date) AS min_date
+    rows=[dict(r) for r in conn.execute(f"""
+        SELECT strftime('%Y-%W',sale_date) AS week_key,
+               COUNT(*) cnt,SUM(quantity) qty,SUM(total) total,MIN(sale_date) AS min_date
         FROM sales_data WHERE {' AND '.join(qp)} AND sale_date!=''
         GROUP BY week_key ORDER BY week_key""",pp).fetchall()]
-    conn.close()
+
     def wr(ds):
         d=dt2.strptime(ds,"%Y-%m-%d"); sun=d-timedelta(days=(d.weekday()+1)%7)
         return sun.strftime("%Y-%m-%d"),(sun+timedelta(days=6)).strftime("%Y-%m-%d")
+
+    for r in rows:
+        try: r['ws'],r['we']=wr(r['min_date'])
+        except: r['ws']=r['we']=''
+
+    # 제품별 상세 (주차별)
+    items_by_week={}
+    for r in rows:
+        wk=r['week_key']
+        ip=pp.copy(); ic=qp.copy()
+        ic[0]="sale_date != ''"
+        if len(ic)>1: ic[1]=f"strftime('%Y-%W',sale_date)='{wk}'"
+        else: ic.append(f"strftime('%Y-%W',sale_date)='{wk}'")
+        # 해당 주차 품목 조회
+        wparams=[p for p in pp if 'seller' in qp[qp.index(p)] if False] or []
+        w_conds=["sale_date!=''", f"strftime('%Y-%W',sale_date)=?"]
+        w_params=[wk]
+        if seller: w_conds.append("real_seller=?"); w_params.append(seller)
+        irows=conn.execute(f"""SELECT item_group,item_name,SUM(quantity) qty,
+            SUM(total) total,COUNT(*) cnt FROM sales_data
+            WHERE {' AND '.join(w_conds)} GROUP BY item_name ORDER BY total DESC""",w_params).fetchall()
+        items_by_week[wk]=[dict(x) for x in irows]
+    conn.close()
+
+    wb=openpyxl.Workbook()
+    thin=Side(style='thin',color='E5E7EB'); bdr=Border(left=thin,right=thin,top=thin,bottom=thin)
+    even=PatternFill(start_color="F9FAFB",end_color="F9FAFB",fill_type="solid")
+
+    def hc(cell,color="4F46E5"):
+        cell.fill=PatternFill(start_color=color,end_color=color,fill_type="solid")
+        cell.font=Font(color="FFFFFF",bold=True,size=10)
+        cell.alignment=Alignment(horizontal="center",vertical="center"); cell.border=bdr
+
+    # 시트1: 주별 요약
+    ws1=wb.active; ws1.title="주별 요약"
     hdrs=['주차','시작일(일)','종료일(토)','판매건수','판매수량','판매금액(원)']
-    data=[]
+    for ci,h in enumerate(hdrs,1): hc(ws1.cell(row=1,column=ci,value=h))
+    for i,r in enumerate(rows,2):
+        for ci,v in enumerate([f"{i-1}주차",r['ws'],r['we'],r['cnt'],r['qty'],r['total']],1):
+            c=ws1.cell(row=i,column=ci,value=v); c.border=bdr
+            if i%2==0: c.fill=even
+            if ci>3: c.alignment=Alignment(horizontal="right")
+            if ci==6 and isinstance(v,int): c.number_format='#,##0'
+
+    # 시트2: 제품별 상세
+    ws2=wb.create_sheet("제품별 상세")
+    item_hdrs=['주차','기간','품목그룹','제품명','판매건수','판매수량','판매금액(원)']
+    for ci,h in enumerate(item_hdrs,1): hc(ws2.cell(row=1,column=ci,value=h),"6366F1")
+    ri=2
     for i,r in enumerate(rows):
-        try: ws_,we_=wr(r['min_date'])
-        except: ws_=we_=''
-        data.append([f"{i+1}주차",ws_,we_,r['cnt'],r['qty'],r['total']])
-    buf=make_xlsx(hdrs,data,"주별실적")
+        for item in items_by_week.get(r['week_key'],[]):
+            vals=[f"{i+1}주차",f"{r['ws']}~{r['we']}",item.get('item_group',''),
+                  item.get('item_name',''),item.get('cnt',0),item.get('qty',0),item.get('total',0)]
+            for ci,v in enumerate(vals,1):
+                c=ws2.cell(row=ri,column=ci,value=v); c.border=bdr
+                if ri%2==0: c.fill=even
+                if ci>4: c.alignment=Alignment(horizontal="right")
+                if ci==7 and isinstance(v,int): c.number_format='#,##0'
+            ri+=1
+
+    for ws in [ws1,ws2]:
+        for col in ws.columns:
+            ml=max((len(str(c.value or '')) for c in col),default=8)
+            ws.column_dimensions[get_column_letter(col[0].column)].width=min(ml+3,35)
+
+    buf=io.BytesIO(); wb.save(buf); buf.seek(0)
     fname=f"주별실적_{year}{'_'+month+'월' if month else ''}.xlsx"
     return send_file(buf,mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
                      as_attachment=True,download_name=fname)
