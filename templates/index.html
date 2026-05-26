@@ -383,7 +383,7 @@ td.center{text-align:center}
       <a onclick="showPage('sales')" id="nav-sales"><span class="ni">↗</span>판매실적</a>
       <a onclick="showPage('salesdata')" id="nav-salesdata"><span class="ni">★</span>판매현황</a>
       <a onclick="showPage('products')" id="nav-products"><span class="ni">📦</span>제품별 관리</a>
-      <a onclick="showPage('script')" id="nav-script"><span class="ni">💬</span>매장 추천 스크립트</a>
+      <a onclick="showPage('script')" id="nav-script"><span class="ni">💬</span>매장 분석</a>
       <a onclick="showPage('users')" id="nav-users"><span class="ni">◎</span>권한 관리</a>
     </nav>
     <div class="sb-div"></div>
@@ -738,7 +738,7 @@ td.center{text-align:center}
     <!-- ██ 매장 추천 스크립트 ██ -->
     <div class="page" id="page-script">
       <div class="ph">
-        <div><h2>매장 추천 스크립트</h2><p>AI 기반 영업 분석 · 타프토이즈 추천 · 맞춤 스크립트</p></div>
+        <div><h2>매장 분석</h2><p>판매 분석 · 타프토이즈 추천 · 맞춤 영업 스크립트</p></div>
         <div class="ph-r">
           <select class="ysel" id="script-year" onchange="if(scriptSeller)loadScriptAnalysis()"></select>
           <button class="btn btn-ghost btn-sm" id="script-export-btn" onclick="exportScriptXlsx()" style="display:none">📥 엑셀 내보내기</button>
@@ -785,27 +785,25 @@ td.center{text-align:center}
 
         <!-- 타프토이즈 추천 -->
         <div style="background:var(--paper);border-radius:var(--r-lg);padding:20px;box-shadow:var(--sh-sm);margin-bottom:16px">
-          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px">
-            <div>
-              <div style="font-size:13px;font-weight:700;color:var(--ink-900)">🎯 타프토이즈 미취급 제품 추천</div>
-              <div style="font-size:12px;color:var(--ink-300);margin-top:2px">이 매장에서 아직 판매하지 않는 제품입니다</div>
-            </div>
+          <div style="margin-bottom:14px">
+            <div style="font-size:13px;font-weight:700;color:var(--ink-900)">타프토이즈 미취급 제품 추천</div>
+            <div style="font-size:12px;color:var(--ink-300);margin-top:2px">이 매장에서 아직 판매하지 않는 제품입니다</div>
           </div>
           <div id="script-unsold" style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px"></div>
         </div>
 
-        <!-- AI 영업 스크립트 -->
+        <!-- 추천 영업 스크립트 -->
         <div style="background:var(--paper);border-radius:var(--r-lg);padding:20px;box-shadow:var(--sh-sm)">
           <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px">
             <div>
-              <div style="font-size:13px;font-weight:700;color:var(--ink-900)">🤖 AI 영업 스크립트</div>
+              <div style="font-size:13px;font-weight:700;color:var(--ink-900)">추천 영업 스크립트</div>
               <div style="font-size:12px;color:var(--ink-300);margin-top:2px">ENFIX 영업 전문가 관점의 맞춤 방문 스크립트</div>
             </div>
-            <button class="btn btn-dark btn-sm" onclick="generateScript()" id="gen-script-btn">✨ 스크립트 생성</button>
+            <button class="btn btn-dark btn-sm" onclick="generateScript()" id="gen-script-btn">스크립트 생성</button>
           </div>
-          <div id="script-output" style="display:none;background:var(--ink-50);border-radius:var(--r-md);padding:20px;font-size:13px;line-height:1.9;white-space:pre-wrap;max-height:600px;overflow-y:auto"></div>
+          <div id="script-output" style="display:none;background:var(--ink-50);border-radius:var(--r-md);padding:20px;font-size:13px;line-height:1.9;max-height:600px;overflow-y:auto"></div>
           <div id="script-placeholder" style="text-align:center;padding:40px;color:var(--ink-300);font-size:13px">
-            위 버튼을 클릭하면 AI가 이 매장에 최적화된 영업 스크립트를 작성합니다
+            위 버튼을 클릭하면 이 매장에 최적화된 영업 스크립트를 작성합니다
           </div>
         </div>
       </div>
@@ -1088,33 +1086,31 @@ async function loadScriptAnalysis(){
 async function generateScript(){
   if(!scriptAnalysisData) return;
   const btn=document.getElementById('gen-script-btn');
-  btn.textContent='⏳ 생성 중...'; btn.disabled=true;
+  btn.textContent='생성 중...'; btn.disabled=true;
 
+  // 1단계: 서버에서 프롬프트 생성
   const r=await api('/api/script/generate',{method:'POST',body:{seller:scriptSeller,analysis:scriptAnalysisData}});
-  if(!r){ btn.textContent='✨ 스크립트 생성'; btn.disabled=false; return; }
+  if(!r){ btn.textContent='스크립트 생성'; btn.disabled=false; return; }
 
   const out=document.getElementById('script-output');
   const placeholder=document.getElementById('script-placeholder');
-  out.textContent=''; out.style.display='block'; placeholder.style.display='none';
+  out.innerHTML=''; out.style.display='block'; placeholder.style.display='none';
+  out.innerHTML='<span style="color:var(--ink-300)">스크립트 작성 중...</span>';
 
-  // Claude API 스트리밍 호출
-  try {
-    const resp=await fetch('https://api.anthropic.com/v1/messages',{
-      method:'POST',
-      headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({
-        model:'claude-sonnet-4-20250514', max_tokens:2000,
-        messages:[{role:'user',content:r.prompt}]
-      })
-    });
-    const data=await resp.json();
-    const text=data.content?.map(c=>c.text||'').join('') || '스크립트 생성 실패';
-    // 마크다운 **굵게** 처리
-    out.innerHTML = text.replace(/\*\*(.+?)\*\*/g,'<strong>$1</strong>').replace(/\n/g,'<br>');
-  } catch(e) {
-    out.textContent='오류: '+e.message;
+  // 2단계: Flask 서버 통해 Claude API 호출 (CORS 우회)
+  const r2=await api('/api/script/claude',{method:'POST',body:{prompt:r.prompt}});
+  if(!r2||!r2.text){
+    out.innerHTML='<span style="color:red">스크립트 생성 실패. 잠시 후 다시 시도해주세요.</span>';
+    btn.textContent='다시 생성'; btn.disabled=false; return;
   }
-  btn.textContent='🔄 다시 생성'; btn.disabled=false;
+
+  // 마크다운 렌더링 (줄바꿈, 굵게, 번호)
+  out.innerHTML = r2.text
+    .replace(/\*\*(.+?)\*\*/g,'<strong>$1</strong>')
+    .replace(/\n\n/g,'</p><p style="margin-bottom:10px">')
+    .replace(/\n/g,'<br>');
+
+  btn.textContent='다시 생성'; btn.disabled=false;
 }
 
 function exportScriptXlsx(){

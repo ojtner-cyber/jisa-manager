@@ -766,6 +766,42 @@ def api_script_analysis():
         'unsold_taft':unsold_taft,'daily':daily,'weekly':weekly,
     })
 
+@app.route("/api/script/claude", methods=["POST"])
+@login_required
+def api_script_claude():
+    """Claude API 프록시 — CORS 우회용 서버사이드 호출"""
+    import urllib.request, urllib.error
+    data = request.json or {}
+    prompt = data.get('prompt', '')
+    if not prompt:
+        return jsonify({'error': 'prompt 없음'}), 400
+
+    payload = json.dumps({
+        "model": "claude-sonnet-4-20250514",
+        "max_tokens": 2000,
+        "messages": [{"role": "user", "content": prompt}]
+    }).encode('utf-8')
+
+    req = urllib.request.Request(
+        'https://api.anthropic.com/v1/messages',
+        data=payload,
+        headers={
+            'Content-Type': 'application/json',
+            'anthropic-version': '2023-06-01',
+        },
+        method='POST'
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            result = json.loads(resp.read().decode('utf-8'))
+            text = ''.join(c.get('text','') for c in result.get('content',[]))
+            return jsonify({'text': text, 'ok': True})
+    except urllib.error.HTTPError as e:
+        err = e.read().decode('utf-8', errors='ignore')
+        return jsonify({'error': err, 'ok': False}), 500
+    except Exception as e:
+        return jsonify({'error': str(e), 'ok': False}), 500
+
 @app.route("/api/script/generate",methods=["POST"])
 @login_required
 def api_script_generate():
