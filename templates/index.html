@@ -1100,7 +1100,12 @@ async function generateScript(){
   // 2단계: Flask 서버 통해 Claude API 호출 (CORS 우회)
   const r2=await api('/api/script/claude',{method:'POST',body:{prompt:r.prompt}});
   if(!r2||!r2.text){
-    out.innerHTML='<span style="color:red">스크립트 생성 실패. 잠시 후 다시 시도해주세요.</span>';
+    const errMsg = r2?.error || '알 수 없는 오류';
+    if(errMsg.includes('ANTHROPIC_API_KEY')) {
+      out.innerHTML='<div style="color:#DC2626;font-size:13px;line-height:1.7"><strong>API 키 설정 필요</strong><br>Railway 대시보드 → Variables → <code>ANTHROPIC_API_KEY</code> 를 추가해주세요.</div>';
+    } else {
+      out.innerHTML=`<div style="color:#DC2626">스크립트 생성 중 오류가 발생했습니다.<br><small>${errMsg.substring(0,200)}</small></div>`;
+    }
     btn.textContent='다시 생성'; btn.disabled=false; return;
   }
 

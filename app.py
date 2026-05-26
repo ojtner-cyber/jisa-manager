@@ -769,16 +769,20 @@ def api_script_analysis():
 @app.route("/api/script/claude", methods=["POST"])
 @login_required
 def api_script_claude():
-    """Claude API 프록시 — CORS 우회용 서버사이드 호출"""
-    import urllib.request, urllib.error
-    data = request.json or {}
+    """Claude API 프록시 — 서버사이드 호출 (CORS 우회)"""
+    import urllib.request, urllib.error, os
+    data   = request.json or {}
     prompt = data.get('prompt', '')
     if not prompt:
         return jsonify({'error': 'prompt 없음'}), 400
 
+    api_key = os.environ.get('ANTHROPIC_API_KEY', '')
+    if not api_key:
+        return jsonify({'error': 'ANTHROPIC_API_KEY 환경변수가 설정되지 않았습니다. Railway 대시보드에서 설정해주세요.', 'ok': False}), 500
+
     payload = json.dumps({
         "model": "claude-sonnet-4-20250514",
-        "max_tokens": 2000,
+        "max_tokens": 3000,
         "messages": [{"role": "user", "content": prompt}]
     }).encode('utf-8')
 
@@ -786,15 +790,16 @@ def api_script_claude():
         'https://api.anthropic.com/v1/messages',
         data=payload,
         headers={
-            'Content-Type': 'application/json',
+            'Content-Type':    'application/json',
+            'x-api-key':       api_key,
             'anthropic-version': '2023-06-01',
         },
         method='POST'
     )
     try:
-        with urllib.request.urlopen(req, timeout=60) as resp:
+        with urllib.request.urlopen(req, timeout=90) as resp:
             result = json.loads(resp.read().decode('utf-8'))
-            text = ''.join(c.get('text','') for c in result.get('content',[]))
+            text   = ''.join(c.get('text','') for c in result.get('content',[]))
             return jsonify({'text': text, 'ok': True})
     except urllib.error.HTTPError as e:
         err = e.read().decode('utf-8', errors='ignore')
@@ -805,41 +810,119 @@ def api_script_claude():
 @app.route("/api/script/generate",methods=["POST"])
 @login_required
 def api_script_generate():
-    data=request.json; seller=data.get('seller',''); analysis=data.get('analysis',{})
-    brand_lines='\n'.join(f"  - {b['brand']}: {b['total']:,}원 ({b['pct']}%)"
-                          for b in analysis.get('brand_summary',[])[:6])
-    top5_lines='\n'.join(f"  - {normalize_item_name(r['item_name'])}: {r['qty']}개 ({r['total']:,}원)"
-                         for r in analysis.get('top5',[]))
-    unsold=analysis.get('unsold_taft',[])[:8]
-    unsold_lines='\n'.join(f"  - {u['name']} ({u['category']}, {u['price']:,}원): {u['desc']}"
-                           for u in unsold)
-    prompt=f"""당신은 유아용품 브랜드 ENFIX의 10년 경력 영업 전문가입니다.
-아래 매장 실적 데이터를 바탕으로, 매장 사장님과의 실전 영업 미팅 스크립트를 작성해주세요.
+    data     = request.json or {}
+    seller   = data.get('seller','')
+    analysis = data.get('analysis',{})
 
-【매장명】 {seller}
-【분석 연도】 {analysis.get('year','')}년  
-【총 매출】 {analysis.get('total',0):,}원 (전체 대비 {analysis.get('total_pct',0)}%)
+    year       = analysis.get('year','')
+    total      = analysis.get('total', 0)
+    total_pct  = analysis.get('total_pct', 0)
+    brands     = analysis.get('brand_summary', [])
+    top5       = analysis.get('top5', [])
+    sold_items = analysis.get('sold_items', [])
+    unsold_taft= analysis.get('unsold_taft', [])
+    weekly     = analysis.get('weekly', [])
 
-【브랜드별 실적】
+    # 브랜드별 분석
+    brand_lines = '\n'.join(
+        f"  · {b['brand']}: {b['total']:,}원 ({b['pct']}%, {b['qty']}개)"
+        for b in brands
+    )
+
+    # 베스트 제품
+    top5_lines = '\n'.join(
+        f"  {i+1}. {normalize_item_name(r.get('item_name',''))}: {r.get('qty',0)}개 판매 / {r.get('total',0):,}원"
+        for i,r in enumerate(top5[:5])
+    )
+
+    # 부진 브랜드 파악 (전체 대비 0~3%)
+    weak_brands = [b['brand'] for b in brands if b['pct'] < 3]
+
+    # 주별 추이 분석
+    weekly_text = ''
+    if weekly:
+        maxw = max(weekly, key=lambda x: x.get('total',0))
+        minw = min(weekly, key=lambda x: x.get('total',0))
+        avg  = sum(w.get('total',0) for w in weekly) / len(weekly)
+        weekly_text = f"  - 주간 평균: {avg:,.0f}원\n  - 최고 주: {maxw.get('week_start','')}~{maxw.get('week_end','')} ({maxw.get('total',0):,}원)\n  - 최저 주: {minw.get('week_start','')}~{minw.get('week_end','')} ({minw.get('total',0):,}원)"
+
+    # 타프토이즈 추천 — 카테고리별 우선순위
+    unsold_priority = sorted(unsold_taft, key=lambda x: {'아치/모빌':1,'액티비티짐':2,'트래블토이':3,'비지북':4}.get(x.get('category',''),9))[:5]
+    unsold_lines = '\n'.join(
+        f"  · {u['name']} [{u.get('category','')}] — {u.get('price',0):,}원\n    특징: {u.get('desc','')}"
+        for u in unsold_priority
+    )
+
+    # 현재 타프 판매 현황
+    taft_sold = [r for r in sold_items if remap_group(r.get('item_group',''), r.get('item_name',''))=='타프토이즈']
+    taft_total = sum(r.get('total',0) for r in taft_sold)
+    taft_pct   = round(taft_total/total*100,1) if total else 0
+
+    prompt = f"""당신은 유아용품 전문 브랜드 ENFIX의 수석 영업 컨설턴트입니다.
+15년 경력의 최고 영업 전문가로서, 아래 매장 실적 데이터를 치밀하게 분석하여
+실전에서 바로 사용할 수 있는 수준 높은 영업 방문 스크립트를 작성하세요.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━
+【분석 대상 매장】 {seller}
+【분석 기간】 {year}년 전체
+【총 매출】 {total:,}원 (전체 거래처 상위 {total_pct}% 수준)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+【브랜드별 실적 현황】
 {brand_lines}
 
-【베스트 제품 TOP5】
+【베스트 셀러 TOP5】
 {top5_lines}
 
-【미취급 타프토이즈 제품】
+【주별 판매 추이】
+{weekly_text or "  - 데이터 없음"}
+
+【타프토이즈 현황】
+  - 현재 취급: {len(taft_sold)}종 / 매출 {taft_total:,}원 (전체의 {taft_pct}%)
+  - 미취급 추천 제품:
 {unsold_lines}
 
-다음 구조로 실전 영업 스크립트를 작성해주세요:
+{'【부진 브랜드】\n  ' + ', '.join(weak_brands) + ' — 개선 전략 필요' if weak_brands else ''}
+━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-1. **오프닝** (방문 인사 + 지난 방문 이후 관계 언급)
-2. **실적 공유 & 칭찬** (구체적 수치 활용, 사장님 자부심 자극)
-3. **베스트 제품 분석** (왜 잘 팔리는지 + 추가 발주 제안 멘트)
-4. **타프토이즈 신규 제안** (3개 제품, 왜 이 매장에 맞는지 구체적으로)
-5. **시즌 전략 제안** (현재 시기 + 다음 시즌 예측)
-6. **클로징** (발주 유도 + 다음 방문 약속)
+아래 7개 섹션으로 구성된 실전 영업 스크립트를 작성하세요.
+각 섹션은 실제 현장에서 바로 말할 수 있을 정도로 구체적이고 자연스럽게 작성하세요.
+수치는 반드시 위 데이터를 인용하여 신뢰감을 높이세요.
 
-실제 영업사원이 대화하듯 자연스럽게, 한국어로 작성하세요."""
-    return jsonify({'prompt':prompt,'seller':seller})
+**1. 오프닝 (관계 강화 + 방문 목적 자연스럽게 전달)**
+- 지난 방문 이후 매장 변화 체크하며 자연스러운 대화 시작
+- 사장님의 노력을 구체적으로 인정하는 멘트
+
+**2. 실적 공유 & 사장님 자부심 자극**
+- 위 실적 수치를 활용해 "이 매장이 얼마나 잘하고 있는지" 구체적으로 전달
+- 전체 거래처 대비 위치, 브랜드별 성과 언급
+
+**3. 베스트 제품 분석 — "왜 잘 팔리는가"**
+- TOP 제품들이 잘 팔리는 이유 분석 (제품 특성 + 고객 니즈)
+- 추가 발주 or 전시 강화 제안 (구체적으로)
+
+**4. 타프토이즈 성장 기회 제안**
+- 현재 타프 실적 → 미취급 제품 3개 추천 (왜 이 매장에 맞는지 논리적으로)
+- 가격대, 고객 타깃, 전시 방법까지 구체적으로
+
+**5. 부진 브랜드 개선 전략** (해당 없으면 전체 균형 강화 전략)
+- 부진 원인 진단 + 실행 가능한 개선안
+
+**6. 이번 시즌 전략 & 핵심 액션**
+- 현재 시즌(계절/시기) 맞는 집중 제품 추천
+- 이번 방문에서 결정할 수 있는 발주 제안
+
+**7. 클로징 — 발주 결정 유도**
+- 구체적인 발주 제안 (품목, 수량 암시)
+- 다음 방문 약속 + 사장님 신뢰 강화 마무리
+
+작성 가이드:
+- 각 섹션마다 실제 대화 예시문 포함 (따옴표로 표시)
+- 사장님 반응을 예측한 Q&A 1-2개 포함
+- 전문적이되 친근한 톤 유지
+- 한국어로 작성"""
+
+    return jsonify({'prompt': prompt, 'seller': seller})
 
 @app.route("/api/export/xlsx/script")
 @login_required
