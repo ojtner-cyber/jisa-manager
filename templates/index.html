@@ -383,6 +383,7 @@ td.center{text-align:center}
       <a onclick="showPage('sales')" id="nav-sales"><span class="ni">↗</span>판매실적</a>
       <a onclick="showPage('salesdata')" id="nav-salesdata"><span class="ni">★</span>판매현황</a>
       <a onclick="showPage('products')" id="nav-products"><span class="ni">📦</span>제품별 관리</a>
+      <a onclick="showPage('script')" id="nav-script"><span class="ni">💬</span>매장 추천 스크립트</a>
       <a onclick="showPage('users')" id="nav-users"><span class="ni">◎</span>권한 관리</a>
     </nav>
     <div class="sb-div"></div>
@@ -734,6 +735,82 @@ td.center{text-align:center}
       </div>
     </div>
 
+    <!-- ██ 매장 추천 스크립트 ██ -->
+    <div class="page" id="page-script">
+      <div class="ph">
+        <div><h2>매장 추천 스크립트</h2><p>AI 기반 영업 분석 · 타프토이즈 추천 · 맞춤 스크립트</p></div>
+        <div class="ph-r">
+          <select class="ysel" id="script-year" onchange="if(scriptSeller)loadScriptAnalysis()"></select>
+          <button class="btn btn-ghost btn-sm" id="script-export-btn" onclick="exportScriptXlsx()" style="display:none">📥 엑셀 내보내기</button>
+        </div>
+      </div>
+
+      <!-- 매장 선택 -->
+      <div class="fb" style="margin-bottom:20px">
+        <span class="flbl">매장 선택</span>
+        <select class="fs" id="script-seller" style="min-width:240px" onchange="onScriptSellerChange()">
+          <option value="">— 매장을 선택하세요 —</option>
+        </select>
+        <button class="btn btn-dark" id="script-analyze-btn" onclick="loadScriptAnalysis()" style="display:none">분석 시작</button>
+      </div>
+
+      <!-- 분석 로딩 -->
+      <div id="script-loading" style="display:none;text-align:center;padding:60px;color:var(--ink-300)">
+        <div style="font-size:32px;margin-bottom:12px">⚙️</div>
+        <div>매장 데이터 분석 중...</div>
+      </div>
+
+      <!-- 분석 결과 -->
+      <div id="script-result" style="display:none">
+        <!-- KPI 요약 -->
+        <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:20px" id="script-kpi"></div>
+
+        <!-- 브랜드별 비율 차트 + TOP5 -->
+        <div class="cr cr-1-1" style="margin-bottom:16px">
+          <div class="cc">
+            <div class="cc-t">브랜드별 매출 비율</div>
+            <canvas id="c-script-brand" style="max-height:200px"></canvas>
+          </div>
+          <div class="cc">
+            <div class="cc-t">베스트 제품 TOP5</div>
+            <div id="script-top5"></div>
+          </div>
+        </div>
+
+        <!-- 주별 추이 차트 -->
+        <div class="cc" style="margin-bottom:16px">
+          <div class="cc-t">주별 판매 추이</div>
+          <canvas id="c-script-weekly" style="max-height:160px"></canvas>
+        </div>
+
+        <!-- 타프토이즈 추천 -->
+        <div style="background:var(--paper);border-radius:var(--r-lg);padding:20px;box-shadow:var(--sh-sm);margin-bottom:16px">
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px">
+            <div>
+              <div style="font-size:13px;font-weight:700;color:var(--ink-900)">🎯 타프토이즈 미취급 제품 추천</div>
+              <div style="font-size:12px;color:var(--ink-300);margin-top:2px">이 매장에서 아직 판매하지 않는 제품입니다</div>
+            </div>
+          </div>
+          <div id="script-unsold" style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px"></div>
+        </div>
+
+        <!-- AI 영업 스크립트 -->
+        <div style="background:var(--paper);border-radius:var(--r-lg);padding:20px;box-shadow:var(--sh-sm)">
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px">
+            <div>
+              <div style="font-size:13px;font-weight:700;color:var(--ink-900)">🤖 AI 영업 스크립트</div>
+              <div style="font-size:12px;color:var(--ink-300);margin-top:2px">ENFIX 영업 전문가 관점의 맞춤 방문 스크립트</div>
+            </div>
+            <button class="btn btn-dark btn-sm" onclick="generateScript()" id="gen-script-btn">✨ 스크립트 생성</button>
+          </div>
+          <div id="script-output" style="display:none;background:var(--ink-50);border-radius:var(--r-md);padding:20px;font-size:13px;line-height:1.9;white-space:pre-wrap;max-height:600px;overflow-y:auto"></div>
+          <div id="script-placeholder" style="text-align:center;padding:40px;color:var(--ink-300);font-size:13px">
+            위 버튼을 클릭하면 AI가 이 매장에 최적화된 영업 스크립트를 작성합니다
+          </div>
+        </div>
+      </div>
+    </div>
+
     <!-- ██ 엑셀 업로드 ██ -->
     <div class="page" id="page-upload">
       <div class="ph">
@@ -903,7 +980,7 @@ async function api(url,opts={}){
 }
 function initYears(){
   const y=TY(),yrs=Array.from({length:5},(_,i)=>y-i);
-  ['dash-year','sales-year','ex-year','prod-year','sd-year'].forEach(id=>{
+  ['dash-year','sales-year','ex-year','prod-year','sd-year','script-year'].forEach(id=>{
     const s=document.getElementById(id);
     if(s)s.innerHTML=yrs.map(yr=>`<option${yr===y?' selected':''}>${yr}</option>`).join('');
   });
@@ -914,8 +991,137 @@ function showPage(n){
   const pg=document.getElementById('page-'+n), nav=document.getElementById('nav-'+n);
   if(pg) pg.classList.add('active'); if(nav) nav.classList.add('active');
   ({dashboard:loadDash,branches:loadBranches,sales:loadSalesPage,
-    users:loadUsers,salesdata:loadSalesData,products:loadProducts}[n]||function(){})();
+    users:loadUsers,salesdata:loadSalesData,products:loadProducts,script:initScriptPage}[n]||function(){})();
   if(n==='upload') cancelUpload();
+}
+
+// ── 매장 추천 스크립트 ──────────────────────────
+let scriptSeller='', scriptAnalysisData=null, cScriptBrand=null, cScriptWeekly=null;
+
+async function initScriptPage(){
+  // 매장 목록 채우기
+  const year=document.getElementById('script-year')?.value||new Date().getFullYear();
+  const rows=await api(`/api/sales-by-store?year=${year}`);
+  if(!rows) return;
+  const sel=document.getElementById('script-seller');
+  sel.innerHTML='<option value="">— 매장을 선택하세요 —</option>'+
+    rows.map(r=>`<option value="${encodeURIComponent(r.seller_name||'')}">${r.seller_name||''}</option>`).join('');
+}
+
+function onScriptSellerChange(){
+  const v=document.getElementById('script-seller').value;
+  scriptSeller=v?decodeURIComponent(v):'';
+  document.getElementById('script-analyze-btn').style.display=scriptSeller?'':'none';
+  document.getElementById('script-result').style.display='none';
+  document.getElementById('script-export-btn').style.display='none';
+}
+
+async function loadScriptAnalysis(){
+  if(!scriptSeller) return;
+  const year=document.getElementById('script-year')?.value||new Date().getFullYear();
+  document.getElementById('script-loading').style.display='block';
+  document.getElementById('script-result').style.display='none';
+
+  const d=await api(`/api/script/analysis?seller=${encodeURIComponent(scriptSeller)}&year=${year}`);
+  if(!d){ document.getElementById('script-loading').style.display='none'; return; }
+  scriptAnalysisData=d;
+  document.getElementById('script-loading').style.display='none';
+  document.getElementById('script-result').style.display='block';
+  document.getElementById('script-export-btn').style.display='';
+
+  // KPI 카드
+  document.getElementById('script-kpi').innerHTML=`
+    <div class="kpi"><div class="kpi-accent"></div><div class="kpi-lbl">총 매출</div><div class="kpi-val" style="font-size:18px">${N(d.total)}원</div></div>
+    <div class="kpi"><div class="kpi-accent"></div><div class="kpi-lbl">전체 대비</div><div class="kpi-val" style="font-size:18px">${d.total_pct}%</div></div>
+    <div class="kpi"><div class="kpi-accent"></div><div class="kpi-lbl">취급 제품수</div><div class="kpi-val" style="font-size:18px">${d.sold_items.length}종</div></div>
+    <div class="kpi"><div class="kpi-accent"></div><div class="kpi-lbl">미취급 타프토이즈</div><div class="kpi-val" style="font-size:18px;color:var(--accent-m)">${d.unsold_taft.length}종</div></div>`;
+
+  // 브랜드 도넛
+  if(cScriptBrand) cScriptBrand.destroy();
+  const COLORS=['#4F46E5','#0891B2','#059669','#D97706','#DC2626','#7C3AED','#DB2777'];
+  cScriptBrand=new Chart(document.getElementById('c-script-brand'),{
+    type:'doughnut',
+    data:{labels:d.brand_summary.map(b=>b.brand),datasets:[{data:d.brand_summary.map(b=>b.total),backgroundColor:COLORS,borderWidth:2,borderColor:'#fff'}]},
+    options:{plugins:{legend:{position:'right',labels:{font:{size:11},usePointStyle:true,boxWidth:8,padding:8}}},cutout:'60%',responsive:true,maintainAspectRatio:false}
+  });
+
+  // TOP5
+  document.getElementById('script-top5').innerHTML=d.top5.map((r,i)=>{
+    const nm=r.item_name.replace(/\[.*?\]/,'').replace(/_.*$/,'').trim();
+    const pct=d.total?((r.total/d.total)*100).toFixed(1):0;
+    const bar=['■','■','■','□','□'].slice(0,Math.round(pct/20+1)).join('');
+    return `<div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--ink-100)">
+      <span style="width:20px;height:20px;border-radius:50%;background:${COLORS[i]};display:flex;align-items:center;justify-content:center;color:#fff;font-size:10px;font-weight:700;flex-shrink:0">${i+1}</span>
+      <div style="flex:1;min-width:0">
+        <div style="font-size:12px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${nm}</div>
+        <div style="font-size:11px;color:var(--ink-300)">${r.qty}개 · ${N(r.total)}원 (${pct}%)</div>
+      </div>
+    </div>`;
+  }).join('');
+
+  // 주별 차트
+  if(cScriptWeekly) cScriptWeekly.destroy();
+  cScriptWeekly=new Chart(document.getElementById('c-script-weekly'),{
+    type:'bar',
+    data:{labels:d.weekly.map((w,i)=>`${i+1}주`),
+          datasets:[{label:'판매금액',data:d.weekly.map(w=>w.total),backgroundColor:'rgba(79,70,229,.7)',borderRadius:4}]},
+    options:{plugins:{legend:{display:false}},scales:{x:{grid:{display:false},ticks:{font:{size:10}}},
+             y:{grid:{color:'rgba(232,232,240,.6)'},ticks:{font:{size:10},callback:v=>N(v)}}},
+             responsive:true,maintainAspectRatio:false}
+  });
+
+  // 타프토이즈 추천 카드
+  document.getElementById('script-unsold').innerHTML=d.unsold_taft.slice(0,9).map(u=>`
+    <div style="background:linear-gradient(135deg,#FAF5FF,#F3E8FF);border:1px solid #DDD6FE;border-radius:var(--r-md);padding:14px">
+      <div style="font-size:10px;font-weight:700;color:#7C3AED;letter-spacing:.5px;text-transform:uppercase;margin-bottom:6px">${u.category}</div>
+      <div style="font-size:12px;font-weight:700;color:var(--ink-900);margin-bottom:6px;line-height:1.4">${u.name.replace(/\[.*?\]/,'').trim()}</div>
+      <div style="font-size:11px;color:var(--ink-300);line-height:1.5;margin-bottom:8px">${u.desc}</div>
+      <div style="font-size:12px;font-weight:700;color:#7C3AED">${N(u.price)}원</div>
+    </div>`).join('');
+
+  // 스크립트 초기화
+  document.getElementById('script-output').style.display='none';
+  document.getElementById('script-placeholder').style.display='block';
+  document.getElementById('gen-script-btn').textContent='✨ 스크립트 생성';
+}
+
+async function generateScript(){
+  if(!scriptAnalysisData) return;
+  const btn=document.getElementById('gen-script-btn');
+  btn.textContent='⏳ 생성 중...'; btn.disabled=true;
+
+  const r=await api('/api/script/generate',{method:'POST',body:{seller:scriptSeller,analysis:scriptAnalysisData}});
+  if(!r){ btn.textContent='✨ 스크립트 생성'; btn.disabled=false; return; }
+
+  const out=document.getElementById('script-output');
+  const placeholder=document.getElementById('script-placeholder');
+  out.textContent=''; out.style.display='block'; placeholder.style.display='none';
+
+  // Claude API 스트리밍 호출
+  try {
+    const resp=await fetch('https://api.anthropic.com/v1/messages',{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({
+        model:'claude-sonnet-4-20250514', max_tokens:2000,
+        messages:[{role:'user',content:r.prompt}]
+      })
+    });
+    const data=await resp.json();
+    const text=data.content?.map(c=>c.text||'').join('') || '스크립트 생성 실패';
+    // 마크다운 **굵게** 처리
+    out.innerHTML = text.replace(/\*\*(.+?)\*\*/g,'<strong>$1</strong>').replace(/\n/g,'<br>');
+  } catch(e) {
+    out.textContent='오류: '+e.message;
+  }
+  btn.textContent='🔄 다시 생성'; btn.disabled=false;
+}
+
+function exportScriptXlsx(){
+  if(!scriptSeller) return;
+  const year=document.getElementById('script-year')?.value||new Date().getFullYear();
+  window.location.href=`/api/export/xlsx/script?seller=${encodeURIComponent(scriptSeller)}&year=${year}`;
+  toast('📥 영업 스크립트 엑셀 다운로드 중...');
 }
 
 // ── 엑셀 내보내기 ──────────────────────────────

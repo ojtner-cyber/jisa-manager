@@ -604,6 +604,14 @@ def export_sales_ranking():
 # ── xlsx 엑셀 내보내기 헬퍼 ──────────────────────
 
 # 브랜드 순서 (엑셀 열 순서)
+# ── 매장명 별칭 매핑 ─────────────────────────────
+SELLER_ALIAS = {
+    '주식회사 위드에이컴퍼니': '베이비하우스 관악점',
+    '위드에이컴퍼니':          '베이비하우스 관악점',
+}
+def resolve_seller(name):
+    return SELLER_ALIAS.get(name, name)
+
 BRAND_ORDER = ['줄즈', '레카로', 'ABC디자인', '원더폴드', '카오스', '엔픽스', '타프토이즈']
 
 GROUP_REMAP = {
@@ -671,6 +679,247 @@ def get_group_sort_key(group):
         return BRAND_ORDER.index(group)
     except ValueError:
         return 99
+# ── 타프토이즈 제품 카탈로그 ─────────────────────
+TAFTOYS_CATALOG = {
+    '[타프토이즈]드라이브&디스커버트래블토이': {'price':26900,'category':'트래블토이','desc':'이동 중 아이 집중도 UP, 유모차 부착 가능'},
+    '[타프토이즈]사바나 어드벤쳐 아치':       {'price':28600,'category':'아치/모빌','desc':'바닥 놀이 필수템, 감각 발달 + 인테리어 효과'},
+    '[타프토이즈]라이드타임비지북':            {'price':23600,'category':'비지북','desc':'유모차·카시트 부착, 0-3세 인지발달'},
+    '[타프토이즈]트로피컬 오케스트라 아치 모빌':{'price':27800,'category':'아치/모빌','desc':'뮤지컬 아치, 터미타임 필수'},
+    '[타프토이즈]코알라 카 휠 토이':          {'price':30900,'category':'카시트 장난감','desc':'카시트 부착, 지루한 이동 시간 해결사'},
+    '[타프토이즈]어반가든 팝업 티슈 박스':    {'price':22500,'category':'감각 장난감','desc':'무한 반복 놀이, 소근육 발달 최고'},
+    '[타프토이즈]어반가든 유모차 모빌':       {'price':15600,'category':'아치/모빌','desc':'유모차 클립형, 시각 자극 + 휴대성'},
+    '[타프토이즈]피크 앤 플레이 큐브':        {'price':18400,'category':'큐브','desc':'6면 다기능, 0-2세 전방위 발달'},
+    '[타프토이즈]마이홈비지북':               {'price':18400,'category':'비지북','desc':'집 모양 비지북, 역할놀이 시작'},
+    '[타프토이즈]어반가든 액티비티 큐브':     {'price':15300,'category':'큐브','desc':'4면 액티비티, 혼자 놀기 최적'},
+    '[타프토이즈]사바나 360 액티비티짐':      {'price':89000,'category':'액티비티짐','desc':'360도 회전 아치, 신생아부터 12개월'},
+    '[타프토이즈]사바나 터미타임 북':         {'price':19800,'category':'터미타임','desc':'엎드려 놀기 훈련, 목 근육 강화'},
+    '[타프토이즈]어반가든 뮤지컬 버니':       {'price':28900,'category':'인형/뮤지컬','desc':'뮤지컬 봉제 인형, 수면 루틴 도움'},
+    '[타프토이즈]어반가든 터미타임 스피닝북': {'price':22000,'category':'터미타임','desc':'스피닝 기능, 아이 주의 집중'},
+    '[타프토이즈]사바나 디스커버리 큐브':     {'price':32900,'category':'큐브','desc':'프리미엄 큐브, 1-3세 탐색놀이'},
+    '[타프토이즈]북극 액티비티 북':           {'price':21000,'category':'비지북','desc':'천 소재 액티비티 북, 감촉 자극'},
+    '[타프토이즈]아이스크림 베어 워터매트':   {'price':35000,'category':'워터매트','desc':'여름 필수템, 터미타임 + 시각자극'},
+    '[타프토이즈]팬더 블룸 워터매트':         {'price':35000,'category':'워터매트','desc':'실내 물놀이, 감각 자극 극대화'},
+    '[타프토이즈]팝앤플레이스테이션':         {'price':45000,'category':'액티비티짐','desc':'팝업 텐트형, 실내 놀이공간 완성'},
+    '[타프토이즈]파멜라 레인스틱':            {'price':16000,'category':'감각 장난감','desc':'청각 자극, 비 소리 감각놀이'},
+    '[타프토이즈]코알라 액티비티 스파이럴':   {'price':14500,'category':'트래블토이','desc':'유모차/카시트 나선형, 다양한 질감'},
+    '[타프토이즈]미니문 유모차 모빌':         {'price':13500,'category':'아치/모빌','desc':'초소형 모빌, 어디든 클립 부착'},
+    '[타프토이즈]베어 허그 스파이럴':         {'price':14500,'category':'트래블토이','desc':'곰돌이 스파이럴, 촉감+색상 자극'},
+}
+
+@app.route("/api/script/analysis")
+@login_required
+def api_script_analysis():
+    seller_raw = request.args.get("seller","").strip()
+    year       = request.args.get("year", str(datetime.now().year))
+    seller     = resolve_seller(seller_raw)
+    conn       = get_db()
+
+    sold_items=[dict(r) for r in conn.execute("""
+        SELECT item_group,item_name,SUM(quantity) qty,SUM(total) total,COUNT(*) cnt,
+               MIN(sale_date) first_sale,MAX(sale_date) last_sale
+        FROM sales_data WHERE (real_seller=? OR real_seller=?) AND sale_date LIKE ? AND sale_date!=''
+        GROUP BY item_name ORDER BY total DESC""",(seller,seller_raw,f"{year}%")).fetchall()]
+
+    brand_summary={}
+    for r in sold_items:
+        b=remap_group(r['item_group'],r['item_name'])
+        if b not in brand_summary: brand_summary[b]={'qty':0,'total':0}
+        brand_summary[b]['qty']+=r['qty']; brand_summary[b]['total']+=r['total']
+
+    sold_taft=set(normalize_item_name(r['item_name']) for r in sold_items
+                  if remap_group(r['item_group'],r['item_name'])=='타프토이즈')
+    unsold_taft=[{'name':normalize_item_name(k),'category':v['category'],
+                  'price':v['price'],'desc':v['desc']}
+                 for k,v in TAFTOYS_CATALOG.items()
+                 if normalize_item_name(k) not in sold_taft]
+
+    daily=[dict(r) for r in conn.execute("""
+        SELECT sale_date,SUM(total) total,SUM(quantity) qty,COUNT(*) cnt
+        FROM sales_data WHERE (real_seller=? OR real_seller=?) AND sale_date LIKE ? AND sale_date!=''
+        GROUP BY sale_date ORDER BY sale_date""",(seller,seller_raw,f"{year}%")).fetchall()]
+
+    weekly_raw=conn.execute("""
+        SELECT strftime('%Y-%W',sale_date) wk,MIN(sale_date) md,SUM(total) total,SUM(quantity) qty
+        FROM sales_data WHERE (real_seller=? OR real_seller=?) AND sale_date LIKE ? AND sale_date!=''
+        GROUP BY wk ORDER BY wk""",(seller,seller_raw,f"{year}%")).fetchall()
+
+    from datetime import datetime as dt2,timedelta
+    weekly=[]
+    for r in weekly_raw:
+        try:
+            d=dt2.strptime(r[1],"%Y-%m-%d"); sun=d-timedelta(days=(d.weekday()+1)%7)
+            weekly.append({'week':r[0],'week_start':sun.strftime("%Y-%m-%d"),
+                           'week_end':(sun+timedelta(days=6)).strftime("%Y-%m-%d"),'total':r[2],'qty':r[3]})
+        except: pass
+
+    total_all=conn.execute(f"SELECT SUM(total) FROM sales_data WHERE sale_date LIKE '{year}%'").fetchone()[0] or 1
+    seller_total=sum(r['total'] for r in sold_items)
+    conn.close()
+
+    return jsonify({
+        'seller':seller,'year':year,'total':seller_total,
+        'total_pct':round(seller_total/total_all*100,1),
+        'brand_summary':[{'brand':k,'qty':v['qty'],'total':v['total'],
+                          'pct':round(v['total']/seller_total*100,1) if seller_total else 0}
+                         for k,v in sorted(brand_summary.items(),key=lambda x:-x[1]['total'])],
+        'sold_items':sold_items,'top5':sold_items[:5],
+        'unsold_taft':unsold_taft,'daily':daily,'weekly':weekly,
+    })
+
+@app.route("/api/script/generate",methods=["POST"])
+@login_required
+def api_script_generate():
+    data=request.json; seller=data.get('seller',''); analysis=data.get('analysis',{})
+    brand_lines='\n'.join(f"  - {b['brand']}: {b['total']:,}원 ({b['pct']}%)"
+                          for b in analysis.get('brand_summary',[])[:6])
+    top5_lines='\n'.join(f"  - {normalize_item_name(r['item_name'])}: {r['qty']}개 ({r['total']:,}원)"
+                         for r in analysis.get('top5',[]))
+    unsold=analysis.get('unsold_taft',[])[:8]
+    unsold_lines='\n'.join(f"  - {u['name']} ({u['category']}, {u['price']:,}원): {u['desc']}"
+                           for u in unsold)
+    prompt=f"""당신은 유아용품 브랜드 ENFIX의 10년 경력 영업 전문가입니다.
+아래 매장 실적 데이터를 바탕으로, 매장 사장님과의 실전 영업 미팅 스크립트를 작성해주세요.
+
+【매장명】 {seller}
+【분석 연도】 {analysis.get('year','')}년  
+【총 매출】 {analysis.get('total',0):,}원 (전체 대비 {analysis.get('total_pct',0)}%)
+
+【브랜드별 실적】
+{brand_lines}
+
+【베스트 제품 TOP5】
+{top5_lines}
+
+【미취급 타프토이즈 제품】
+{unsold_lines}
+
+다음 구조로 실전 영업 스크립트를 작성해주세요:
+
+1. **오프닝** (방문 인사 + 지난 방문 이후 관계 언급)
+2. **실적 공유 & 칭찬** (구체적 수치 활용, 사장님 자부심 자극)
+3. **베스트 제품 분석** (왜 잘 팔리는지 + 추가 발주 제안 멘트)
+4. **타프토이즈 신규 제안** (3개 제품, 왜 이 매장에 맞는지 구체적으로)
+5. **시즌 전략 제안** (현재 시기 + 다음 시즌 예측)
+6. **클로징** (발주 유도 + 다음 방문 약속)
+
+실제 영업사원이 대화하듯 자연스럽게, 한국어로 작성하세요."""
+    return jsonify({'prompt':prompt,'seller':seller})
+
+@app.route("/api/export/xlsx/script")
+@login_required
+def export_xlsx_script():
+    seller_raw=request.args.get("seller","").strip()
+    year=request.args.get("year",str(datetime.now().year))
+    seller=resolve_seller(seller_raw)
+    conn=get_db()
+    sold_items=[dict(r) for r in conn.execute("""
+        SELECT item_group,item_name,SUM(quantity) qty,SUM(total) total
+        FROM sales_data WHERE (real_seller=? OR real_seller=?) AND sale_date LIKE ? AND sale_date!=''
+        GROUP BY item_name ORDER BY total DESC""",(seller,seller_raw,f"{year}%")).fetchall()]
+    brand_summary={}
+    for r in sold_items:
+        b=remap_group(r['item_group'],r['item_name'])
+        if b not in brand_summary: brand_summary[b]={'qty':0,'total':0}
+        brand_summary[b]['qty']+=r['qty']; brand_summary[b]['total']+=r['total']
+    sold_taft=set(normalize_item_name(r['item_name']) for r in sold_items
+                  if remap_group(r['item_group'],r['item_name'])=='타프토이즈')
+    unsold=[{'name':normalize_item_name(k),'category':v['category'],'price':v['price'],'desc':v['desc']}
+            for k,v in TAFTOYS_CATALOG.items() if normalize_item_name(k) not in sold_taft]
+    weekly_raw=conn.execute("""SELECT strftime('%Y-%W',sale_date) wk,MIN(sale_date) md,SUM(total) total,SUM(quantity) qty
+        FROM sales_data WHERE (real_seller=? OR real_seller=?) AND sale_date LIKE ? AND sale_date!=''
+        GROUP BY wk ORDER BY wk""",(seller,seller_raw,f"{year}%")).fetchall()
+    conn.close()
+
+    from datetime import datetime as dt2,timedelta
+    seller_total=sum(v['total'] for v in brand_summary.values())
+    wb=openpyxl.Workbook()
+    mf=lambda h: PatternFill(start_color=h,end_color=h,fill_type="solid")
+    mft=lambda h,b=False,s=10: Font(color=h,bold=b,size=s)
+    thin=Side(style='thin',color='E0E0E0')
+    bdr=Border(left=thin,right=thin,top=thin,bottom=thin)
+    ctr=Alignment(horizontal="center",vertical="center"); rgt=Alignment(horizontal="right")
+
+    # 시트1: 브랜드별 실적
+    ws1=wb.active; ws1.title="브랜드별 실적"
+    ws1.merge_cells("A1:E1")
+    c=ws1.cell(row=1,column=1,value=f"{seller} — {year}년 브랜드별 판매 실적")
+    c.fill=mf("1E3A5F"); c.font=mft("FFFFFF",True,13); c.alignment=ctr; ws1.row_dimensions[1].height=28
+    for ci,h in enumerate(['브랜드','판매수량','판매금액(원)','비율(%)','등급'],1):
+        c=ws1.cell(row=2,column=ci,value=h); c.fill=mf("F2F2F2"); c.font=mft("595959",True,10); c.alignment=ctr; c.border=bdr
+    for ri,(brand,v) in enumerate(sorted(brand_summary.items(),key=lambda x:-x[1]['total']),3):
+        pct=round(v['total']/seller_total*100,1) if seller_total else 0
+        grade="★★★ 핵심" if pct>25 else "★★ 주력" if pct>10 else "★ 보조" if pct>3 else "△ 소량"
+        for ci,val in enumerate([brand,v['qty'],v['total'],pct,grade],1):
+            c=ws1.cell(row=ri,column=ci,value=val); c.border=bdr
+            if ri%2==0: c.fill=mf("FAFAFA")
+            if ci==3: c.number_format='#,##0'; c.alignment=rgt
+            if ci in (4,5): c.alignment=ctr
+    for ci,w in zip('ABCDE',[14,10,16,10,14]): ws1.column_dimensions[ci].width=w
+
+    # 시트2: 제품별 상세
+    ws2=wb.create_sheet("제품별 상세")
+    ws2.merge_cells("A1:F1")
+    c=ws2.cell(row=1,column=1,value=f"{seller} — 제품별 판매 상세")
+    c.fill=mf("1E3A5F"); c.font=mft("FFFFFF",True,12); c.alignment=ctr; ws2.row_dimensions[1].height=26
+    for ci,h in enumerate(['브랜드','제품명','판매수량','판매금액(원)','비율(%)','등급'],1):
+        c=ws2.cell(row=2,column=ci,value=h); c.fill=mf("F2F2F2"); c.font=mft("595959",True,10); c.alignment=ctr; c.border=bdr
+    for ri,r in enumerate(sold_items,3):
+        brand=remap_group(r['item_group'],r['item_name']); norm=normalize_item_name(r['item_name'])
+        pct=round(r['total']/seller_total*100,1) if seller_total else 0
+        grade="◎ 인기" if pct>10 else "○ 판매중" if pct>3 else "△ 소량"
+        for ci,val in enumerate([brand,norm,r['qty'],r['total'],pct,grade],1):
+            c=ws2.cell(row=ri,column=ci,value=val); c.border=bdr
+            if ri%2==0: c.fill=mf("FAFAFA")
+            if ci==4: c.number_format='#,##0'; c.alignment=rgt
+            if ci in (5,6): c.alignment=ctr
+    ws2.column_dimensions['A'].width=14; ws2.column_dimensions['B'].width=32
+    ws2.column_dimensions['C'].width=10; ws2.column_dimensions['D'].width=16
+    ws2.column_dimensions['E'].width=10; ws2.column_dimensions['F'].width=12
+
+    # 시트3: 타프토이즈 추천
+    ws3=wb.create_sheet("타프토이즈 추천")
+    ws3.merge_cells("A1:E1")
+    c=ws3.cell(row=1,column=1,value=f"타프토이즈 미취급 제품 추천 — {seller}")
+    c.fill=mf("7C3AED"); c.font=mft("FFFFFF",True,12); c.alignment=ctr; ws3.row_dimensions[1].height=26
+    SP={'아치/모빌':'인스타 감성↑, 구매 결정 빠름','트래블토이':'유모차/카시트 필수, 재구매율 높음',
+        '비지북':'교육적 가치, 선물용 인기','큐브':'다기능 가성비, 1+1 구성 가능',
+        '워터매트':'계절성 높음, 여름 전 선주문','액티비티짐':'고마진, 출산선물 1순위',
+        '터미타임':'소아과 추천, 안전 강조','감각 장난감':'6개월부터 사용, 반복구매',
+        '인형/뮤지컬':'수면 루틴, 감성 구매','카시트 장난감':'카시트 구매 시 ADD-ON'}
+    for ci,h in enumerate(['제품명','카테고리','소비자가(원)','제품 특징','영업 포인트'],1):
+        c=ws3.cell(row=2,column=ci,value=h); c.fill=mf("F2F2F2"); c.font=mft("595959",True,10); c.alignment=ctr; c.border=bdr
+    for ri,u in enumerate(unsold,3):
+        for ci,val in enumerate([u['name'],u.get('category',''),u.get('price',0),u.get('desc',''),SP.get(u.get('category',''),'')],1):
+            c=ws3.cell(row=ri,column=ci,value=val); c.border=bdr
+            if ri%2==0: c.fill=mf("FAF5FF")
+            if ci==3: c.number_format='#,##0'; c.alignment=rgt
+    ws3.column_dimensions['A'].width=30; ws3.column_dimensions['B'].width=16
+    ws3.column_dimensions['C'].width=14; ws3.column_dimensions['D'].width=42
+    ws3.column_dimensions['E'].width=32
+
+    # 시트4: 주별 추이
+    ws4=wb.create_sheet("주별 추이")
+    ws4.merge_cells("A1:D1")
+    c=ws4.cell(row=1,column=1,value=f"{seller} — 주별 판매 추이")
+    c.fill=mf("1E3A5F"); c.font=mft("FFFFFF",True,12); c.alignment=ctr; ws4.row_dimensions[1].height=26
+    for ci,h in enumerate(['주차','기간','판매금액(원)','판매수량'],1):
+        c=ws4.cell(row=2,column=ci,value=h); c.fill=mf("F2F2F2"); c.font=mft("595959",True,10); c.alignment=ctr; c.border=bdr
+    for ri,r in enumerate(weekly_raw,3):
+        try:
+            d=dt2.strptime(r[1],"%Y-%m-%d"); sun=d-timedelta(days=(d.weekday()+1)%7)
+            sat=sun+timedelta(days=6); period=f"{sun.strftime('%m/%d')}~{sat.strftime('%m/%d')}"
+        except: period=r[0]
+        for ci,val in enumerate([f"{ri-2}주차",period,r[2],r[3]],1):
+            c=ws4.cell(row=ri,column=ci,value=val); c.border=bdr
+            if ri%2==0: c.fill=mf("FAFAFA")
+            if ci==3: c.number_format='#,##0'; c.alignment=rgt
+            if ci in(1,2): c.alignment=ctr
+    for ci,w in zip('ABCD',[10,16,16,10]): ws4.column_dimensions[ci].width=w
+
+    buf=io.BytesIO(); wb.save(buf); buf.seek(0)
+    return send_file(buf,mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                     as_attachment=True,download_name=f"영업스크립트_{seller}_{year}.xlsx")
+
 def make_xlsx(headers, rows_data, sheet_name="데이터"):
     wb = openpyxl.Workbook()
     ws = wb.active; ws.title = sheet_name
@@ -1737,8 +1986,9 @@ def parse_xlsx_sales(file_bytes):
                     real_seller = buyer
 
             # 언더바 정규화: "베이비하우스_영통점" → "베이비하우스 영통점"
-            # 실적용거래처명의 언더바를 공백으로 통일
             real_seller = real_seller.replace('_', ' ')
+            # 별칭 처리: 위드에이컴퍼니 → 베이비하우스 관악점
+            real_seller = resolve_seller(real_seller)
 
             results.append({
                 'sale_date':    sale_date,
