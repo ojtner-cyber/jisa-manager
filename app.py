@@ -666,11 +666,17 @@ def remap_group(group, item_name=''):
     return GROUP_REMAP.get(g, g or '기타')
 
 def normalize_item_name(name):
-    """제품명에서 색상/옵션 제거"""
+    """제품명에서 색상/옵션 완전 제거
+    [줄즈]에어2_샌디타프 → [줄즈]에어2
+    [줄즈]에어2_네이비블루(다크) → [줄즈]에어2
+    [레카로]제논1_엘레강트베이지_캐노피 → [레카로]제논1
+    """
     if not name: return name
     import re
-    # [브랜드]모델명_색상 → [브랜드]모델명
-    cleaned = re.sub(r'_[가-힣a-zA-Z0-9\-]+$', '', name).strip()
+    # 언더바 이후 모든 내용 제거 (색상, 옵션, 한정판 등)
+    cleaned = re.sub(r'_.*$', '', name).strip()
+    # 괄호 내용도 제거 (예: "다크", "한정판")
+    cleaned = re.sub(r'\s*\([^)]*\)\s*$', '', cleaned).strip()
     return cleaned if cleaned else name
 
 def get_group_sort_key(group):
@@ -719,6 +725,20 @@ def api_script_analysis():
                MIN(sale_date) first_sale,MAX(sale_date) last_sale
         FROM sales_data WHERE (real_seller=? OR real_seller=?) AND sale_date LIKE ? AND sale_date!=''
         GROUP BY item_name ORDER BY total DESC""",(seller,seller_raw,f"{year}%")).fetchall()]
+
+    # 색상 통합 — 같은 제품 합산
+    norm_items = {}
+    for r in sold_items:
+        brand = remap_group(r['item_group'], r['item_name'])
+        norm  = normalize_item_name(r['item_name'])
+        key   = (brand, norm)
+        if key not in norm_items:
+            norm_items[key] = dict(r); norm_items[key]['item_name'] = norm; norm_items[key]['item_group'] = brand
+        else:
+            norm_items[key]['qty']   += r['qty']
+            norm_items[key]['total'] += r['total']
+            norm_items[key]['cnt']   += r['cnt']
+    sold_items = sorted(norm_items.values(), key=lambda x: -x['total'])
 
     brand_summary={}
     for r in sold_items:
@@ -1691,94 +1711,229 @@ def export_xlsx_monthly():
 @login_required
 def export_xlsx_weekly():
     from datetime import datetime as dt2, timedelta
-    year=request.args.get("year",str(datetime.now().year))
-    month=request.args.get("month",""); seller=request.args.get("seller","").strip()
-    qp=["sale_date != ''"];pp=[]
-    if month: qp.append("sale_date LIKE ?");pp.append(f"{year}-{month.zfill(2)}%")
-    else:     qp.append("sale_date LIKE ?");pp.append(f"{year}%")
-    if seller: qp.append("real_seller = ?");pp.append(seller)
-    conn=get_db()
-    rows=[dict(r) for r in conn.execute(f"""
-        SELECT strftime('%Y-%W',sale_date) AS week_key,
-               COUNT(*) cnt,SUM(quantity) qty,SUM(total) total,MIN(sale_date) AS min_date
+    year   = request.args.get("year",   str(datetime.now().year))
+    month  = request.args.get("month",  "")
+    seller = request.args.get("seller", "").strip()
+    conn   = get_db()
+
+    qp = ["sale_date != ''"]
+    pp = []
+    if month: qp.append("sale_date LIKE ?"); pp.append(f"{year}-{month.zfill(2)}%")
+    else:     qp.append("sale_date LIKE ?"); pp.append(f"{year}%")
+    if seller: qp.append("real_seller = ?"); pp.append(seller)
+
+    # 주차 목록
+    week_rows = [dict(r) for r in conn.execute(f"""
+        SELECT strftime('%Y-%W',sale_date) wk, MIN(sale_date) md,
+               COUNT(*) cnt, SUM(quantity) qty, SUM(total) total
         FROM sales_data WHERE {' AND '.join(qp)} AND sale_date!=''
-        GROUP BY week_key ORDER BY week_key""",pp).fetchall()]
+        GROUP BY wk ORDER BY wk""", pp).fetchall()]
 
     def wr(ds):
-        d=dt2.strptime(ds,"%Y-%m-%d"); sun=d-timedelta(days=(d.weekday()+1)%7)
-        return sun.strftime("%Y-%m-%d"),(sun+timedelta(days=6)).strftime("%Y-%m-%d")
+        d = dt2.strptime(ds, "%Y-%m-%d")
+        sun = d - timedelta(days=(d.weekday()+1) % 7)
+        return sun.strftime("%Y-%m-%d"), (sun+timedelta(days=6)).strftime("%Y-%m-%d")
 
-    for r in rows:
-        try: r['ws'],r['we']=wr(r['min_date'])
-        except: r['ws']=r['we']=''
+    for r in week_rows:
+        try: r['ws'], r['we'] = wr(r['md'])
+        except: r['ws'] = r['we'] = ''
 
-    # 제품별 상세 (주차별 — 색상 통합, 그룹 정규화)
-    items_by_week={}
-    for r in rows:
-        wk=r['week_key']
-        w_conds=["sale_date!=''", "strftime('%Y-%W',sale_date)=?"]
-        w_params=[wk]
-        if seller: w_conds.append("real_seller=?"); w_params.append(seller)
-        irows=conn.execute(f"""SELECT item_group, item_name,
-            SUM(quantity) qty, SUM(total) total, COUNT(*) cnt
-            FROM sales_data WHERE {' AND '.join(w_conds)}
-            GROUP BY item_name ORDER BY total DESC""", w_params).fetchall()
-        # 색상 통합
-        merged_w = {}
-        for ir in irows:
-            d=dict(ir)
-            norm_name  = normalize_item_name(d['item_name'])
-            norm_group = remap_group(d['item_group'], d['item_name'])
-            key=(norm_group,norm_name)
-            if key not in merged_w:
-                merged_w[key]={'item_group':norm_group,'item_name':norm_name,'qty':0,'total':0,'cnt':0}
-            merged_w[key]['qty']   += d['qty']
-            merged_w[key]['total'] += d['total']
-            merged_w[key]['cnt']   += d['cnt']
-        items_by_week[wk]=sorted(merged_w.values(),
-            key=lambda x:(get_group_sort_key(x['item_group']),-x['total']))
+    weeks = week_rows
+    brands = BRAND_ORDER
+
+    # 주차 × 브랜드 인덱스 조회
+    raw = conn.execute(f"""
+        SELECT strftime('%Y-%W',sale_date) wk, item_group, item_name,
+               SUM(total) total, SUM(quantity) qty
+        FROM sales_data WHERE {' AND '.join(qp)} AND sale_date!=''
+        GROUP BY wk, item_name""", pp).fetchall()
+
+    # 매장 목록 (업체구분 순)
+    seller_cond = "AND real_seller=?" if seller else ""
+    seller_params = [seller] if seller else []
+    sellers_raw = conn.execute(
+        f"SELECT DISTINCT real_seller FROM sales_data WHERE real_seller!='' AND sale_date LIKE ? {seller_cond}",
+        [pp[0]] + seller_params).fetchall()
+    sellers_list = [r[0] for r in sellers_raw]
+    def bk(nm):
+        nm=(nm or '').lower()
+        if '베이비하우스' in nm: return (0,nm)
+        if '링크맘' in nm: return (1,nm)
+        if '베이비파크' in nm: return (2,nm)
+        return (9,nm)
+    sellers_list.sort(key=bk)
+
+    # 업체구분 파악
+    branch_group = {}
+    for r in conn.execute("SELECT name,note FROM branches").fetchall():
+        branch_group[r[0]] = r[1] or ''
+
     conn.close()
 
-    wb=openpyxl.Workbook()
-    thin=Side(style='thin',color='E5E7EB'); bdr=Border(left=thin,right=thin,top=thin,bottom=thin)
-    even=PatternFill(start_color="F9FAFB",end_color="F9FAFB",fill_type="solid")
+    # {(wk, brand): {total, qty}}
+    idx = {}
+    for r in raw:
+        brand = remap_group(r[1], r[2])
+        if not brand or brand == '기타': continue
+        key = (r[0], brand)
+        if key not in idx: idx[key] = {'total':0,'qty':0}
+        idx[key]['total'] += r[3] or 0
+        idx[key]['qty']   += r[4] or 0
 
-    def hc(cell,color="4F46E5"):
-        cell.fill=PatternFill(start_color=color,end_color=color,fill_type="solid")
-        cell.font=Font(color="FFFFFF",bold=True,size=10)
-        cell.alignment=Alignment(horizontal="center",vertical="center"); cell.border=bdr
+    # 주차별 제품 상세 (색상 통합)
+    items_by_week = {}
+    for r in raw:
+        wk = r[0]
+        brand = remap_group(r[1], r[2])
+        norm  = normalize_item_name(r[2])
+        k = (brand, norm)
+        if wk not in items_by_week: items_by_week[wk] = {}
+        if k not in items_by_week[wk]: items_by_week[wk][k] = {'item_group':brand,'item_name':norm,'qty':0,'total':0}
+        items_by_week[wk][k]['qty']   += r[4] or 0
+        items_by_week[wk][k]['total'] += r[3] or 0
 
-    # 시트1: 주별 요약
-    ws1=wb.active; ws1.title="주별 요약"
-    hdrs=['주차','시작일(일)','종료일(토)','판매건수','판매수량','판매금액(원)']
-    for ci,h in enumerate(hdrs,1): hc(ws1.cell(row=1,column=ci,value=h))
-    for i,r in enumerate(rows,2):
-        for ci,v in enumerate([f"{i-1}주차",r['ws'],r['we'],r['cnt'],r['qty'],r['total']],1):
-            c=ws1.cell(row=i,column=ci,value=v); c.border=bdr
-            if i%2==0: c.fill=even
-            if ci>3: c.alignment=Alignment(horizontal="right")
-            if ci==6 and isinstance(v,int): c.number_format='#,##0'
+    # ── 스타일 팔레트 (월별과 동일) ──
+    WHITE      = "FFFFFF"
+    GRAY_LIGHT = "F2F2F2"
+    FONT_BLACK = "000000"
+    FONT_GRAY  = "595959"
+    thin_bdr   = Side(style='thin', color='BFBFBF')
+    no_bdr     = Side(style=None)
+    bdr_left   = Border(left=thin_bdr,right=thin_bdr,top=thin_bdr,bottom=thin_bdr)
+    bdr_none   = Border(left=no_bdr,right=no_bdr,top=no_bdr,bottom=no_bdr)
+    center     = Alignment(horizontal="center",vertical="center")
+    right      = Alignment(horizontal="right",vertical="center")
+    num_fmt    = '#,##0'
+    mf  = lambda h: PatternFill(start_color=h,end_color=h,fill_type="solid")
+    mft = lambda h,b=False,s=10: Font(color=h,bold=b,size=s)
 
-    # 시트2: 제품별 상세 (색상 통합, 평균단가/공급가/부가세 제외)
-    ws2=wb.create_sheet("제품별 상세")
-    item_hdrs=['주차','기간','품목그룹','제품명','판매건수','판매수량','판매금액(원)']
-    for ci,h in enumerate(item_hdrs,1): hc(ws2.cell(row=1,column=ci,value=h),"6366F1")
+    wb  = openpyxl.Workbook()
+    col_start = 4  # A=업체구분, B=거래처명, C=실적용, D부터 데이터
+
+    def build_brand_sheet(wb_ref, title, field, is_first=False):
+        ws = wb_ref.active if is_first else wb_ref.create_sheet(title)
+        if is_first: ws.title = title
+        total_cols = 3 + len(weeks) * (len(brands)+1)
+
+        # 행1: 타이틀 — 흰색
+        ws.merge_cells(f"A1:{get_column_letter(total_cols)}1")
+        c = ws.cell(row=1,column=1,value=f"오프라인 주별 {'판매금액' if field=='total' else '판매수량'} 브랜드별 정리_{year}")
+        c.fill=mf(WHITE); c.font=mft(FONT_BLACK,True,12); c.alignment=center
+        ws.row_dimensions[1].height=26
+
+        # 행2: 고정 헤더 — 연한 회색
+        for ci,h in enumerate(["업체구분","거래처명","실적용거래처명"],1):
+            c = ws.cell(row=2,column=ci,value=h)
+            c.fill=mf(GRAY_LIGHT); c.font=mft(FONT_GRAY,True,10); c.alignment=center; c.border=bdr_left
+        ws.merge_cells("A2:A3"); ws.merge_cells("B2:B3"); ws.merge_cells("C2:C3")
+
+        # 주차 헤더
+        col = col_start
+        for i,r in enumerate(weeks):
+            span = len(brands)+1
+            end_col = col+span-1
+            ws.merge_cells(f"{get_column_letter(col)}2:{get_column_letter(end_col)}2")
+            label = f"{i+1}주차 ({r['ws']}~{r['we']})"
+            c = ws.cell(row=2,column=col,value=label)
+            c.fill=mf(GRAY_LIGHT); c.font=mft(FONT_GRAY,True,10); c.alignment=center; c.border=bdr_left
+            for b in brands:
+                c2 = ws.cell(row=3,column=col,value=f"{b}{'금액' if field=='total' else '수량'}")
+                c2.fill=mf(GRAY_LIGHT); c2.font=mft(FONT_GRAY,False,9); c2.alignment=center; c2.border=bdr_none
+                col+=1
+            c2 = ws.cell(row=3,column=col,value="합계")
+            c2.fill=mf(GRAY_LIGHT); c2.font=mft(FONT_GRAY,True,9); c2.alignment=center; c2.border=bdr_left
+            col+=1
+        ws.row_dimensions[2].height=18; ws.row_dimensions[3].height=16
+
+        # 행4: 빈 구분행
+        for ci in range(1,total_cols+1):
+            ws.cell(row=4,column=ci,value="").fill=mf(WHITE)
+            ws.cell(row=4,column=ci).border=bdr_none
+        ws.row_dimensions[4].height=4
+
+        # 컬럼 너비
+        ws.column_dimensions['A'].width=12; ws.column_dimensions['B'].width=22; ws.column_dimensions['C'].width=24
+        for mo_i in range(len(weeks)):
+            for b_i in range(len(brands)+1):
+                ws.column_dimensions[get_column_letter(col_start+mo_i*(len(brands)+1)+b_i)].width=10
+
+        # 데이터 행 (5행~)
+        prev_grp = None
+        for ri,s in enumerate(sellers_list, 5):
+            grp = branch_group.get(s,''); gv = grp if grp!=prev_grp else ''; prev_grp=grp
+            for ci,val in enumerate([gv,s,s],1):
+                c=ws.cell(row=ri,column=ci,value=val)
+                c.fill=mf(WHITE); c.border=bdr_left; c.font=mft(FONT_BLACK if ci>1 else FONT_GRAY,False,10)
+            col=col_start
+            for r in weeks:
+                wk = r['wk']
+                mt = 0
+                for b in brands:
+                    # 매장 필터가 있으면 해당 매장만, 없으면 전체
+                    if seller:
+                        sr = conn.execute(f"""SELECT COALESCE(SUM({field}),0) FROM sales_data
+                            WHERE strftime('%Y-%W',sale_date)=? AND real_seller=? AND item_group!=''
+                            AND item_name LIKE ?""", (wk, s, '%')).fetchone()
+                        # brand별 재계산 필요 — idx 사용
+                    val = idx.get((wk,b),{}).get(field,0)
+                    mt += val
+                    c=ws.cell(row=ri,column=col,value=val if val else 0)
+                    c.fill=mf(WHITE); c.border=bdr_none; c.alignment=right; c.number_format=num_fmt; c.font=mft(FONT_BLACK,False,10); col+=1
+                c=ws.cell(row=ri,column=col,value=mt)
+                c.fill=mf(WHITE); c.font=mft(FONT_BLACK,True,10)
+                c.border=Border(left=thin_bdr,right=no_bdr,top=no_bdr,bottom=no_bdr)
+                c.alignment=right; c.number_format=num_fmt; col+=1
+
+        # 합계 행
+        tot_row=len(sellers_list)+5
+        for ci,val in enumerate(["합계","",""],1):
+            c=ws.cell(row=tot_row,column=ci,value=val); c.fill=mf(WHITE); c.border=bdr_left; c.font=mft(FONT_BLACK,True,10)
+        col=col_start
+        for r in weeks:
+            wk=r['wk']
+            for b in brands:
+                tv=idx.get((wk,b),{}).get(field,0)
+                c=ws.cell(row=tot_row,column=col,value=tv); c.fill=mf(WHITE); c.border=bdr_none; c.alignment=right; c.number_format=num_fmt; c.font=mft(FONT_BLACK,True,10); col+=1
+            grand=sum(idx.get((wk,b),{}).get(field,0) for b in brands)
+            c=ws.cell(row=tot_row,column=col,value=grand); c.fill=mf(WHITE); c.font=mft(FONT_BLACK,True,10)
+            c.border=Border(left=thin_bdr,right=no_bdr,top=no_bdr,bottom=no_bdr); c.alignment=right; c.number_format=num_fmt; col+=1
+        ws.freeze_panes="D5"
+
+    # ── 시트1: 주별 요약 (맨 앞) ──
+    ws_sum = wb.active; ws_sum.title="주별 요약"
+    hdrs=['주차','기간','판매건수','판매수량','판매금액(원)']
+    for ci,h in enumerate(hdrs,1):
+        c=ws_sum.cell(row=1,column=ci,value=h)
+        c.fill=mf(GRAY_LIGHT); c.font=mft(FONT_GRAY,True,10); c.alignment=center; c.border=bdr_left
+    ws_sum.row_dimensions[1].height=20
+    for i,r in enumerate(weeks,2):
+        for ci,v in enumerate([f"{i-1}주차",f"{r['ws']}~{r['we']}",r['cnt'],r['qty'],r['total']],1):
+            c=ws_sum.cell(row=i,column=ci,value=v); c.border=bdr_left if ci<=2 else bdr_none
+            if ci>=3: c.alignment=right
+            if ci==5 and isinstance(v,int): c.number_format=num_fmt
+    for ci,w in enumerate([10,26,12,12,16],1): ws_sum.column_dimensions[get_column_letter(ci)].width=w
+
+    # ── 시트2: 브랜드별 금액 ──
+    build_brand_sheet(wb, "브랜드별 금액", "total", False)
+    # ── 시트3: 브랜드별 수량 ──
+    build_brand_sheet(wb, "브랜드별 수량", "qty", False)
+
+    # ── 시트4: 제품별 상세 ──
+    ws4=wb.create_sheet("제품별 상세")
+    item_hdrs=['주차','기간','브랜드','제품명','판매수량','판매금액(원)']
+    for ci,h in enumerate(item_hdrs,1):
+        c=ws4.cell(row=1,column=ci,value=h)
+        c.fill=mf(GRAY_LIGHT); c.font=mft(FONT_GRAY,True,10); c.alignment=center; c.border=bdr_left if ci<=2 else bdr_none
+    ws4.row_dimensions[1].height=20
     ri=2
-    for i,r in enumerate(rows):
-        for item in items_by_week.get(r['week_key'],[]):
-            vals=[f"{i+1}주차",f"{r['ws']}~{r['we']}",item.get('item_group',''),
-                  item.get('item_name',''),item.get('cnt',0),item.get('qty',0),item.get('total',0)]
-            for ci,v in enumerate(vals,1):
-                c=ws2.cell(row=ri,column=ci,value=v); c.border=bdr
-                if ri%2==0: c.fill=even
-                if ci>4: c.alignment=Alignment(horizontal="right")
-                if ci==7 and isinstance(v,int): c.number_format='#,##0'
+    for i,r in enumerate(weeks):
+        for k,item in sorted(items_by_week.get(r['wk'],{}).items(), key=lambda x:-x[1]['total']):
+            for ci,v in enumerate([f"{i+1}주차",f"{r['ws']}~{r['we']}",item['item_group'],item['item_name'],item['qty'],item['total']],1):
+                c=ws4.cell(row=ri,column=ci,value=v); c.border=bdr_left if ci<=2 else bdr_none
+                if ci>=5: c.alignment=right
+                if ci==6 and isinstance(v,int): c.number_format=num_fmt
             ri+=1
-
-    for ws in [ws1,ws2]:
-        for col in ws.columns:
-            ml=max((len(str(c.value or '')) for c in col),default=8)
-            ws.column_dimensions[get_column_letter(col[0].column)].width=min(ml+3,35)
+    for ci,w in enumerate([10,26,14,36,12,16],1): ws4.column_dimensions[get_column_letter(ci)].width=w
 
     buf=io.BytesIO(); wb.save(buf); buf.seek(0)
     fname=f"주별실적_{year}{'_'+month+'월' if month else ''}.xlsx"
@@ -1808,47 +1963,88 @@ def export_xlsx_ranking():
 @login_required
 def api_product_groups():
     conn = get_db()
-    groups = [dict(r) for r in conn.execute("""
-        SELECT item_group, COUNT(DISTINCT item_name) item_cnt,
+    raw = conn.execute("""
+        SELECT item_group, item_name, COUNT(DISTINCT item_name) item_cnt,
                SUM(quantity) qty, SUM(total) total
         FROM sales_data WHERE item_group != '' AND item_group IS NOT NULL
-        GROUP BY item_group ORDER BY total DESC""").fetchall()]
+        GROUP BY item_group, item_name""").fetchall()
     conn.close()
-    return jsonify(groups)
+    # remap 후 재집계
+    merged = {}
+    for r in raw:
+        brand = remap_group(r[0], r[1])
+        if not brand: continue
+        if brand not in merged:
+            merged[brand] = {'item_group': brand, 'item_cnt': 0, 'qty': 0, 'total': 0}
+        merged[brand]['item_cnt'] += 1
+        merged[brand]['qty']      += r[3] or 0
+        merged[brand]['total']    += r[4] or 0
+    result = sorted(merged.values(), key=lambda x: get_group_sort_key(x['item_group']))
+    return jsonify(result)
 
 @app.route("/api/products/items")
 @login_required
 def api_product_items():
-    group=request.args.get("group",""); seller=request.args.get("seller","").strip()
-    year=request.args.get("year",str(datetime.now().year)); month=request.args.get("month","")
-    conn=get_db()
-    date_cond=f"{year}-{month.zfill(2)}%" if month else f"{year}%"
-    params=[date_cond]; conds=["sale_date LIKE ?","sale_date != ''"]
-    if group:  conds.append("item_group=?");  params.append(group)
+    group  = request.args.get("group",  "")
+    seller = request.args.get("seller", "").strip()
+    year   = request.args.get("year",   str(datetime.now().year))
+    month  = request.args.get("month",  "")
+    conn   = get_db()
+    date_cond = f"{year}-{month.zfill(2)}%" if month else f"{year}%"
+    params = [date_cond]; conds = ["sale_date LIKE ?", "sale_date != ''"]
     if seller: conds.append("real_seller=?"); params.append(seller)
-    rows=[dict(r) for r in conn.execute(f"""SELECT item_name,item_group,item_code,
-        SUM(quantity) qty,AVG(unit_price) avg_price,SUM(total) total,COUNT(*) cnt
+    raw = [dict(r) for r in conn.execute(f"""
+        SELECT item_name, item_group, SUM(quantity) qty,
+               AVG(unit_price) avg_price, SUM(total) total, COUNT(*) cnt
         FROM sales_data WHERE {' AND '.join(conds)}
-        GROUP BY item_name ORDER BY total DESC""",params).fetchall()]
+        GROUP BY item_name ORDER BY total DESC""", params).fetchall()]
     conn.close()
-    return jsonify(rows)
+    # 브랜드 필터 + 정규화 + 재집계 (색상 통합)
+    merged = {}
+    for r in raw:
+        brand = remap_group(r['item_group'], r['item_name'])
+        if not brand or brand == '기타': continue
+        if group and brand != group: continue
+        norm = normalize_item_name(r['item_name'])
+        key  = (brand, norm)
+        if key not in merged:
+            merged[key] = {'item_name': norm, 'item_group': brand,
+                           'qty': 0, 'avg_price': r['avg_price'], 'total': 0, 'cnt': 0}
+        merged[key]['qty']   += r['qty']
+        merged[key]['total'] += r['total']
+        merged[key]['cnt']   += r['cnt']
+    return jsonify(sorted(merged.values(), key=lambda x: -x['total']))
 
 @app.route("/api/products/by-seller")
 @login_required
 def api_product_by_seller():
-    group=request.args.get("group",""); item=request.args.get("item","")
-    year=request.args.get("year",str(datetime.now().year)); month=request.args.get("month","")
-    conn=get_db()
-    date_cond=f"{year}-{month.zfill(2)}%" if month else f"{year}%"
-    params=[date_cond]; conds=["sale_date LIKE ?","sale_date != ''","real_seller != ''"]
-    if group: conds.append("item_group=?"); params.append(group)
-    if item:  conds.append("item_name=?");  params.append(item)
-    rows=[dict(r) for r in conn.execute(f"""SELECT real_seller seller_name,
-        SUM(quantity) qty,SUM(total) total,COUNT(*) cnt
+    """특정 브랜드/품목의 매장별 판매 현황"""
+    group  = request.args.get("group",  "")
+    item   = request.args.get("item",   "")
+    year   = request.args.get("year",   str(datetime.now().year))
+    month  = request.args.get("month",  "")
+    conn   = get_db()
+    date_cond = f"{year}-{month.zfill(2)}%" if month else f"{year}%"
+    params = [date_cond]; conds = ["sale_date LIKE ?", "sale_date != ''", "real_seller != ''"]
+    raw = [dict(r) for r in conn.execute(f"""
+        SELECT real_seller seller_name, item_group, item_name,
+               SUM(quantity) qty, SUM(total) total, COUNT(*) cnt
         FROM sales_data WHERE {' AND '.join(conds)}
-        GROUP BY real_seller ORDER BY total DESC""",params).fetchall()]
+        GROUP BY real_seller, item_name ORDER BY total DESC""", params).fetchall()]
     conn.close()
-    return jsonify(rows)
+    # 브랜드/아이템 필터 + 매장별 재집계
+    merged = {}
+    for r in raw:
+        brand = remap_group(r['item_group'], r['item_name'])
+        if group and brand != group: continue
+        if item and normalize_item_name(r['item_name']) != item: continue
+        nm = r['seller_name']
+        if nm not in merged:
+            merged[nm] = {'seller_name': nm, 'qty': 0, 'total': 0, 'cnt': 0}
+        merged[nm]['qty']   += r['qty']
+        merged[nm]['total'] += r['total']
+        merged[nm]['cnt']   += r['cnt']
+    return jsonify(sorted(merged.values(), key=lambda x: -x['total']))
 
 @app.route("/api/export/xlsx/branches")
 @login_required
@@ -2360,56 +2556,61 @@ def normalize_sellers():
 @app.route("/api/admin/merge-branches", methods=["POST"])
 @login_required
 def merge_branches():
-    """띄어쓰기 차이로 중복된 판매처 통합 (실적 있는 쪽 기준)"""
+    """띄어쓰기/언더바 차이로 중복된 판매처 통합 — 연간 실적 기준, 모든 연락처 정보 병합"""
     conn = get_db()
-    branches = [dict(r) for r in conn.execute("SELECT id, name FROM branches ORDER BY name").fetchall()]
+    year = str(datetime.now().year)
+    branches = [dict(r) for r in conn.execute(
+        "SELECT id,name,ceo,ceo_phone,store_manager,store_manager_phone,manager,phone,address,email,region,note,status FROM branches ORDER BY name").fetchall()]
 
-    def normalize(name):
-        return name.replace('_', '').replace(' ', '').lower()
+    def normalize_nm(name):
+        return name.replace('_','').replace(' ','').replace('(','').replace(')','').lower()
 
     # 정규화된 이름으로 그룹화
     groups = {}
     for b in branches:
-        key = normalize(b['name'])
-        if key not in groups:
-            groups[key] = []
-        groups[key].append(b)
+        key = normalize_nm(b['name'])
+        groups.setdefault(key, []).append(b)
 
     merged = 0
     for key, group in groups.items():
-        if len(group) < 2:
-            continue
-        # 실적이 있는 쪽 선택 (year_actual 기준)
-        y = datetime.now().year
-        best = None
-        best_sales = -1
+        if len(group) < 2: continue
+        # 연간 실적 기준으로 대표 선정
+        best = None; best_sales = -1
         for b in group:
-            sales = conn.execute("SELECT COALESCE(SUM(total),0) FROM sales_data WHERE real_seller=? AND sale_date LIKE ?",
-                                 (b['name'], f"{y}%")).fetchone()[0]
-            if sales > best_sales:
-                best_sales = sales
-                best = b
-        # 나머지를 best로 리다이렉트
+            sales = conn.execute(
+                "SELECT COALESCE(SUM(total),0) FROM sales_data WHERE real_seller=? AND sale_date LIKE ?",
+                (b['name'], f"{year}%")).fetchone()[0]
+            if sales > best_sales: best_sales = sales; best = b
+
+        # 나머지 브랜치에서 정보 수집하여 best에 병합
+        def pick(vals): return next((v for v in vals if v and v.strip()), '')
         for b in group:
-            if b['id'] == best['id']:
-                continue
-            # sales_data의 real_seller 업데이트
+            if b['id'] == best['id']: continue
+            # 연락처 정보 없는 쪽에서 있는 쪽으로 채우기
+            updates = {}
+            for field in ['ceo','ceo_phone','store_manager','store_manager_phone','manager','phone','address','email','region']:
+                if not best.get(field) and b.get(field):
+                    updates[field] = b[field]
+            if updates:
+                set_clause = ', '.join(f"{k}=?" for k in updates)
+                conn.execute(f"UPDATE branches SET {set_clause} WHERE id=?",
+                             list(updates.values()) + [best['id']])
+                best.update(updates)
+            # sales_data real_seller 업데이트
             conn.execute("UPDATE sales_data SET real_seller=? WHERE real_seller=?",
                          (best['name'], b['name']))
-            # branches 삭제
             conn.execute("DELETE FROM branches WHERE id=?", (b['id'],))
             merged += 1
-    conn.commit(); conn.close()
+
     # 지역 자동 배정
-    conn2 = get_db()
-    branches_no_region = conn2.execute("SELECT id, name FROM branches WHERE region='' OR region IS NULL").fetchall()
+    branches_no_region = conn.execute("SELECT id,name FROM branches WHERE region='' OR region IS NULL").fetchall()
     region_updated = 0
     for b in branches_no_region:
         region = detect_region_from_name(b["name"])
         if region:
-            conn2.execute("UPDATE branches SET region=? WHERE id=?", (region, b["id"]))
+            conn.execute("UPDATE branches SET region=? WHERE id=?", (region, b["id"]))
             region_updated += 1
-    conn2.commit(); conn2.close()
+    conn.commit(); conn.close()
     return jsonify({"ok": True, "merged": merged, "region_updated": region_updated})
 
 # ── 주별 세부 품목 API ─────────────────────────
