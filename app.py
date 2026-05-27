@@ -614,56 +614,44 @@ def resolve_seller(name):
 
 BRAND_ORDER = ['줄즈', '레카로', 'ABC디자인', '원더폴드', '카오스', '엔픽스', '타프토이즈']
 
-GROUP_REMAP = {
-    '식탁의자':    '카오스',       # [카오스] 제품
-    '하이체어':    '엔픽스',       # [엔픽스]비바체 → 엔픽스
-    '보행기':      '엔픽스',
-    '쏘서':        '엔픽스',
-    '점퍼루':      '엔픽스',
-    '휴대용부스터': '엔픽스',
-    '유아섬유류':   '',            # 제품명으로 파악 (아래 로직)
-    'TAFTOYS':     '타프토이즈',
-    '컨버터블카시트': '레카로',
-    '주니어카시트':  '레카로',
-    '유모차':      '',            # 제품명 브랜드로 파악 (아래 로직)
-    '웨건':        '원더폴드',
-    '카시트':      '레카로',
-}
-
 def remap_group(group, item_name=''):
-    """품목그룹을 브랜드명으로 정규화"""
-    g    = (group or '').strip()
-    item = (item_name or '').lower()
-
-    # 제품명에서 브랜드 추출 [브랜드]제품명 형태
+    """품목그룹을 브랜드명으로 정규화 — 브랜드 태그 우선 적용"""
     import re
-    brand_match = re.match(r'\[([^\]]+)\]', item_name or '')
+    g    = (group or '').strip()
+    item = (item_name or '')
+
+    # 제품명에서 [브랜드] 태그 추출
+    brand_match = re.match(r'\[([^\]]+)\]', item)
     brand_tag   = brand_match.group(1) if brand_match else ''
+    bt_lower    = brand_tag.lower()
 
-    # 유아섬유류 — 제품명 브랜드로
-    if g == '유아섬유류':
-        if '줄즈' in brand_tag:       return '줄즈'
-        if '레카로' in brand_tag:     return '레카로'
-        if 'abc' in brand_tag.lower(): return 'ABC디자인'
-        if '원더폴드' in brand_tag:   return '원더폴드'
-        if '엔픽스' in brand_tag:     return '엔픽스'
-        if '타프' in brand_tag or 'taft' in brand_tag.lower(): return '타프토이즈'
-        return 'ABC디자인'  # 기본값
+    # ── 브랜드 태그 우선 판단 ──────────────────────
+    if '줄즈' in brand_tag:                          return '줄즈'
+    if '레카로' in brand_tag:                        return '레카로'
+    if 'abc' in bt_lower:                            return 'ABC디자인'
+    if '원더폴드' in brand_tag:                      return '원더폴드'
+    if '카오스' in brand_tag:                        return '카오스'
+    if '엔픽스' in brand_tag:                        return '엔픽스'
+    if '타프토이즈' in brand_tag or 'taft' in bt_lower: return '타프토이즈'
 
-    # 유모차 그룹 — 브랜드 태그로 구분
-    if g == '유모차':
-        if '줄즈' in brand_tag:                        return '줄즈'
-        if 'abc' in brand_tag.lower():                  return 'ABC디자인'
-        if '원더폴드' in brand_tag:                    return '원더폴드'
-        if '레카로' in brand_tag:                      return '레카로'
-        return '줄즈'  # 기본값
-
-    # TAFTOYS 내 엔픽스 제품 예외
-    if g == 'TAFTOYS' and '엔픽스' in brand_tag:
-        return '엔픽스'
-
-    # 나머지 매핑
-    return GROUP_REMAP.get(g, g or '기타')
+    # ── 그룹명 기반 매핑 (태그 없는 경우) ──────────
+    GROUP_MAP = {
+        '유모차':          '줄즈',      # 태그 없으면 줄즈 기본
+        '웨건':            '원더폴드',
+        '컨버터블카시트':  '레카로',
+        '주니어카시트':    '레카로',
+        '토들러카시트':    '레카로',
+        '카시트':          '레카로',
+        '식탁의자':        '카오스',
+        '하이체어':        '엔픽스',
+        '보행기':          '엔픽스',
+        '쏘서':            '엔픽스',
+        '점퍼루':          '엔픽스',
+        '휴대용부스터':    '엔픽스',
+        'TAFTOYS':         '타프토이즈',
+        '유아섬유류':      'ABC디자인',
+    }
+    return GROUP_MAP.get(g, g or '기타')
 
 def normalize_item_name(name):
     """제품명에서 색상/옵션 완전 제거
@@ -1741,12 +1729,12 @@ def export_xlsx_weekly():
     weeks = week_rows
     brands = BRAND_ORDER
 
-    # 주차 × 브랜드 인덱스 조회
+    # 주차 × 브랜드 × 매장 인덱스 조회
     raw = conn.execute(f"""
         SELECT strftime('%Y-%W',sale_date) wk, item_group, item_name,
-               SUM(total) total, SUM(quantity) qty
+               SUM(total) total, SUM(quantity) qty, real_seller
         FROM sales_data WHERE {' AND '.join(qp)} AND sale_date!=''
-        GROUP BY wk, item_name""", pp).fetchall()
+        GROUP BY wk, item_name, real_seller""", pp).fetchall()
 
     # 매장 목록 (업체구분 순)
     seller_cond = "AND real_seller=?" if seller else ""
@@ -1768,7 +1756,19 @@ def export_xlsx_weekly():
     for r in conn.execute("SELECT name,note FROM branches").fetchall():
         branch_group[r[0]] = r[1] or ''
 
-    conn.close()
+    # ── idx: {(wk, brand, seller): {total, qty}} — 매장별 브랜드별 주차별 집계 ──
+    idx_seller = {}  # (wk, brand, seller) → {total, qty}
+    for r in raw:
+        brand = remap_group(r[1], r[2])
+        if not brand or brand == '기타': continue
+        # r = (wk, item_group, item_name, total, qty, real_seller)
+        s_nm = r[5] if len(r) > 5 else ''
+        key3 = (r[0], brand, s_nm)
+        if key3 not in idx_seller: idx_seller[key3] = {'total':0,'qty':0}
+        idx_seller[key3]['total'] += r[3] or 0
+        idx_seller[key3]['qty']   += r[4] or 0
+
+    conn.close()  # 모든 쿼리 완료 후 닫기
 
     # {(wk, brand): {total, qty}}
     idx = {}
@@ -1865,38 +1865,39 @@ def export_xlsx_weekly():
                 c=ws.cell(row=ri,column=ci,value=val)
                 c.fill=mf(WHITE); c.border=bdr_left; c.font=mft(FONT_BLACK if ci>1 else FONT_GRAY,False,10)
             col=col_start
-            for r in weeks:
-                wk = r['wk']
+            for wk_r in weeks:
+                wk = wk_r['wk']
                 mt = 0
                 for b in brands:
-                    # 매장 필터가 있으면 해당 매장만, 없으면 전체
-                    if seller:
-                        sr = conn.execute(f"""SELECT COALESCE(SUM({field}),0) FROM sales_data
-                            WHERE strftime('%Y-%W',sale_date)=? AND real_seller=? AND item_group!=''
-                            AND item_name LIKE ?""", (wk, s, '%')).fetchone()
-                        # brand별 재계산 필요 — idx 사용
-                    val = idx.get((wk,b),{}).get(field,0)
+                    # 매장별+브랜드별 값: idx_seller 사용
+                    val = idx_seller.get((wk, b, s), {}).get(field, 0)
                     mt += val
                     c=ws.cell(row=ri,column=col,value=val if val else 0)
-                    c.fill=mf(WHITE); c.border=bdr_none; c.alignment=right; c.number_format=num_fmt; c.font=mft(FONT_BLACK,False,10); col+=1
+                    c.fill=mf(WHITE); c.border=bdr_none; c.alignment=right
+                    c.number_format=num_fmt; c.font=mft(FONT_BLACK,False,10); col+=1
                 c=ws.cell(row=ri,column=col,value=mt)
                 c.fill=mf(WHITE); c.font=mft(FONT_BLACK,True,10)
                 c.border=Border(left=thin_bdr,right=no_bdr,top=no_bdr,bottom=no_bdr)
                 c.alignment=right; c.number_format=num_fmt; col+=1
 
         # 합계 행
-        tot_row=len(sellers_list)+5
+        tot_row = len(sellers_list)+5
         for ci,val in enumerate(["합계","",""],1):
-            c=ws.cell(row=tot_row,column=ci,value=val); c.fill=mf(WHITE); c.border=bdr_left; c.font=mft(FONT_BLACK,True,10)
+            c=ws.cell(row=tot_row,column=ci,value=val)
+            c.fill=mf(WHITE); c.border=bdr_left; c.font=mft(FONT_BLACK,True,10)
         col=col_start
-        for r in weeks:
-            wk=r['wk']
+        for wk_r in weeks:
+            wk=wk_r['wk']
             for b in brands:
-                tv=idx.get((wk,b),{}).get(field,0)
-                c=ws.cell(row=tot_row,column=col,value=tv); c.fill=mf(WHITE); c.border=bdr_none; c.alignment=right; c.number_format=num_fmt; c.font=mft(FONT_BLACK,True,10); col+=1
-            grand=sum(idx.get((wk,b),{}).get(field,0) for b in brands)
-            c=ws.cell(row=tot_row,column=col,value=grand); c.fill=mf(WHITE); c.font=mft(FONT_BLACK,True,10)
-            c.border=Border(left=thin_bdr,right=no_bdr,top=no_bdr,bottom=no_bdr); c.alignment=right; c.number_format=num_fmt; col+=1
+                tv = sum(idx_seller.get((wk,b,s),{}).get(field,0) for s in sellers_list)
+                c=ws.cell(row=tot_row,column=col,value=tv)
+                c.fill=mf(WHITE); c.border=bdr_none; c.alignment=right
+                c.number_format=num_fmt; c.font=mft(FONT_BLACK,True,10); col+=1
+            grand = sum(idx_seller.get((wk,b,s),{}).get(field,0) for s in sellers_list for b in brands)
+            c=ws.cell(row=tot_row,column=col,value=grand)
+            c.fill=mf(WHITE); c.font=mft(FONT_BLACK,True,10)
+            c.border=Border(left=thin_bdr,right=no_bdr,top=no_bdr,bottom=no_bdr)
+            c.alignment=right; c.number_format=num_fmt; col+=1
         ws.freeze_panes="D5"
 
     # ── 시트1: 주별 요약 (맨 앞) ──
@@ -1964,22 +1965,32 @@ def export_xlsx_ranking():
 def api_product_groups():
     conn = get_db()
     raw = conn.execute("""
-        SELECT item_group, item_name, COUNT(DISTINCT item_name) item_cnt,
+        SELECT item_group, item_name,
                SUM(quantity) qty, SUM(total) total
         FROM sales_data WHERE item_group != '' AND item_group IS NOT NULL
         GROUP BY item_group, item_name""").fetchall()
     conn.close()
-    # remap 후 재집계
-    merged = {}
+
+    # remap 후 재집계 (색상 통합하여 실제 종류 수 계산)
+    brand_items = {}  # brand → set of normalized names
+    brand_totals = {}
     for r in raw:
         brand = remap_group(r[0], r[1])
-        if not brand: continue
-        if brand not in merged:
-            merged[brand] = {'item_group': brand, 'item_cnt': 0, 'qty': 0, 'total': 0}
-        merged[brand]['item_cnt'] += 1
-        merged[brand]['qty']      += r[3] or 0
-        merged[brand]['total']    += r[4] or 0
-    result = sorted(merged.values(), key=lambda x: get_group_sort_key(x['item_group']))
+        if not brand or brand == '기타': continue
+        norm  = normalize_item_name(r[1])
+        if brand not in brand_items:
+            brand_items[brand]  = set()
+            brand_totals[brand] = {'qty': 0, 'total': 0}
+        brand_items[brand].add(norm)
+        brand_totals[brand]['qty']   += r[2] or 0
+        brand_totals[brand]['total'] += r[3] or 0
+
+    result = [
+        {'item_group': b, 'item_cnt': len(brand_items[b]),
+         'qty': brand_totals[b]['qty'], 'total': brand_totals[b]['total']}
+        for b in brand_items
+    ]
+    result.sort(key=lambda x: get_group_sort_key(x['item_group']))
     return jsonify(result)
 
 @app.route("/api/products/items")
