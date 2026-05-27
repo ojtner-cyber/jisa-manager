@@ -1088,32 +1088,33 @@ async function generateScript(){
   const btn=document.getElementById('gen-script-btn');
   btn.textContent='생성 중...'; btn.disabled=true;
 
-  // 1단계: 서버에서 프롬프트 생성
-  const r=await api('/api/script/generate',{method:'POST',body:{seller:scriptSeller,analysis:scriptAnalysisData}});
-  if(!r){ btn.textContent='스크립트 생성'; btn.disabled=false; return; }
-
   const out=document.getElementById('script-output');
   const placeholder=document.getElementById('script-placeholder');
   out.innerHTML=''; out.style.display='block'; placeholder.style.display='none';
-  out.innerHTML='<span style="color:var(--ink-300)">스크립트 작성 중...</span>';
+  out.innerHTML='<span style="color:var(--ink-300)">데이터 분석하여 스크립트 작성 중...</span>';
 
-  // 2단계: Flask 서버 통해 Claude API 호출 (CORS 우회)
-  const r2=await api('/api/script/claude',{method:'POST',body:{prompt:r.prompt}});
-  if(!r2||!r2.text){
-    const errMsg = r2?.error || '알 수 없는 오류';
-    if(errMsg.includes('ANTHROPIC_API_KEY')) {
-      out.innerHTML='<div style="color:#DC2626;font-size:13px;line-height:1.7"><strong>API 키 설정 필요</strong><br>Railway 대시보드 → Variables → <code>ANTHROPIC_API_KEY</code> 를 추가해주세요.</div>';
-    } else {
-      out.innerHTML=`<div style="color:#DC2626">스크립트 생성 중 오류가 발생했습니다.<br><small>${errMsg.substring(0,200)}</small></div>`;
-    }
+  // 서버 자체 분석 엔진 호출 (외부 API 없음)
+  const r=await api('/api/script/generate',{
+    method:'POST',
+    body:{seller:scriptSeller, analysis:scriptAnalysisData}
+  });
+
+  if(!r || !r.text){
+    out.innerHTML='<div style="color:#DC2626">스크립트 생성 실패. 잠시 후 다시 시도해주세요.</div>';
     btn.textContent='다시 생성'; btn.disabled=false; return;
   }
 
-  // 마크다운 렌더링 (줄바꿈, 굵게, 번호)
-  out.innerHTML = r2.text
-    .replace(/\*\*(.+?)\*\*/g,'<strong>$1</strong>')
-    .replace(/\n\n/g,'</p><p style="margin-bottom:10px">')
-    .replace(/\n/g,'<br>');
+  // 텍스트 렌더링 — 구분선 + 굵게 + 줄바꿈
+  out.innerHTML = r.text
+    .replace(/={55}/g, '<hr style="border:2px solid var(--accent-m);margin:12px 0">')
+    .replace(/─{55}/g, '<hr style="border:1px solid var(--ink-100);margin:8px 0">')
+    .replace(/━{50}/g, '<div style="border-top:1px solid var(--ink-200);margin:6px 0"></div>')
+    .replace(/【(.+?)】/g, '<strong style="color:var(--accent-m)">【$1】</strong>')
+    .replace(/✓ /g, '<span style="color:#059669">✓ </span>')
+    .replace(/◆ /g, '<span style="color:#7C3AED">◆ </span>')
+    .replace(/💡 /g, '<span style="background:#FEF9C3;padding:2px 6px;border-radius:4px;font-size:11px">💡 </span>')
+    .replace(/영업사원: /g, '<strong style="color:var(--ink-900)">영업사원: </strong>')
+    .replace(/\n/g, '<br>');
 
   btn.textContent='다시 생성'; btn.disabled=false;
 }

@@ -766,163 +766,267 @@ def api_script_analysis():
         'unsold_taft':unsold_taft,'daily':daily,'weekly':weekly,
     })
 
-@app.route("/api/script/claude", methods=["POST"])
-@login_required
-def api_script_claude():
-    """Claude API 프록시 — 서버사이드 호출 (CORS 우회)"""
-    import urllib.request, urllib.error, os
-    data   = request.json or {}
-    prompt = data.get('prompt', '')
-    if not prompt:
-        return jsonify({'error': 'prompt 없음'}), 400
-
-    api_key = os.environ.get('ANTHROPIC_API_KEY', '')
-    if not api_key:
-        return jsonify({'error': 'ANTHROPIC_API_KEY 환경변수가 설정되지 않았습니다. Railway 대시보드에서 설정해주세요.', 'ok': False}), 500
-
-    payload = json.dumps({
-        "model": "claude-sonnet-4-20250514",
-        "max_tokens": 3000,
-        "messages": [{"role": "user", "content": prompt}]
-    }).encode('utf-8')
-
-    req = urllib.request.Request(
-        'https://api.anthropic.com/v1/messages',
-        data=payload,
-        headers={
-            'Content-Type':    'application/json',
-            'x-api-key':       api_key,
-            'anthropic-version': '2023-06-01',
-        },
-        method='POST'
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=90) as resp:
-            result = json.loads(resp.read().decode('utf-8'))
-            text   = ''.join(c.get('text','') for c in result.get('content',[]))
-            return jsonify({'text': text, 'ok': True})
-    except urllib.error.HTTPError as e:
-        err = e.read().decode('utf-8', errors='ignore')
-        return jsonify({'error': err, 'ok': False}), 500
-    except Exception as e:
-        return jsonify({'error': str(e), 'ok': False}), 500
-
-@app.route("/api/script/generate",methods=["POST"])
+@app.route("/api/script/generate", methods=["POST"])
 @login_required
 def api_script_generate():
-    data     = request.json or {}
-    seller   = data.get('seller','')
-    analysis = data.get('analysis',{})
+    """데이터 기반 자체 영업 스크립트 생성 — 외부 API 불필요"""
+    from datetime import datetime as dt2
 
-    year       = analysis.get('year','')
-    total      = analysis.get('total', 0)
-    total_pct  = analysis.get('total_pct', 0)
-    brands     = analysis.get('brand_summary', [])
-    top5       = analysis.get('top5', [])
-    sold_items = analysis.get('sold_items', [])
-    unsold_taft= analysis.get('unsold_taft', [])
-    weekly     = analysis.get('weekly', [])
+    data      = request.json or {}
+    seller    = data.get('seller', '')
+    analysis  = data.get('analysis', {})
 
-    # 브랜드별 분석
-    brand_lines = '\n'.join(
-        f"  · {b['brand']}: {b['total']:,}원 ({b['pct']}%, {b['qty']}개)"
-        for b in brands
-    )
+    year        = analysis.get('year', str(dt2.now().year))
+    total       = analysis.get('total', 0)
+    total_pct   = analysis.get('total_pct', 0.0)
+    brands      = analysis.get('brand_summary', [])
+    top5        = analysis.get('top5', [])
+    sold_items  = analysis.get('sold_items', [])
+    unsold_taft = analysis.get('unsold_taft', [])
+    weekly      = analysis.get('weekly', [])
 
-    # 베스트 제품
-    top5_lines = '\n'.join(
-        f"  {i+1}. {normalize_item_name(r.get('item_name',''))}: {r.get('qty',0)}개 판매 / {r.get('total',0):,}원"
-        for i,r in enumerate(top5[:5])
-    )
+    def w(n): return f"{n:,}"  # 숫자 포맷
 
-    # 부진 브랜드 파악 (전체 대비 0~3%)
-    weak_brands = [b['brand'] for b in brands if b['pct'] < 3]
+    # ── 1. 매장 성격 파악 ──────────────────────────
+    top_brand   = brands[0]['brand']  if brands else '레카로'
+    top2_brand  = brands[1]['brand']  if len(brands)>1 else ''
+    top_pct     = brands[0]['pct']    if brands else 0
+    top5_names  = [normalize_item_name(r.get('item_name','')) for r in top5[:5]]
 
-    # 주별 추이 분석
-    weekly_text = ''
-    if weekly:
-        maxw = max(weekly, key=lambda x: x.get('total',0))
-        minw = min(weekly, key=lambda x: x.get('total',0))
-        avg  = sum(w.get('total',0) for w in weekly) / len(weekly)
-        weekly_text = f"  - 주간 평균: {avg:,.0f}원\n  - 최고 주: {maxw.get('week_start','')}~{maxw.get('week_end','')} ({maxw.get('total',0):,}원)\n  - 최저 주: {minw.get('week_start','')}~{minw.get('week_end','')} ({minw.get('total',0):,}원)"
+    # 취급 종류 수
+    total_items = len(sold_items)
 
-    # 타프토이즈 추천 — 카테고리별 우선순위
-    unsold_priority = sorted(unsold_taft, key=lambda x: {'아치/모빌':1,'액티비티짐':2,'트래블토이':3,'비지북':4}.get(x.get('category',''),9))[:5]
-    unsold_lines = '\n'.join(
-        f"  · {u['name']} [{u.get('category','')}] — {u.get('price',0):,}원\n    특징: {u.get('desc','')}"
-        for u in unsold_priority
-    )
-
-    # 현재 타프 판매 현황
-    taft_sold = [r for r in sold_items if remap_group(r.get('item_group',''), r.get('item_name',''))=='타프토이즈']
+    # 타프토이즈 현황
+    taft_sold  = [r for r in sold_items if remap_group(r.get('item_group',''), r.get('item_name',''))=='타프토이즈']
     taft_total = sum(r.get('total',0) for r in taft_sold)
     taft_pct   = round(taft_total/total*100,1) if total else 0
 
-    prompt = f"""당신은 유아용품 전문 브랜드 ENFIX의 수석 영업 컨설턴트입니다.
-15년 경력의 최고 영업 전문가로서, 아래 매장 실적 데이터를 치밀하게 분석하여
-실전에서 바로 사용할 수 있는 수준 높은 영업 방문 스크립트를 작성하세요.
+    # 부진/미취급 브랜드
+    all_brands = set(b['brand'] for b in brands)
+    missing_brands = [b for b in BRAND_ORDER if b not in all_brands and b!='타프토이즈']
+    weak_brands    = [b for b in brands if b['pct'] < 3]
 
-━━━━━━━━━━━━━━━━━━━━━━━━━━━
-【분석 대상 매장】 {seller}
-【분석 기간】 {year}년 전체
-【총 매출】 {total:,}원 (전체 거래처 상위 {total_pct}% 수준)
-━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    # 주별 분석
+    week_avg  = int(sum(w2.get('total',0) for w2 in weekly)/len(weekly)) if weekly else 0
+    week_max  = max(weekly, key=lambda x: x.get('total',0)) if weekly else None
+    week_min  = min(weekly, key=lambda x: x.get('total',0)) if weekly else None
+    week_trend = ''
+    if len(weekly) >= 3:
+        recent3 = [w2.get('total',0) for w2 in weekly[-3:]]
+        if recent3[-1] > recent3[0]*1.1:    week_trend = '상승'
+        elif recent3[-1] < recent3[0]*0.9:  week_trend = '하락'
+        else:                                week_trend = '보합'
 
-【브랜드별 실적 현황】
-{brand_lines}
+    # 타프 추천 우선순위
+    CAT_PRIORITY = {'아치/모빌':1,'액티비티짐':2,'트래블토이':3,'비지북':4,'큐브':5,'워터매트':6}
+    rec_taft = sorted(unsold_taft, key=lambda x: CAT_PRIORITY.get(x.get('category',''),9))[:4]
 
-【베스트 셀러 TOP5】
-{top5_lines}
+    # ── 2. 매장 유형 분류 ──────────────────────────
+    if top_pct > 60:
+        store_type = 'single'   # 한 브랜드 집중형
+    elif top_pct > 35:
+        store_type = 'duo'      # 2강 구도
+    else:
+        store_type = 'balanced' # 균형형
 
-【주별 판매 추이】
-{weekly_text or "  - 데이터 없음"}
+    # ── 3. 순위 표현 ──────────────────────────────
+    if total_pct >= 10:   rank_txt = f"상위 {total_pct}% 핵심 거래처"
+    elif total_pct >= 5:  rank_txt = f"상위권 거래처 (전체 대비 {total_pct}%)"
+    elif total_pct >= 2:  rank_txt = f"주요 거래처 (전체 대비 {total_pct}%)"
+    else:                 rank_txt = f"성장 잠재력 있는 거래처 ({total_pct}%)"
 
-【타프토이즈 현황】
-  - 현재 취급: {len(taft_sold)}종 / 매출 {taft_total:,}원 (전체의 {taft_pct}%)
-  - 미취급 추천 제품:
-{unsold_lines}
+    # ── 4. 스크립트 생성 ──────────────────────────
+    month_now = dt2.now().month
+    if month_now in (3,4,5):     season = '봄'; season_tip = '신학기·어린이날 시즌'
+    elif month_now in (6,7,8):   season = '여름'; season_tip = '워터매트·실내놀이 성수기'
+    elif month_now in (9,10,11): season = '가을'; season_tip = '추석 선물·연말 준비 시즌'
+    else:                         season = '겨울'; season_tip = '크리스마스·연초 발주 시즌'
 
-{'【부진 브랜드】\n  ' + ', '.join(weak_brands) + ' — 개선 전략 필요' if weak_brands else ''}
-━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    def section(title, content):
+        return f"{'━'*50}\n【{title}】\n{'━'*50}\n{content}\n"
 
-아래 7개 섹션으로 구성된 실전 영업 스크립트를 작성하세요.
-각 섹션은 실제 현장에서 바로 말할 수 있을 정도로 구체적이고 자연스럽게 작성하세요.
-수치는 반드시 위 데이터를 인용하여 신뢰감을 높이세요.
+    # 섹션 1: 오프닝
+    s1 = f'''영업사원: "사장님, 안녕하세요! {seller.split('_')[0] if '_' in seller else seller} 방문드렸습니다.
+지난번 방문 이후 매장이 더 깔끔하게 정리되신 것 같아요. 혹시 최근에 진열 바꾸셨어요?"
 
-**1. 오프닝 (관계 강화 + 방문 목적 자연스럽게 전달)**
-- 지난 방문 이후 매장 변화 체크하며 자연스러운 대화 시작
-- 사장님의 노력을 구체적으로 인정하는 멘트
+(사장님 반응 기다린 후 ↓)
 
-**2. 실적 공유 & 사장님 자부심 자극**
-- 위 실적 수치를 활용해 "이 매장이 얼마나 잘하고 있는지" 구체적으로 전달
-- 전체 거래처 대비 위치, 브랜드별 성과 언급
+영업사원: "역시 사장님 감각이 있으시니까요. 저도 오늘 매장 데이터 분석한 걸 가져왔는데,
+좋은 내용이 있어서 꼭 공유드리고 싶었어요. 잠깐 시간 괜찮으세요?"'''
 
-**3. 베스트 제품 분석 — "왜 잘 팔리는가"**
-- TOP 제품들이 잘 팔리는 이유 분석 (제품 특성 + 고객 니즈)
-- 추가 발주 or 전시 강화 제안 (구체적으로)
+    # 섹션 2: 실적 공유
+    brand_summary_txt = '\n'.join(
+        f"  · {b['brand']}: {w(b['total'])}원 ({b['pct']}%)"
+        for b in brands[:4]
+    )
 
-**4. 타프토이즈 성장 기회 제안**
-- 현재 타프 실적 → 미취급 제품 3개 추천 (왜 이 매장에 맞는지 논리적으로)
-- 가격대, 고객 타깃, 전시 방법까지 구체적으로
+    trend_txt = ''
+    if week_trend == '상승': trend_txt = f"\n\n  → 최근 3주 추이가 {week_trend} 중입니다. 이 흐름 잘 잡으시면 됩니다!"
+    elif week_trend == '하락': trend_txt = f"\n\n  → 최근 3주 추이가 {week_trend} 중인데, 오늘 같이 방법 찾아봐요."
 
-**5. 부진 브랜드 개선 전략** (해당 없으면 전체 균형 강화 전략)
-- 부진 원인 진단 + 실행 가능한 개선안
+    s2 = f'''영업사원: "사장님, {year}년 {seller} 데이터 정리해봤는데요.
+올해 총 {w(total)}원 매출을 기록하셨어요. 저희 전체 거래처 기준으로 {rank_txt}입니다.
 
-**6. 이번 시즌 전략 & 핵심 액션**
-- 현재 시즌(계절/시기) 맞는 집중 제품 추천
-- 이번 방문에서 결정할 수 있는 발주 제안
+브랜드별로 보면:
+{brand_summary_txt}{trend_txt}
 
-**7. 클로징 — 발주 결정 유도**
-- 구체적인 발주 제안 (품목, 수량 암시)
-- 다음 방문 약속 + 사장님 신뢰 강화 마무리
+{'주간 평균 ' + w(week_avg) + '원으로 꾸준히 판매되고 있고요.' if week_avg else ''}
+{'최고 판매 주는 ' + week_max.get('week_start','') + ' 주간으로 ' + w(week_max.get('total',0)) + '원이었어요.' if week_max else ''}
 
-작성 가이드:
-- 각 섹션마다 실제 대화 예시문 포함 (따옴표로 표시)
-- 사장님 반응을 예측한 Q&A 1-2개 포함
-- 전문적이되 친근한 톤 유지
-- 한국어로 작성"""
+솔직히 말씀드리면, 이 수준의 매출을 유지하는 매장이 많지 않아요.
+사장님이 제품을 제대로 이해하고 고객에게 설명하시기 때문입니다."
 
-    return jsonify({'prompt': prompt, 'seller': seller})
+💡 사장님 반응이 "그냥 저절로 팔리는 거 아니에요?" 라면:
+→ "아니죠, 사장님. 같은 제품 파는 매장도 절반도 못 파는 곳이 많아요.
+   사장님처럼 제품 특성을 잘 설명해 주시는 분이 훨씬 많이 파세요."'''
+
+    # 섹션 3: 베스트 제품 분석
+    best_txt = ''
+    for i, r in enumerate(top5[:3]):
+        nm    = normalize_item_name(r.get('item_name',''))
+        qty   = r.get('qty',0)
+        tot   = r.get('total',0)
+        brand = remap_group(r.get('item_group',''), r.get('item_name',''))
+        # 브랜드별 잘 팔리는 이유 자동 분석
+        if brand == '레카로':
+            reason = '카시트는 안전 민감 제품 → 전문점 신뢰도가 핵심. 사장님이 제품 설명을 잘 해주시기 때문'
+        elif brand == '줄즈':
+            reason = '디자인 + 기능 균형 → SNS 바이럴이 강한 제품. 엄마들 사이 입소문 효과'
+        elif brand == '원더폴드':
+            reason = '웨건 카테고리 독점적 포지션 → 비교 구매 없이 결정되는 프리미엄'
+        elif brand == '엔픽스':
+            reason = '국내 브랜드 신뢰 + 합리적 가격대 → 재구매율과 추천율 높음'
+        elif brand == '타프토이즈':
+            reason = '교육적 완구 → 선물 구매 비중 높음. 단가 대비 이익률 우수'
+        else:
+            reason = '카테고리 내 검증된 베스트셀러 → 고객 신뢰도 높음'
+
+        best_txt += f"\n  {i+1}위. {nm}\n  → {w(qty)}개 판매 / {w(tot)}원\n  → 잘 팔리는 이유: {reason}\n"
+
+    s3 = f'''영업사원: "지금 제일 잘 나가는 제품들 보면요.
+{best_txt}
+특히 1위 제품은 지금 재고 얼마나 남아계세요?
+이 제품은 품절 한 번 나면 고객이 다른 매장 가버리거든요.
+안전 재고 2~3개 정도는 항상 확보해두시는 게 좋아요."
+
+💡 재고 있다고 하시면:
+→ "잘하셨어요. 그럼 다음 주 배송으로 추가 발주 같이 넣어드릴까요?
+   지금 프로모션 시즌이라 타이밍이 좋습니다."'''
+
+    # 섹션 4: 타프토이즈 전략
+    taft_intro = ''
+    if taft_pct > 10:
+        taft_intro = f"현재 타프토이즈 비중이 {taft_pct}%로 좋은 편이에요. 여기서 더 키울 수 있어요."
+    elif taft_pct > 0:
+        taft_intro = f"타프토이즈를 {w(taft_total)}원 취급하고 계신데, 솔직히 이 매장이라면 훨씬 더 가능성 있어요."
+    else:
+        taft_intro = "타프토이즈는 아직 미취급이신데, 요즘 유아 완구 시장에서 가장 빠르게 성장하는 브랜드예요."
+
+    rec_detail = ''
+    for u in rec_taft[:3]:
+        nm   = u.get('name','').replace('[타프토이즈]','').strip()
+        cat  = u.get('category','')
+        pr   = u.get('price',0)
+        desc = u.get('desc','')
+        rec_detail += f"\n  ◆ {nm} ({cat}) — {w(pr)}원\n    \"{desc}\"\n    이 매장 고객층에 딱 맞는 가격대예요."
+
+    s4 = f'''영업사원: "사장님, {taft_intro}
+
+제가 이 매장에 가장 잘 맞는 타프토이즈 제품 골라봤어요:
+{rec_detail}
+
+타프토이즈 특징이, 한 번 팔면 그 고객이 시리즈 계속 사러 와요.
+아치 하나 산 분이 모빌, 비지북, 큐브까지 사시는 거 저 직접 봤거든요.
+초기 발주 부담 없게 소량으로 시작해보시죠. 제가 3종 세트로 구성해드릴게요."
+
+💡 "잘 팔릴지 모르겠다" 반응이면:
+→ "처음엔 다들 그렇게 말씀하세요. 그런데 한 번 팔아본 매장은 꼭 재발주 하거든요.
+   딱 1주일 전시해보시고 반응 없으면 제가 책임지겠습니다."'''
+
+    # 섹션 5: 취약점 전략
+    if missing_brands:
+        miss_txt = ', '.join(missing_brands)
+        s5 = f'''영업사원: "사장님, 한 가지 아쉬운 점이 있어요.
+{miss_txt} 쪽이 아직 빠져있는데요.
+
+예를 들어 {missing_brands[0] if missing_brands else ''}는 요즘 고객들이 온라인에서 먼저 보고
+오프라인 매장에서 확인하러 오는 제품이에요.
+매장에 없으면 '이 매장은 구색이 좀 부족하다'는 인상을 줄 수 있거든요.
+
+전시용 1개만 놓아보시는 건 어때요? 부담 없이 시작하실 수 있어요."'''
+    elif weak_brands:
+        wb_names = ', '.join(b['brand'] for b in weak_brands[:2])
+        s5 = f'''영업사원: "사장님, {wb_brands_str if (wb_brands_str:=', '.join(b['brand'] for b in weak_brands[:2])) else wb_names} 쪽이 아직 비중이 낮아요.
+
+이 브랜드들이 단독으로는 좀 어렵지만,
+예를 들어 레카로 카시트 옆에 타프토이즈 모빌 같이 두면
+'세트 구매'로 객단가가 올라가거든요.
+크로스 셀링 포인트로 활용해보세요."'''
+    else:
+        s5 = f'''영업사원: "브랜드 구성은 상당히 균형 잡혀 있어요. 이건 정말 잘하고 계신 거예요.
+다음 스텝은 각 브랜드에서 1~2종씩 더 깊이 파는 '스페셜티' 전략이에요.
+
+예를 들어 줄즈는 에어2 잘 파시는데, 데이5나 허브2 추가하면
+'줄즈 전문 매장' 이미지가 생기거든요.
+그 이미지가 생기면 멀리서도 찾아오는 고객이 생겨요."'''
+
+    # 섹션 6: 시즌 전략
+    season_products = {
+        '봄': ['줄즈 에어2 (봄 신색상)', '타프토이즈 액티비티 아치', '엔픽스 보행기'],
+        '여름': ['타프토이즈 워터매트', '타프토이즈 팝앤플레이스테이션', '레카로 카시트 (여행 시즌)'],
+        '가을': ['레카로 카시트 (추석 선물)', '원더폴드 웨건 (나들이 시즌)', '타프토이즈 비지북 시리즈'],
+        '겨울': ['타프토이즈 실내놀이 세트', '줄즈 (크리스마스 선물)', '엔픽스 점퍼루'],
+    }
+    s_prods = season_products.get(season, [])
+
+    s6 = f'''영업사원: "지금 {season}이잖아요. {season_tip}이에요.
+
+이 시기에 잘 나가는 제품들이 있어요:
+{chr(10).join(f"  · {p}" for p in s_prods)}
+
+특히 {'워터매트는 여름 한정이라 놓치면 내년까지 기다려야 해요.' if season=='여름' else '이 시즌에 선물 구매가 집중되니까 포장된 세트 구성을 앞에 두면 좋아요.'}
+
+지금 발주 넣으시면 {'이번 주 내로 바로 납품 가능해요.' if True else ''}"'''
+
+    # 섹션 7: 클로징
+    s7 = f'''영업사원: "정리하면 오늘 이야기 나눈 게:
+
+  ✓ 베스트 제품 재고 확보 (1~2주치)
+  ✓ 타프토이즈 신규 3종 소량 시작
+  {'✓ ' + (missing_brands[0] if missing_brands else (weak_brands[0]['brand'] if weak_brands else '')) + ' 전시용 추가' if (missing_brands or weak_brands) else '✓ 시즌 제품 선 발주'}
+  ✓ {season} 시즌 집중 제품 발주
+
+다 합쳐도 부담스러운 금액은 아니에요.
+일단 이번 주 발주로 처리해드리고, 다음 달에 반응 보고 조정하는 걸로 할까요?
+
+제가 최적 구성으로 발주서 뽑아드릴게요.
+혹시 발주 전에 더 확인하고 싶은 제품 있으세요?"
+
+─────────────────────────
+다음 방문 약속:
+"그럼 {2 if month_now in (12,1,2,6,7,8) else 3}주 후에 다시 방문드릴게요.
+그 때까지 신규 제품 판매 어떠신지 꼭 여쭤볼게요. 항상 감사합니다, 사장님."'''
+
+    # ── 5. 전체 조합 ──────────────────────────────
+    script = f"""{'='*55}
+  매장 영업 방문 스크립트 — {seller}
+  분석 기간: {year}년 / 생성일: {dt2.now().strftime('%Y.%m.%d')}
+{'='*55}
+
+{section('1. 오프닝 — 관계 강화 & 자연스러운 연결', s1)}
+{section('2. 실적 공유 — 데이터로 신뢰 쌓기', s2)}
+{section('3. 베스트 제품 분석 — 잘 팔리는 이유 짚기', s3)}
+{section('4. 타프토이즈 신규 제안 — 성장 기회 열기', s4)}
+{section('5. 취약점 개선 전략 — 균형 맞추기', s5)}
+{section('6. 시즌 전략 — 지금이 타이밍', s6)}
+{section('7. 클로징 — 발주 결정 & 다음 약속', s7)}
+
+{'─'*55}
+  ※ 이 스크립트는 {seller}의 {year}년 실판매 데이터 기반으로
+    자동 생성되었습니다. 방문 전 내용을 한번 더 숙지하세요.
+{'─'*55}"""
+
+    return jsonify({'text': script, 'ok': True, 'seller': seller})
 
 @app.route("/api/export/xlsx/script")
 @login_required
