@@ -1031,6 +1031,243 @@ def api_script_generate():
 
     return jsonify({'text': script, 'ok': True, 'seller': seller})
 
+@app.route("/api/script/report", methods=["POST"])
+@login_required
+def api_script_report():
+    """대표 보고용 매장 분석 리포트 생성"""
+    from datetime import datetime as dt2, timedelta
+
+    data     = request.json or {}
+    seller   = data.get('seller', '')
+    analysis = data.get('analysis', {})
+
+    year        = analysis.get('year', str(dt2.now().year))
+    total       = analysis.get('total', 0)
+    total_pct   = analysis.get('total_pct', 0.0)
+    brands      = analysis.get('brand_summary', [])
+    top5        = analysis.get('top5', [])
+    sold_items  = analysis.get('sold_items', [])
+    unsold_taft = analysis.get('unsold_taft', [])
+    weekly      = analysis.get('weekly', [])
+
+    now = dt2.now()
+    def w(n): return f"{int(n):,}" if n else '0'
+
+    # ── 기본 지표 ──────────────────────────────────
+    total_qty  = sum(r.get('qty',0) for r in sold_items)
+    brand_cnt  = len(brands)
+    item_cnt   = len(sold_items)
+
+    # 객단가 (건당 평균)
+    total_cnt  = sum(r.get('cnt',0) for r in sold_items)
+    avg_per_tx = int(total / total_cnt) if total_cnt else 0
+
+    # 타프토이즈
+    taft_items  = [r for r in sold_items if remap_group(r.get('item_group',''), r.get('item_name',''))=='타프토이즈']
+    taft_total  = sum(r.get('total',0) for r in taft_items)
+    taft_pct    = round(taft_total/total*100,1) if total else 0
+    taft_cnt_k  = len(set(normalize_item_name(r.get('item_name','')) for r in taft_items))
+
+    # 주별 분석
+    week_avg   = int(sum(wk.get('total',0) for wk in weekly)/len(weekly)) if weekly else 0
+    week_max   = max(weekly, key=lambda x: x.get('total',0)) if weekly else {}
+    week_min   = min(weekly, key=lambda x: x.get('total',0)) if weekly else {}
+    week_range = week_max.get('total',0) - week_min.get('total',0)
+
+    # 추이 판단
+    trend_label = ''
+    trend_detail = ''
+    if len(weekly) >= 3:
+        recent = [wk.get('total',0) for wk in weekly[-4:]]
+        growth = (recent[-1] - recent[0]) / recent[0] * 100 if recent[0] else 0
+        if growth > 15:   trend_label = '상승세'; trend_detail = f"최근 {len(recent)}주 기준 {growth:.1f}% 증가"
+        elif growth > 5:  trend_label = '완만한 상승'; trend_detail = f"최근 {len(recent)}주 기준 {growth:.1f}% 증가"
+        elif growth < -15: trend_label = '하락세'; trend_detail = f"최근 {len(recent)}주 기준 {abs(growth):.1f}% 감소"
+        elif growth < -5:  trend_label = '완만한 하락'; trend_detail = f"최근 {len(recent)}주 기준 {abs(growth):.1f}% 감소"
+        else:              trend_label = '보합'; trend_detail = f"최근 {len(recent)}주 기준 ±5% 내외 유지"
+
+    # 전체 순위 표현
+    if total_pct >= 10:   rank_label = f"전체 거래처 상위 {total_pct}% (핵심 거래처)"
+    elif total_pct >= 5:  rank_label = f"전체 거래처 상위권 (비중 {total_pct}%)"
+    elif total_pct >= 2:  rank_label = f"중요 거래처 (비중 {total_pct}%)"
+    else:                  rank_label = f"성장형 거래처 (비중 {total_pct}%)"
+
+    # 브랜드 집중도
+    top_brand  = brands[0]['brand'] if brands else '-'
+    top_pct_v  = brands[0]['pct'] if brands else 0
+    if top_pct_v >= 70:   concentration = '단일 브랜드 집중형'
+    elif top_pct_v >= 45: concentration = '1강 중심형'
+    elif brand_cnt >= 4:   concentration = '다브랜드 균형형'
+    else:                  concentration = '소수 브랜드형'
+
+    # 전략적 평가
+    all_brand_set = set(b['brand'] for b in brands)
+    missing_brs   = [b for b in BRAND_ORDER if b not in all_brand_set and b != '타프토이즈']
+    weak_brs      = [b['brand'] for b in brands if b['pct'] < 5 and b['brand'] != '타프토이즈']
+
+    # 성과 등급
+    if total_pct >= 10 and (not trend_label or trend_label in ('상승세','완만한 상승','보합')):
+        grade = 'A'
+        grade_comment = '핵심 거래처로서 안정적 성과를 유지하고 있음'
+    elif total_pct >= 5:
+        grade = 'B'
+        grade_comment = '상위권 거래처로 성장 가능성이 충분함'
+    elif total_pct >= 2:
+        grade = 'C'
+        grade_comment = '중간 수준으로 집중 관리 시 성장 여지 있음'
+    else:
+        grade = 'D'
+        grade_comment = '개선이 필요한 거래처로 방문 빈도 증가 필요'
+
+    # ── 보고서 생성 ────────────────────────────────
+    sep1  = '─' * 60
+    sep2  = '━' * 60
+    sep3  = '·' * 60
+
+    # 브랜드별 상세 표
+    brand_table = ''
+    for i, b in enumerate(brands, 1):
+        bar_len = int(b['pct'] / 5)
+        bar     = '█' * bar_len + '░' * (20 - bar_len)
+        note    = '▲ 주력' if b['pct'] >= 30 else ('△ 보조' if b['pct'] < 5 else '  일반')
+        brand_table += f"  {i:2}. {b['brand']:<10}  {bar}  {b['pct']:5.1f}%  {w(b['total'])}원  ({b['qty']}개)  {note}\n"
+
+    # TOP 제품 표
+    top_table = ''
+    for i, r in enumerate(top5[:5], 1):
+        nm  = normalize_item_name(r.get('item_name',''))
+        br  = remap_group(r.get('item_group',''), r.get('item_name',''))
+        qty = r.get('qty',0)
+        tot = r.get('total',0)
+        share = round(tot/total*100,1) if total else 0
+        top_table += f"  {i}위. [{br}] {nm}\n       {w(qty)}개 판매 / {w(tot)}원 / 전체 매출의 {share}%\n"
+
+    # 주별 추이 표
+    weekly_table = ''
+    if weekly:
+        for i, wk in enumerate(weekly[-8:], 1):
+            bar_len  = int(wk.get('total',0) / (week_max.get('total',1)) * 15)
+            bar      = '▮' * bar_len + '▯' * (15 - bar_len)
+            weekly_table += f"  {i:2}주차 ({wk.get('week_start','')[:10]}) {bar}  {w(wk.get('total',0))}원\n"
+
+    # 개선 포인트
+    improvements = []
+    if missing_brs:
+        improvements.append(f"미취급 브랜드 도입 검토 필요 ({', '.join(missing_brs[:3])})")
+    if weak_brs:
+        improvements.append(f"저비중 브랜드 활성화 방안 수립 ({', '.join(weak_brs[:2])})")
+    if taft_pct < 5:
+        improvements.append(f"타프토이즈 비중 확대 필요 (현재 {taft_pct}% → 목표 10%)")
+    if trend_label == '하락세':
+        improvements.append("판매 감소 추이 원인 분석 및 대응 방안 마련")
+    if not improvements:
+        improvements.append("현재 지표 양호 — 현 수준 유지 및 점진적 확대 권고")
+
+    # 목표 설정
+    target_monthly = int(total / max(len(weekly), 1)) if weekly else int(total / 6)
+    target_annual  = int(total * 1.2)
+
+    report = f"""{sep2}
+  매장 분석 보고서
+{sep2}
+  거래처명   : {seller}
+  분석 기간  : {year}년
+  작성 일자  : {now.strftime('%Y년 %m월 %d일')}
+  담당자     :
+{sep2}
+
+{sep1}
+  1. 총괄 현황
+{sep1}
+
+  연간 매출      : {w(total)}원
+  거래처 등급    : {rank_label}
+  매출 추이      : {trend_label} ({trend_detail})
+  종합 평가      : [{grade}등급] {grade_comment}
+
+  판매 건수      : {w(total_cnt)}건
+  판매 수량      : {w(total_qty)}개
+  건당 평균 매출 : {w(avg_per_tx)}원
+  취급 브랜드 수 : {brand_cnt}개
+  취급 제품 종류 : {item_cnt}종
+
+  브랜드 구성 유형 : {concentration}
+  주력 브랜드      : {top_brand} ({top_pct_v}%)
+  타프토이즈 비중  : {taft_pct}% ({taft_cnt_k}종 / {w(taft_total)}원)
+
+{sep3}
+  [ 한줄 평 ]
+  {seller}은(는) {year}년 기준 {rank_label}로,
+  {top_brand} 중심의 {concentration}이다.
+  매출 추이는 {trend_label}이며, 종합 [{grade}등급]으로 평가된다.
+{sep3}
+
+{sep1}
+  2. 브랜드별 판매 실적
+{sep1}
+
+  브랜드          판매 비중              비율    금액           (수량)   비고
+{sep3}
+{brand_table}
+  계                                     100%   {w(total)}원  ({w(total_qty)}개)
+
+{sep1}
+  3. 주요 판매 제품 (TOP 5)
+{sep1}
+
+{top_table}
+{sep1}
+  4. 주별 판매 추이
+{sep1}
+
+  주간 평균 매출 : {w(week_avg)}원
+  최고 판매 주  : {week_max.get('week_start','')[:10]}~{week_max.get('week_end','')[:10]} ({w(week_max.get('total',0))}원)
+  최저 판매 주  : {week_min.get('week_start','')[:10]}~{week_min.get('week_end','')[:10]} ({w(week_min.get('total',0))}원)
+  주간 편차     : {w(week_range)}원
+
+  추이 그래프 (최근 {min(len(weekly),8)}주):
+{sep3}
+{weekly_table if weekly_table else '  (데이터 없음)'}
+{sep3}
+
+{sep1}
+  5. 개선 필요 사항
+{sep1}
+{''.join(f'{chr(10)}  {i+1}. {item}' for i, item in enumerate(improvements))}
+
+{sep1}
+  6. 향후 관리 방향
+{sep1}
+
+  방문 권고 주기 : {'2주' if grade in ('A','B') else '1주'}
+  목표 주간 매출 : {w(target_monthly)}원 이상 유지
+  연간 목표 매출 : {w(target_annual)}원 (전년 대비 +20%)
+
+  중점 관리 항목 :
+{''.join(f'{chr(10)}  - {item}' for item in improvements[:3])}
+
+{sep1}
+  7. 담당자 기록란
+{sep1}
+
+  방문일       :                     방문 목적  :
+  사장님 반응  :
+
+  특이사항 :
+
+
+  발주 내역 :
+
+
+  다음 방문 예정일 :                 비고 :
+
+{sep2}
+  ※ 본 보고서는 {year}년 실판매 데이터 기반으로 작성되었습니다.
+  ※ 제출 전 담당자 확인 필수.
+{sep2}"""
+
+    return jsonify({'report': report, 'ok': True})
+
 @app.route("/api/export/xlsx/script")
 @login_required
 def export_xlsx_script():

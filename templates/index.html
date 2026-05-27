@@ -798,7 +798,7 @@ td.center{text-align:center}
         </div>
 
         <!-- 추천 영업 스크립트 -->
-        <div style="background:var(--paper);border-radius:var(--r-lg);padding:20px;box-shadow:var(--sh-sm)">
+        <div style="background:var(--paper);border-radius:var(--r-lg);padding:20px;box-shadow:var(--sh-sm);margin-bottom:16px">
           <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px">
             <div>
               <div style="font-size:13px;font-weight:700;color:var(--ink-900)">추천 영업 스크립트</div>
@@ -809,6 +809,24 @@ td.center{text-align:center}
           <div id="script-output" style="display:none;background:var(--ink-50);border-radius:var(--r-md);padding:20px;font-size:13px;line-height:1.9;max-height:600px;overflow-y:auto"></div>
           <div id="script-placeholder" style="text-align:center;padding:40px;color:var(--ink-300);font-size:13px">
             위 버튼을 클릭하면 이 매장에 최적화된 영업 스크립트를 작성합니다
+          </div>
+        </div>
+
+        <!-- 대표 보고용 분석 리포트 -->
+        <div style="background:var(--paper);border-radius:var(--r-lg);padding:20px;box-shadow:var(--sh-sm)">
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px">
+            <div>
+              <div style="font-size:13px;font-weight:700;color:var(--ink-900)">대표 보고용 분석 리포트</div>
+              <div style="font-size:12px;color:var(--ink-300);margin-top:2px">실판매 데이터 기반 · 대표 보고 전용 · 출력 최적화</div>
+            </div>
+            <div style="display:flex;gap:8px">
+              <button class="btn btn-ghost btn-sm" onclick="printReport()" id="print-report-btn" style="display:none">🖨 출력</button>
+              <button class="btn btn-dark btn-sm" onclick="generateReport()" id="gen-report-btn">보고서 생성</button>
+            </div>
+          </div>
+          <div id="report-output" style="display:none;background:#FAFAFA;border-radius:var(--r-md);padding:20px;font-size:12px;line-height:2;font-family:'Courier New',monospace;max-height:700px;overflow-y:auto;white-space:pre;color:var(--ink-900)"></div>
+          <div id="report-placeholder" style="text-align:center;padding:40px;color:var(--ink-300);font-size:13px">
+            위 버튼을 클릭하면 대표 보고용 매장 분석 리포트를 생성합니다
           </div>
         </div>
       </div>
@@ -1102,7 +1120,14 @@ async function loadScriptAnalysis(){
   // 스크립트 초기화
   document.getElementById('script-output').style.display='none';
   document.getElementById('script-placeholder').style.display='block';
-  document.getElementById('gen-script-btn').textContent='✨ 스크립트 생성';
+  document.getElementById('gen-script-btn').textContent='스크립트 생성';
+  // 보고서 초기화
+  document.getElementById('report-output').style.display='none';
+  document.getElementById('report-placeholder').style.display='block';
+  const prb=document.getElementById('print-report-btn');
+  if(prb) prb.style.display='none';
+  const grb=document.getElementById('gen-report-btn');
+  if(grb) grb.textContent='보고서 생성';
 }
 
 async function generateScript(){
@@ -1147,7 +1172,50 @@ function exportScriptXlsx(){
   if(!scriptSeller) return;
   const year=document.getElementById('script-year')?.value||new Date().getFullYear();
   window.location.href=`/api/export/xlsx/script?seller=${encodeURIComponent(scriptSeller)}&year=${year}`;
-  toast('📥 영업 스크립트 엑셀 다운로드 중...');
+  toast('엑셀 다운로드 중...');
+}
+
+async function generateReport(){
+  if(!scriptAnalysisData){ toast('먼저 매장 분석을 실행하세요', false); return; }
+  const btn=document.getElementById('gen-report-btn');
+  const printBtn=document.getElementById('print-report-btn');
+  btn.textContent='작성 중...'; btn.disabled=true;
+
+  const r=await api('/api/script/report',{
+    method:'POST',
+    body:{seller:scriptSeller, analysis:scriptAnalysisData}
+  });
+
+  btn.textContent='보고서 재생성'; btn.disabled=false;
+
+  if(!r||!r.report){
+    toast('보고서 생성 실패', false); return;
+  }
+
+  const out=document.getElementById('report-output');
+  const ph=document.getElementById('report-placeholder');
+  out.textContent=r.report;
+  out.style.display='block';
+  ph.style.display='none';
+  printBtn.style.display='';
+}
+
+function printReport(){
+  const content=document.getElementById('report-output')?.textContent||'';
+  if(!content) return;
+  const win=window.open('','_blank');
+  win.document.write(`<!DOCTYPE html><html><head>
+    <meta charset="UTF-8">
+    <title>매장 분석 보고서 — ${scriptSeller}</title>
+    <style>
+      @page{size:A4;margin:20mm 18mm}
+      body{font-family:'맑은 고딕','Malgun Gothic','Apple SD Gothic Neo',monospace;font-size:11pt;line-height:2;color:#111;white-space:pre;margin:0;padding:0}
+      @media print{body{font-size:10pt}}
+    </style>
+  </head><body>${content.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}</body></html>`);
+  win.document.close();
+  win.focus();
+  setTimeout(()=>{win.print();},300);
 }
 
 // ── 엑셀 내보내기 ──────────────────────────────
