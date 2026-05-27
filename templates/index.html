@@ -140,11 +140,13 @@ nav a.active{background:rgba(79,70,229,.2);color:#fff;font-weight:600;box-shadow
   .fb .fs,.fb .fi{font-size:12px;padding:6px 8px;flex:1;min-width:100px}
   .fdiv{display:none}
 
-  /* 테이블 */
-  .tw{overflow-x:auto;-webkit-overflow-scrolling:touch;border-radius:var(--r-md)}
-  .tw table{min-width:400px;font-size:12px}
-  thead th{padding:8px 10px;font-size:9px}
-  td{padding:10px;font-size:12px}
+  /* 테이블 — 모바일 가로 스크롤 강제 허용 */
+  .tw{overflow-x:auto!important;-webkit-overflow-scrolling:touch!important;width:100%;display:block}
+  .tw table{min-width:900px!important}
+  #page-branches .tw table{min-width:1100px!important}
+  #sales-monthly-view .tw table,#sales-weekly-view .tw table{min-width:500px!important}
+  thead th{padding:8px 10px;font-size:9px;white-space:nowrap}
+  td{padding:10px;font-size:12px;white-space:nowrap}
 
   /* 탭 버튼 */
   .sales-tabs button{padding:8px 12px!important;font-size:12px!important}
@@ -745,12 +747,15 @@ td.center{text-align:center}
         </div>
       </div>
 
-      <!-- 매장 선택 -->
+      <!-- 매장 선택 (검색 가능) -->
       <div class="fb" style="margin-bottom:20px">
         <span class="flbl">매장 선택</span>
-        <select class="fs" id="script-seller" style="min-width:240px" onchange="onScriptSellerChange()">
-          <option value="">— 매장을 선택하세요 —</option>
-        </select>
+        <div style="position:relative;flex:1;max-width:360px">
+          <input type="text" id="script-search" placeholder="매장명 검색..." autocomplete="off"
+            style="width:100%;padding:8px 12px;border:1.5px solid var(--ink-100);border-radius:var(--r-md);font-size:13px;font-family:var(--fb);outline:none"
+            oninput="filterScriptSellers()" onfocus="showScriptDropdown()" onblur="setTimeout(hideScriptDropdown,200)">
+          <div id="script-dropdown" style="display:none;position:absolute;top:100%;left:0;right:0;max-height:240px;overflow-y:auto;background:var(--paper);border:1.5px solid var(--ink-100);border-radius:var(--r-md);box-shadow:var(--sh-md);z-index:200;margin-top:4px"></div>
+        </div>
         <button class="btn btn-dark" id="script-analyze-btn" onclick="loadScriptAnalysis()" style="display:none">분석 시작</button>
       </div>
 
@@ -995,24 +1000,41 @@ function showPage(n){
 
 // ── 매장 추천 스크립트 ──────────────────────────
 let scriptSeller='', scriptAnalysisData=null, cScriptBrand=null, cScriptWeekly=null;
+let scriptSellerList=[], scriptGenCount=0;
 
 async function initScriptPage(){
-  // 매장 목록 채우기
   const year=document.getElementById('script-year')?.value||new Date().getFullYear();
   const rows=await api(`/api/sales-by-store?year=${year}`);
   if(!rows) return;
-  const sel=document.getElementById('script-seller');
-  sel.innerHTML='<option value="">— 매장을 선택하세요 —</option>'+
-    rows.map(r=>`<option value="${encodeURIComponent(r.seller_name||'')}">${r.seller_name||''}</option>`).join('');
+  scriptSellerList = rows.map(r=>r.seller_name||'').filter(Boolean);
+  renderScriptDropdown(scriptSellerList);
 }
 
-function onScriptSellerChange(){
-  const v=document.getElementById('script-seller').value;
-  scriptSeller=v?decodeURIComponent(v):'';
-  document.getElementById('script-analyze-btn').style.display=scriptSeller?'':'none';
+function renderScriptDropdown(list){
+  const dd=document.getElementById('script-dropdown');
+  if(!list.length){dd.innerHTML='<div style="padding:12px;color:var(--ink-300);font-size:12px">검색 결과 없음</div>';return;}
+  dd.innerHTML=list.map(nm=>`<div onclick="selectScriptSeller('${nm.replace(/'/g,"\\'")}')"\
+    style="padding:10px 14px;cursor:pointer;font-size:13px;border-bottom:1px solid var(--ink-50)"\
+    onmouseover="this.style.background='var(--accent-lt)'" onmouseout="this.style.background=''">${nm}</div>`).join('');
+}
+function filterScriptSellers(){
+  const q=(document.getElementById('script-search')?.value||'').toLowerCase();
+  const filtered=q?scriptSellerList.filter(nm=>nm.toLowerCase().includes(q)):scriptSellerList;
+  renderScriptDropdown(filtered);
+  document.getElementById('script-dropdown').style.display='block';
+}
+function showScriptDropdown(){document.getElementById('script-dropdown').style.display='block';}
+function hideScriptDropdown(){document.getElementById('script-dropdown').style.display='none';}
+function selectScriptSeller(nm){
+  scriptSeller=nm;
+  document.getElementById('script-search').value=nm;
+  document.getElementById('script-dropdown').style.display='none';
+  document.getElementById('script-analyze-btn').style.display='';
   document.getElementById('script-result').style.display='none';
   document.getElementById('script-export-btn').style.display='none';
+  scriptGenCount=0;
 }
+function onScriptSellerChange(){}
 
 async function loadScriptAnalysis(){
   if(!scriptSeller) return;
@@ -1087,16 +1109,16 @@ async function generateScript(){
   if(!scriptAnalysisData) return;
   const btn=document.getElementById('gen-script-btn');
   btn.textContent='생성 중...'; btn.disabled=true;
+  scriptGenCount++;
 
   const out=document.getElementById('script-output');
   const placeholder=document.getElementById('script-placeholder');
   out.innerHTML=''; out.style.display='block'; placeholder.style.display='none';
   out.innerHTML='<span style="color:var(--ink-300)">데이터 분석하여 스크립트 작성 중...</span>';
 
-  // 서버 자체 분석 엔진 호출 (외부 API 없음)
   const r=await api('/api/script/generate',{
     method:'POST',
-    body:{seller:scriptSeller, analysis:scriptAnalysisData}
+    body:{seller:scriptSeller, analysis:scriptAnalysisData, gen_count:scriptGenCount}
   });
 
   if(!r || !r.text){
@@ -1104,19 +1126,21 @@ async function generateScript(){
     btn.textContent='다시 생성'; btn.disabled=false; return;
   }
 
-  // 텍스트 렌더링 — 구분선 + 굵게 + 줄바꿈
   out.innerHTML = r.text
-    .replace(/={55}/g, '<hr style="border:2px solid var(--accent-m);margin:12px 0">')
-    .replace(/─{55}/g, '<hr style="border:1px solid var(--ink-100);margin:8px 0">')
-    .replace(/━{50}/g, '<div style="border-top:1px solid var(--ink-200);margin:6px 0"></div>')
-    .replace(/【(.+?)】/g, '<strong style="color:var(--accent-m)">【$1】</strong>')
-    .replace(/✓ /g, '<span style="color:#059669">✓ </span>')
-    .replace(/◆ /g, '<span style="color:#7C3AED">◆ </span>')
-    .replace(/💡 /g, '<span style="background:#FEF9C3;padding:2px 6px;border-radius:4px;font-size:11px">💡 </span>')
-    .replace(/영업사원: /g, '<strong style="color:var(--ink-900)">영업사원: </strong>')
-    .replace(/\n/g, '<br>');
+    .replace(/={57}/g,'<hr style="border:2px solid var(--accent-m);margin:12px 0">')
+    .replace(/─{57}/g,'<hr style="border:1px solid var(--ink-100);margin:8px 0">')
+    .replace(/━{52}/g,'<div style="border-top:1.5px solid var(--ink-200);margin:4px 0"></div>')
+    .replace(/【(.+?)】/g,'<strong style="color:var(--accent-m);font-size:13px">【$1】</strong>')
+    .replace(/✓ /g,'<span style="color:#059669;font-weight:700">✓ </span>')
+    .replace(/◆ /g,'<span style="color:#7C3AED;font-weight:700">◆ </span>')
+    .replace(/💡 /g,'<span style="background:#FEF9C3;padding:1px 6px;border-radius:4px;font-size:11px">💡</span> ')
+    .replace(/⚠ /g,'<span style="color:#D97706">⚠ </span>')
+    .replace(/영업사원: /g,'<strong style="color:var(--ink-900)">영업사원: </strong>')
+    .replace(/사장님: /g,'<em style="color:var(--ink-400)">사장님: </em>')
+    .replace(/→ /g,'<span style="color:var(--accent-m)">→ </span>')
+    .replace(/\n/g,'<br>');
 
-  btn.textContent='다시 생성'; btn.disabled=false;
+  btn.textContent='다시 생성 (다른 각도)'; btn.disabled=false;
 }
 
 function exportScriptXlsx(){

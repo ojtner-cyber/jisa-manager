@@ -777,12 +777,14 @@ def api_script_analysis():
 @app.route("/api/script/generate", methods=["POST"])
 @login_required
 def api_script_generate():
-    """데이터 기반 자체 영업 스크립트 생성 — 외부 API 불필요"""
+    """데이터 기반 영업 스크립트 — 매장 패턴별 분기 + 매번 다른 각도"""
+    import random, hashlib
     from datetime import datetime as dt2
 
-    data      = request.json or {}
-    seller    = data.get('seller', '')
-    analysis  = data.get('analysis', {})
+    data        = request.json or {}
+    seller      = data.get('seller', '')
+    analysis    = data.get('analysis', {})
+    gen_count   = data.get('gen_count', 0)
 
     year        = analysis.get('year', str(dt2.now().year))
     total       = analysis.get('total', 0)
@@ -793,246 +795,239 @@ def api_script_generate():
     unsold_taft = analysis.get('unsold_taft', [])
     weekly      = analysis.get('weekly', [])
 
-    def w(n): return f"{n:,}"  # 숫자 포맷
+    # 시드: 매번 다른 결과
+    seed_str = f"{seller}{gen_count}{dt2.now().strftime('%H%M%S')}"
+    rng = random.Random(int(hashlib.md5(seed_str.encode()).hexdigest()[:8], 16))
+    def w(n): return f"{n:,}"
+    def pick(lst): return rng.choice(lst)
 
-    # ── 1. 매장 성격 파악 ──────────────────────────
-    top_brand   = brands[0]['brand']  if brands else '레카로'
-    top2_brand  = brands[1]['brand']  if len(brands)>1 else ''
-    top_pct     = brands[0]['pct']    if brands else 0
-    top5_names  = [normalize_item_name(r.get('item_name','')) for r in top5[:5]]
+    # ── 데이터 분석 ────────────────────────────────
+    top_brand   = brands[0]['brand'] if brands else ''
+    top_pct     = brands[0]['pct']   if brands else 0
+    top2_brand  = brands[1]['brand'] if len(brands) > 1 else ''
+    top2_pct    = brands[1]['pct']   if len(brands) > 1 else 0
+    top_item    = normalize_item_name(top5[0].get('item_name','')) if top5 else ''
+    top_item_qty= top5[0].get('qty',0) if top5 else 0
+    top_item_tot= top5[0].get('total',0) if top5 else 0
 
-    # 취급 종류 수
-    total_items = len(sold_items)
+    all_brands  = set(b['brand'] for b in brands)
+    missing_brs = [b for b in BRAND_ORDER if b not in all_brands and b != '타프토이즈']
+    weak_brs    = [b for b in brands if b['pct'] < 5 and b['brand'] != '타프토이즈']
 
-    # 타프토이즈 현황
-    taft_sold  = [r for r in sold_items if remap_group(r.get('item_group',''), r.get('item_name',''))=='타프토이즈']
-    taft_total = sum(r.get('total',0) for r in taft_sold)
-    taft_pct   = round(taft_total/total*100,1) if total else 0
+    taft_sold   = [r for r in sold_items if remap_group(r.get('item_group',''), r.get('item_name',''))=='타프토이즈']
+    taft_total  = sum(r.get('total',0) for r in taft_sold)
+    taft_cnt    = len(set(normalize_item_name(r.get('item_name','')) for r in taft_sold))
+    taft_pct    = round(taft_total/total*100,1) if total else 0
 
-    # 부진/미취급 브랜드
-    all_brands = set(b['brand'] for b in brands)
-    missing_brands = [b for b in BRAND_ORDER if b not in all_brands and b!='타프토이즈']
-    weak_brands    = [b for b in brands if b['pct'] < 3]
-
-    # 주별 분석
-    week_avg  = int(sum(w2.get('total',0) for w2 in weekly)/len(weekly)) if weekly else 0
-    week_max  = max(weekly, key=lambda x: x.get('total',0)) if weekly else None
-    week_min  = min(weekly, key=lambda x: x.get('total',0)) if weekly else None
+    week_avg   = int(sum(wk.get('total',0) for wk in weekly)/len(weekly)) if weekly else 0
     week_trend = ''
     if len(weekly) >= 3:
-        recent3 = [w2.get('total',0) for w2 in weekly[-3:]]
-        if recent3[-1] > recent3[0]*1.1:    week_trend = '상승'
-        elif recent3[-1] < recent3[0]*0.9:  week_trend = '하락'
-        else:                                week_trend = '보합'
+        recent = [wk.get('total',0) for wk in weekly[-3:]]
+        if recent[-1] > recent[0]*1.15:   week_trend = '강한상승'
+        elif recent[-1] > recent[0]*1.05: week_trend = '상승'
+        elif recent[-1] < recent[0]*0.85: week_trend = '하락'
+        elif recent[-1] < recent[0]*0.95: week_trend = '약한하락'
+        else: week_trend = '안정'
 
-    # 타프 추천 우선순위
-    CAT_PRIORITY = {'아치/모빌':1,'액티비티짐':2,'트래블토이':3,'비지북':4,'큐브':5,'워터매트':6}
-    rec_taft = sorted(unsold_taft, key=lambda x: CAT_PRIORITY.get(x.get('category',''),9))[:4]
+    CAT_PRI = {'아치/모빌':1,'액티비티짐':2,'트래블토이':3,'비지북':4,'큐브':5,'워터매트':6,'터미타임':7}
+    rec_taft = sorted(unsold_taft, key=lambda x: CAT_PRI.get(x.get('category',''),9))
 
-    # ── 2. 매장 유형 분류 ──────────────────────────
-    if top_pct > 60:
-        store_type = 'single'   # 한 브랜드 집중형
-    elif top_pct > 35:
-        store_type = 'duo'      # 2강 구도
-    else:
-        store_type = 'balanced' # 균형형
-
-    # ── 3. 순위 표현 ──────────────────────────────
-    if total_pct >= 10:   rank_txt = f"상위 {total_pct}% 핵심 거래처"
-    elif total_pct >= 5:  rank_txt = f"상위권 거래처 (전체 대비 {total_pct}%)"
-    elif total_pct >= 2:  rank_txt = f"주요 거래처 (전체 대비 {total_pct}%)"
-    else:                 rank_txt = f"성장 잠재력 있는 거래처 ({total_pct}%)"
-
-    # ── 4. 스크립트 생성 ──────────────────────────
     month_now = dt2.now().month
-    if month_now in (3,4,5):     season = '봄'; season_tip = '신학기·어린이날 시즌'
-    elif month_now in (6,7,8):   season = '여름'; season_tip = '워터매트·실내놀이 성수기'
-    elif month_now in (9,10,11): season = '가을'; season_tip = '추석 선물·연말 준비 시즌'
-    else:                         season = '겨울'; season_tip = '크리스마스·연초 발주 시즌'
+    season_map = [(range_k, v) for range_k, v in [((3,4,5),'봄'),((6,7,8),'여름'),((9,10,11),'가을'),((12,1,2),'겨울')]]
+    season = next((v for k,v in season_map if month_now in k), '봄')
 
-    def section(title, content):
-        return f"{'━'*50}\n【{title}】\n{'━'*50}\n{content}\n"
+    # 매장 등급 / 패턴
+    if total_pct >= 10:    store_tier = 'VIP'
+    elif total_pct >= 5:   store_tier = 'A'
+    elif total_pct >= 2:   store_tier = 'B'
+    else:                  store_tier = 'C'
 
-    # 섹션 1: 오프닝
-    s1 = f'''영업사원: "사장님, 안녕하세요! {seller.split('_')[0] if '_' in seller else seller} 방문드렸습니다.
-지난번 방문 이후 매장이 더 깔끔하게 정리되신 것 같아요. 혹시 최근에 진열 바꾸셨어요?"
+    if top_pct >= 70:          store_pattern = 'mono'
+    elif top_pct >= 45:        store_pattern = 'dominant'
+    elif len(brands) >= 4 and top_pct < 40: store_pattern = 'balanced'
+    elif len(brands) <= 2:     store_pattern = 'narrow'
+    else:                      store_pattern = 'duo'
 
-(사장님 반응 기다린 후 ↓)
+    taft_pattern = 'none' if taft_pct==0 else ('low' if taft_pct<5 else ('mid' if taft_pct<15 else 'high'))
 
-영업사원: "역시 사장님 감각이 있으시니까요. 저도 오늘 매장 데이터 분석한 걸 가져왔는데,
-좋은 내용이 있어서 꼭 공유드리고 싶었어요. 잠깐 시간 괜찮으세요?"'''
+    def rank_expr(tier, pct):
+        if tier=='VIP': return f"상위 {pct}% 핵심 거래처"
+        if tier=='A':   return f"상위권 거래처 (전체 대비 {pct}%)"
+        if tier=='B':   return f"중요 거래처 (전체의 {pct}%)"
+        return f"성장 가능성 높은 거래처 ({pct}%)"
 
-    # 섹션 2: 실적 공유
-    brand_summary_txt = '\n'.join(
-        f"  · {b['brand']}: {w(b['total'])}원 ({b['pct']}%)"
-        for b in brands[:4]
-    )
+    # ── 섹션 1: 오프닝 ────────────────────────────
+    opening_pool = [
+        f'''영업사원: "사장님, 안녕하세요! 오늘 오기 전에 {seller} 데이터 뽑아봤는데 숫자가 좋아서 오는 길에 기분이 좋았어요.\n잠깐 같이 보실 수 있으세요?"\n\n(태블릿/자료 꺼내며)\n\n영업사원: "저희 전체 거래처 중에서 {rank_expr(store_tier, total_pct)}이에요. {top_brand} 비중이 {top_pct}%로 탄탄하게 잡혀 있어요."''',
+        f'''영업사원: "사장님, 들어오면서 {top_item} 진열이 눈에 잘 띄더라고요. 역시 매장 동선을 잘 잡고 계신 것 같아요."\n\n사장님: (반응)\n\n영업사원: "실제로 {top_item}이 {w(top_item_qty)}개 나갔거든요. 저희 거래처 중에서도 상위권이에요. {year}년 데이터 정리해서 가져왔는데, 같이 보실까요?"''',
+        f'''영업사원: "사장님! 요즘 {top_brand} 어떠세요? 저희 다른 매장들이 {top_brand} 문의가 {pick(['많이 늘었다','꾸준하다','올해 특히 좋다'])}고 하더라고요."\n\n사장님: (반응)\n\n영업사원: "{seller}도 비슷한 흐름이에요. {year}년 데이터 분석해서 가져왔어요. 꼭 공유드리고 싶었습니다."''',
+        f'''영업사원: "사장님, {{"봄":"신학기 시즌이라","여름":"여름이라","가을":"가을 나들이 시즌이라","겨울":"연말이라"}}[season] 매장 분위기 어떠세요?"\n\n사장님: (반응)\n\n영업사원: "맞아요. 저도 이 시즌에 딱 맞는 제안 드리려고 왔어요. {year}년 데이터 기반으로 준비했거든요."''',
+    ]
+    s1 = pick(opening_pool)
 
-    trend_txt = ''
-    if week_trend == '상승': trend_txt = f"\n\n  → 최근 3주 추이가 {week_trend} 중입니다. 이 흐름 잘 잡으시면 됩니다!"
-    elif week_trend == '하락': trend_txt = f"\n\n  → 최근 3주 추이가 {week_trend} 중인데, 오늘 같이 방법 찾아봐요."
+    # ── 섹션 2: 실적 공유 ────────────────────────
+    brand_lines = '\n'.join(f"  · {b['brand']}: {w(b['total'])}원 ({b['pct']}%)" for b in brands[:5])
+    trend_map = {'강한상승':'최근 3주 추이가 강하게 올라가고 있어요! 이 흐름 놓치면 안 됩니다.',
+                 '상승':'최근 추이도 상승 중이라 지금이 발주 타이밍이에요.',
+                 '안정':'판매가 꾸준히 안정적으로 유지되고 있어요. 탄탄한 베이스가 있는 거예요.',
+                 '약한하락':'최근 3주가 살짝 내려갔는데, 진열 변화로 충분히 잡을 수 있어요.',
+                 '하락':'최근 흐름이 빠졌는데, 오늘 원인 같이 찾아봐요. 해결책이 있어요.','':''}
+    trend_comment = trend_map.get(week_trend,'')
 
-    s2 = f'''영업사원: "사장님, {year}년 {seller} 데이터 정리해봤는데요.
-올해 총 {w(total)}원 매출을 기록하셨어요. 저희 전체 거래처 기준으로 {rank_txt}입니다.
+    pattern_comments = {
+        'mono': f"{top_brand} 하나에 {top_pct}% 집중하고 계신데, 이걸로 {w(total)}원을 만드신 게 대단해요. 근데 한 브랜드 의존도가 높으면 리스크가 있어요. 오늘 그 다음 전략 얘기해봐요.",
+        'dominant': f"{top_brand}({top_pct}%)가 압도적이고, {top2_brand}({top2_pct}%)가 받쳐주는 구조예요. {top2_brand} 비중을 더 키우면 전체 매출이 쑥 올라가요.",
+        'balanced': "브랜드 구성이 다양하게 잡혀 있어요. 각 브랜드가 역할 분담하는 구조인데, 조금만 최적화하면 같은 방문객 수로 매출을 더 올릴 수 있어요.",
+        'narrow': f"지금 {len(brands)}개 브랜드 취급하고 계신데, 1-2개 추가하면 고객 이탈을 줄일 수 있어요.",
+        'duo': f"{top_brand}와 {top2_brand}의 2강 구도예요. 이 구조 자체는 좋은데, 세 번째 기둥이 생기면 더 안정적이에요.",
+    }
+    real_talk = pattern_comments.get(store_pattern, '')
 
-브랜드별로 보면:
-{brand_summary_txt}{trend_txt}
+    motivation = pick([
+        "분명히 고객들이 사장님 매장을 신뢰한다는 거예요. 추천을 잘 해주시니까요.",
+        "제품을 그냥 파는 게 아니라 제대로 설명해서 파신다는 게 느껴져요.",
+        "이 매출은 그냥 나오는 게 아니에요. 사장님이 만들어 낸 거예요.",
+    ])
+    pushback = pick([
+        "다른 매장들이랑 비교하면 여기가 훨씬 잘하고 있어요. 체감이 안 될 뿐이에요.",
+        "힘들다고 느끼실 때가 도약 직전인 경우가 많아요. 오늘 같이 방법 찾아봐요.",
+        "그래도 이 숫자는 시장 평균보다 위에 있어요. 기반이 탄탄하다는 뜻이에요.",
+    ])
 
-{'주간 평균 ' + w(week_avg) + '원으로 꾸준히 판매되고 있고요.' if week_avg else ''}
-{'최고 판매 주는 ' + week_max.get('week_start','') + ' 주간으로 ' + w(week_max.get('total',0)) + '원이었어요.' if week_max else ''}
+    s2 = f'''영업사원: "사장님, {year}년 {seller} 전체 데이터예요.\n\n총 {w(total)}원 — {rank_expr(store_tier, total_pct)}입니다.\n{"주간 평균 " + w(week_avg) + "원으로 " if week_avg else ""}꾸준히 판매되고 있고요.\n\n브랜드별로 보면:\n{brand_lines}\n\n{real_talk}\n{"  ※ " + trend_comment if trend_comment else ""}\n\n{motivation}\n\n💡 힘들다 하시면:\n→ "{pushback}"'''
 
-솔직히 말씀드리면, 이 수준의 매출을 유지하는 매장이 많지 않아요.
-사장님이 제품을 제대로 이해하고 고객에게 설명하시기 때문입니다."
+    # ── 섹션 3: 베스트 제품 ───────────────────────
+    brand_insights = {
+        '레카로': {'reason':'카시트는 안전 민감 제품 → 전문점 신뢰도 핵심. 설명 잘 해주시니까 팔림', 'upsell':'카시트 구매자에게 타프토이즈 카시트 장난감 추가 제안', 'risk':'재고 소진 시 이탈 위험 높음 — 안전재고 3개 권장'},
+        '줄즈': {'reason':'SNS 바이럴 강함 + 색상 다양성 → 엄마 커뮤니티 추천 1위', 'upsell':'에어2 구매자에게 데이5 신색상 미리 예약 유도', 'risk':'시즌별 신색상 → 구색 부족 시 기회 손실'},
+        '원더폴드': {'reason':'웨건 카테고리 독점적 포지션 → 비교 구매 없이 결정', 'upsell':'웨건 구매자에게 타프토이즈 트래블토이 번들 제안', 'risk':'전시 필수 — 실물 못 보면 구매 주저'},
+        '엔픽스': {'reason':'국내 브랜드 신뢰 + 합리적 가격 → 재구매율 높음', 'upsell':'보행기 구매자에게 비바체(하이체어) 또는 쏘서 연계', 'risk':'시즌 수요 집중 — 봄여름 전 선발주 중요'},
+        '카오스': {'reason':'하이체어 프리미엄 포지션 + 디자인 감성 → 인테리어 중시 부모층 강함', 'upsell':'하이체어 구매 후 이유식 용품 연계', 'risk':'높은 단가 → 충분한 설명과 체험 필수'},
+        'ABC디자인': {'reason':'유럽 감성 디자인 → 20-30대 부모층 강함', 'upsell':'유모차+카시트 패밀리 세트 구성 제안', 'risk':'인지도 낮음 → 설명력이 판매 좌우'},
+        '타프토이즈': {'reason':'완구 시장 최고 성장 브랜드 + 선물 수요 높음', 'upsell':'아치→모빌→비지북→큐브 시리즈 업셀', 'risk':'전시 위치가 판매 좌우 — 눈에 잘 띄는 곳 배치'},
+    }
 
-💡 사장님 반응이 "그냥 저절로 팔리는 거 아니에요?" 라면:
-→ "아니죠, 사장님. 같은 제품 파는 매장도 절반도 못 파는 곳이 많아요.
-   사장님처럼 제품 특성을 잘 설명해 주시는 분이 훨씬 많이 파세요."'''
-
-    # 섹션 3: 베스트 제품 분석
-    best_txt = ''
+    best_blocks = []
     for i, r in enumerate(top5[:3]):
         nm    = normalize_item_name(r.get('item_name',''))
-        qty   = r.get('qty',0)
-        tot   = r.get('total',0)
+        qty   = r.get('qty', 0)
+        tot   = r.get('total', 0)
         brand = remap_group(r.get('item_group',''), r.get('item_name',''))
-        # 브랜드별 잘 팔리는 이유 자동 분석
-        if brand == '레카로':
-            reason = '카시트는 안전 민감 제품 → 전문점 신뢰도가 핵심. 사장님이 제품 설명을 잘 해주시기 때문'
-        elif brand == '줄즈':
-            reason = '디자인 + 기능 균형 → SNS 바이럴이 강한 제품. 엄마들 사이 입소문 효과'
-        elif brand == '원더폴드':
-            reason = '웨건 카테고리 독점적 포지션 → 비교 구매 없이 결정되는 프리미엄'
-        elif brand == '엔픽스':
-            reason = '국내 브랜드 신뢰 + 합리적 가격대 → 재구매율과 추천율 높음'
-        elif brand == '타프토이즈':
-            reason = '교육적 완구 → 선물 구매 비중 높음. 단가 대비 이익률 우수'
-        else:
-            reason = '카테고리 내 검증된 베스트셀러 → 고객 신뢰도 높음'
+        ins   = brand_insights.get(brand, {'reason':'검증된 베스트셀러','upsell':'','risk':''})
+        if qty >= 20:   qty_comment = f"{w(qty)}개는 전국 상위권 판매량이에요."
+        elif qty >= 10: qty_comment = f"{w(qty)}개, 이 브랜드 기준 잘 나가는 편이에요."
+        else:           qty_comment = f"{w(qty)}개인데, 여기서 더 올릴 여지가 충분해요."
+        block = f"  {i+1}위. {nm} — {w(qty)}개 / {w(tot)}원\n  {qty_comment}\n  잘 팔리는 이유: {ins['reason']}\n  연계 제안: {ins['upsell']}\n  주의: {ins['risk']}\n"
+        best_blocks.append(block)
 
-        best_txt += f"\n  {i+1}위. {nm}\n  → {w(qty)}개 판매 / {w(tot)}원\n  → 잘 팔리는 이유: {reason}\n"
+    stock_q = pick([
+        f'"{top_item} 재고 지금 몇 개 남아계세요? 이 제품은 품절 나면 고객이 바로 온라인으로 가거든요."',
+        f'"{top_item} 다음 발주 언제 생각하고 계세요? 제가 미리 물량 잡아드릴게요."',
+        f'"{top_item} 재고 체크해보실 수 있어요? 이번 달 소진 속도 보고 발주량 같이 정해드릴게요."',
+    ])
+    pushback2 = pick([
+        "혹시 최근에 진열 위치가 바뀌셨어요? 위치가 판매량에 정말 크게 영향 주거든요.",
+        "고객 문의는 있는데 구매로 안 이어지나요? 어떤 제품과 비교하시는지 여쭤봐도 될까요?",
+        "그럴 때일수록 재고 줄이고 다른 제품 비중 늘리는 게 맞을 수 있어요. 같이 봐요.",
+    ])
+    s3 = f'''영업사원: "이 매장 베스트 TOP3 분석해봤어요.\n\n{chr(10).join(best_blocks)}\n{stock_q}\n\n💡 \"요즘 그 제품 잘 안 나가요\" 하시면:\n→ "{pushback2}"'''
 
-    s3 = f'''영업사원: "지금 제일 잘 나가는 제품들 보면요.
-{best_txt}
-특히 1위 제품은 지금 재고 얼마나 남아계세요?
-이 제품은 품절 한 번 나면 고객이 다른 매장 가버리거든요.
-안전 재고 2~3개 정도는 항상 확보해두시는 게 좋아요."
+    # ── 섹션 4: 타프토이즈 ───────────────────────
+    if taft_pattern == 'none':
+        taft_approaches = [
+            f'''영업사원: "사장님, 타프토이즈 아세요? 유아 완구 브랜드인데 베이비페어에서 카시트보다 줄 서는 브랜드가 됐어요.\n\n이 매장에 없는 이유가 있을 것 같아서요. 혹시 완구는 취급 안 하시는 정책인가요?\n\n사실 완구가 매장 객단가 올리는 데 효과적이에요. 카시트 하나 사러 온 고객이 {w(rec_taft[0].get("price",25000) if rec_taft else 25000)}원짜리 완구 하나 더 집어가거든요.\n\n💡 \"마진이 낮지 않나요?\" 하시면:\n→ \"오히려 반대예요. 카시트보다 완구 마진이 높아요. 재방문 효과도 있어요.\""''',
+            f'''영업사원: "사장님, 솔직하게 여쭤볼게요. 지금 고객 한 분당 평균 구매 금액이 얼마인 것 같으세요?"\n\n사장님: (반응)\n\n영업사원: "저희 데이터로 {seller} 평균 객단가가 {w(int(total/len(sold_items)) if sold_items else 0)}원 정도예요. 근데 타프토이즈 취급 매장들은 평균 25,000원씩 더 나와요.\n카시트 사면서 완구 하나 더 집어가는 거거든요. 그 역할 할 제품이 지금 이 매장엔 없어요."''',
+        ]
+        s4 = pick(taft_approaches)
+        if rec_taft:
+            r0 = rec_taft[0]; nm0 = r0.get("name","").replace("[타프토이즈]","").strip()
+            s4 += f'\n\n제가 이 매장에 맞는 제품 골라봤어요:\n  ◆ {nm0} ({r0.get("category","")}) — {w(r0.get("price",0))}원\n    "{r0.get("desc","")}"\n    처음엔 3종 소량으로 시작해보세요. 한 달 후에 반응 보고 확대해드릴게요.'
 
-💡 재고 있다고 하시면:
-→ "잘하셨어요. 그럼 다음 주 배송으로 추가 발주 같이 넣어드릴까요?
-   지금 프로모션 시즌이라 타이밍이 좋습니다."'''
+    elif taft_pattern == 'low':
+        taft_names = [normalize_item_name(r.get('item_name','')) for r in taft_sold[:2]]
+        untracked = [u for u in rec_taft if normalize_item_name(u.get('name','')) not in taft_names][:2]
+        ut_txt = ""
+        if untracked:
+            u = untracked[0]
+            ut_txt = f'\n  ◆ {u.get("name","").replace("[타프토이즈]","").strip()} ({u.get("category","")}) — {w(u.get("price",0))}원\n    "{u.get("desc","")}"'
+        s4 = f'''영업사원: "타프토이즈 {taft_cnt}종에서 {w(taft_total)}원 나왔어요. 비중이 {taft_pct}%인데, 이걸 10%로만 올려도 전체 매출이 달라져요.\n\n지금 취급 중인 제품 고객들에게 시리즈 연결이 잘 안 되고 있을 가능성이 높아요.\n아치 산 고객한테 3주 후 \"아이가 자라면 이 제품이 딱이에요\" 연락하면 재방문이 돼요.\n\n이번에 추가 추천 제품:{ut_txt}\n\n💡 \"관리하기 어려워요\" 하시면:\n→ \"이 브랜드는 팔고 나면 고객이 알아서 찾아와요. 설명이 필요 없는 브랜드예요.\""''' 
 
-    # 섹션 4: 타프토이즈 전략
-    taft_intro = ''
-    if taft_pct > 10:
-        taft_intro = f"현재 타프토이즈 비중이 {taft_pct}%로 좋은 편이에요. 여기서 더 키울 수 있어요."
-    elif taft_pct > 0:
-        taft_intro = f"타프토이즈를 {w(taft_total)}원 취급하고 계신데, 솔직히 이 매장이라면 훨씬 더 가능성 있어요."
+    elif taft_pattern == 'mid':
+        s4 = f'''영업사원: "타프토이즈가 {taft_pct}%까지 올라왔는데, 여기가 중간 고비예요. 이 브랜드가 20% 이상 되면 매장 이미지 자체가 바뀌거든요.\n\n{pick(["트래블토이는 카시트/유모차 옆에 두면 번들 구매가 자연스럽게 일어나요.","액티비티짐 하나만 놔도 인스타 감성 사진이 나와서 매장이 SNS에 올라가요.","비지북 시리즈는 선물용 수요가 강해서 돌잔치 코너 옆에 두면 효과적이에요."])}\n\n이번에 2종 추가해보시고, 한 달 후에 반응 체크해드릴게요."'''
+
     else:
-        taft_intro = "타프토이즈는 아직 미취급이신데, 요즘 유아 완구 시장에서 가장 빠르게 성장하는 브랜드예요."
+        top_taft_item = normalize_item_name(taft_sold[0].get('item_name','')) if taft_sold else ''
+        s4 = f'''영업사원: "타프토이즈 {taft_pct}%면 저희 거래처 중 최상위권이에요. {top_taft_item}을 중심으로 정말 잘 운영하고 계세요.\n\n이제 다음 레벨 얘기를 해도 될 것 같아요. 신상 독점 전시를 해보시는 건 어때요?\n전시한 매장들은 한 달 만에 타프 매출이 평균 {pick(["40%","35%","28%"])} 올랐어요."'''
 
-    rec_detail = ''
-    for u in rec_taft[:3]:
-        nm   = u.get('name','').replace('[타프토이즈]','').strip()
-        cat  = u.get('category','')
-        pr   = u.get('price',0)
-        desc = u.get('desc','')
-        rec_detail += f"\n  ◆ {nm} ({cat}) — {w(pr)}원\n    \"{desc}\"\n    이 매장 고객층에 딱 맞는 가격대예요."
+    # ── 섹션 5: 구조 개선 ────────────────────────
+    if missing_brs:
+        miss1 = missing_brs[0]
+        miss_advice = {'원더폴드':'웨건은 유모차와 겹치지 않아요. 오히려 유모차 사고 웨건도 사는 가정이 많아요.','ABC디자인':'ABC는 유럽 감성이라 줄즈와 다른 고객층이에요. 경쟁이 아니라 보완이에요.','카오스':'하이체어는 이유식 시작 6개월 필수품이에요. 카시트 구매 후 타이밍 맞게 제안하면 돼요.','엔픽스':'보행기/쏘서는 6-12개월 집중 수요예요. 카시트 구매 3-4개월 후 제안하면 재방문이 돼요.'}.get(miss1, f'{miss1}은 이 매장 고객층에 맞는 브랜드예요.')
+        s5 = f'''영업사원: "솔직히 아쉬운 게 있어요. {", ".join(missing_brs[:2])} 쪽이 빠져있거든요.\n\n{miss_advice}\n\n지금 오는 고객들이 {miss1} 때문에 다른 매장 가는 경우가 있을 수 있어요.\n처음에 전시용 1개만 두고 반응 보세요.\n\n💡 \"그 브랜드 잘 모르는데요\" 하시면:\n→ \"제가 직접 설명 드리고, 첫 고객 상담도 같이 해드릴 수 있어요.\""''' 
 
-    s4 = f'''영업사원: "사장님, {taft_intro}
+    elif weak_brs:
+        wb1 = weak_brs[0]; wb_name = wb1['brand']; wb_pct = wb1['pct']
+        advice = pick([f'{wb_name}이 {wb_pct}%인데, 진열 위치만 바꿔도 달라져요.',f'{wb_name}은 {top_brand} 구매 고객에게 추가 제안하는 방식이 더 효과적이에요.',f'{wb_name} 단독보다 세트 구성으로 팔면 부담이 줄어요.'])
+        s5 = f'''영업사원: "브랜드 구성은 좋은데, {wb_name} 비중이 {wb_pct}%로 낮아요.\n\n{advice}\n\n{pick(["제가 다음 방문 때 진열 레이아웃 같이 봐드릴게요.","이 브랜드 잘 파는 다른 매장 사례 공유해드릴게요.","한 달에 2배 올린 매장도 있어요. 비결 알려드릴게요."])}"''' 
 
-제가 이 매장에 가장 잘 맞는 타프토이즈 제품 골라봤어요:
-{rec_detail}
-
-타프토이즈 특징이, 한 번 팔면 그 고객이 시리즈 계속 사러 와요.
-아치 하나 산 분이 모빌, 비지북, 큐브까지 사시는 거 저 직접 봤거든요.
-초기 발주 부담 없게 소량으로 시작해보시죠. 제가 3종 세트로 구성해드릴게요."
-
-💡 "잘 팔릴지 모르겠다" 반응이면:
-→ "처음엔 다들 그렇게 말씀하세요. 그런데 한 번 팔아본 매장은 꼭 재발주 하거든요.
-   딱 1주일 전시해보시고 반응 없으면 제가 책임지겠습니다."'''
-
-    # 섹션 5: 취약점 전략
-    if missing_brands:
-        miss_txt = ', '.join(missing_brands)
-        s5 = f'''영업사원: "사장님, 한 가지 아쉬운 점이 있어요.
-{miss_txt} 쪽이 아직 빠져있는데요.
-
-예를 들어 {missing_brands[0] if missing_brands else ''}는 요즘 고객들이 온라인에서 먼저 보고
-오프라인 매장에서 확인하러 오는 제품이에요.
-매장에 없으면 '이 매장은 구색이 좀 부족하다'는 인상을 줄 수 있거든요.
-
-전시용 1개만 놓아보시는 건 어때요? 부담 없이 시작하실 수 있어요."'''
-    elif weak_brands:
-        wb_names = ', '.join(b['brand'] for b in weak_brands[:2])
-        s5 = f'''영업사원: "사장님, {wb_brands_str if (wb_brands_str:=', '.join(b['brand'] for b in weak_brands[:2])) else wb_names} 쪽이 아직 비중이 낮아요.
-
-이 브랜드들이 단독으로는 좀 어렵지만,
-예를 들어 레카로 카시트 옆에 타프토이즈 모빌 같이 두면
-'세트 구매'로 객단가가 올라가거든요.
-크로스 셀링 포인트로 활용해보세요."'''
     else:
-        s5 = f'''영업사원: "브랜드 구성은 상당히 균형 잡혀 있어요. 이건 정말 잘하고 계신 거예요.
-다음 스텝은 각 브랜드에서 1~2종씩 더 깊이 파는 '스페셜티' 전략이에요.
+        deep = pick([f'{top_brand}에서 {top_item} 잘 파시는데, 같은 브랜드 2-3종 더 깊이 파는 라인업 확장 전략이 있어요. 7종 이상 취급하면 전문 매장 이미지가 생겨요.','브랜드 구성은 완성 단계예요. 이제 각 브랜드에서 프리미엄 라인 하나씩 추가하면 객단가가 올라가요.','이 정도면 다음 스텝은 고객 관계 관리 시스템화예요. 매출이 한 단계 더 올라갈 수 있어요.'])
+        s5 = f'''영업사원: "브랜드 구성은 정말 잘 잡혀 있어요. 진심으로 칭찬이에요.\n\n{deep}"''' 
 
-예를 들어 줄즈는 에어2 잘 파시는데, 데이5나 허브2 추가하면
-'줄즈 전문 매장' 이미지가 생기거든요.
-그 이미지가 생기면 멀리서도 찾아오는 고객이 생겨요."'''
-
-    # 섹션 6: 시즌 전략
-    season_products = {
-        '봄': ['줄즈 에어2 (봄 신색상)', '타프토이즈 액티비티 아치', '엔픽스 보행기'],
-        '여름': ['타프토이즈 워터매트', '타프토이즈 팝앤플레이스테이션', '레카로 카시트 (여행 시즌)'],
-        '가을': ['레카로 카시트 (추석 선물)', '원더폴드 웨건 (나들이 시즌)', '타프토이즈 비지북 시리즈'],
-        '겨울': ['타프토이즈 실내놀이 세트', '줄즈 (크리스마스 선물)', '엔픽스 점퍼루'],
+    # ── 섹션 6: 시즌 전략 ────────────────────────
+    season_data = {
+        '봄':  {'items':['줄즈 에어2 봄 신색상 (3-4월 출시)','타프토이즈 어반가든 아치 (야외 테마)','엔픽스 보행기 (신학기 선물)'],'insight':'3-5월은 출생아 수 피크 + 어린이날 선물 수요 집중. 이 시기 발주가 1년 매출을 좌우해요.','action':'어린이날 전 선물 포장 세트 구성하면 객단가가 올라가요.'},
+        '여름':{'items':['타프토이즈 워터매트 (6-8월 한정)','타프토이즈 팝앤플레이스테이션 (실내 놀이)','레카로 카시트 (여름 휴가 이동 수요)'],'insight':'워터매트는 7월까지가 발주 골든타임. 8월엔 재고 소진 빠르고 보충 어려워요.','action':'에어컨 켠 여름에 실내 액티비티짐이 의외로 잘 나가요.'},
+        '가을':{'items':['레카로 카시트 (추석 선물 수요)','원더폴드 웨건 (가을 나들이)','타프토이즈 비지북 (독서의 계절)'],'insight':'추석 전후 2주가 선물 수요 피크. 재고 부족은 기회 손실이 커요.','action':'선물 포장 서비스 앞에 내세우면 입소문이 나요.'},
+        '겨울':{'items':['타프토이즈 실내놀이 세트 (겨울 실내)','줄즈 크리스마스 에디션','엔픽스 점퍼루 (실내 활동)'],'insight':'12월 크리스마스 + 1월 설 선물로 더블 피크. 11월 말까지 발주 완료가 핵심이에요.','action':'크리스마스 패키지 구성이 있으면 인스타 바이럴이 잘 돼요.'},
     }
-    s_prods = season_products.get(season, [])
+    sd = season_data.get(season, season_data['봄'])
+    wait_pushback = pick(['사장님, 지켜보다가 타이밍 놓치면 다음 시즌까지 기다려야 해요.','주변 매장들이 지금 발주 넣고 있어요. 같이 움직이시는 게 유리해요.','소량으로라도 먼저 들여놓고 반응 보세요. 안 팔리면 제가 어떻게든 해결해드릴게요.'])
+    s6 = f'''영업사원: "지금 {season}이잖아요. {sd["insight"]}\n\n이 시기 집중 제품:\n{chr(10).join(f"  · {p}" for p in sd["items"])}\n\n{sd["action"]}\n\n지금 발주 넣으시면 이번 주 안으로 납품 가능해요.\n시즌 물량은 한정이라 이번에 같이 넣어두시죠."\n\n💡 \"일단 지켜볼게요\" 하시면:\n→ "{wait_pushback}"'''
 
-    s6 = f'''영업사원: "지금 {season}이잖아요. {season_tip}이에요.
+    # ── 섹션 7: 클로징 ───────────────────────────
+    checklist = []
+    if top5: checklist.append(f"{normalize_item_name(top5[0].get('item_name',''))} 재고 확보")
+    if taft_pattern in ('none','low'): checklist.append("타프토이즈 3종 소량 시작")
+    elif taft_pattern == 'mid': checklist.append("타프토이즈 2종 추가")
+    if missing_brs: checklist.append(f"{missing_brs[0]} 전시용 1종 시작")
+    checklist.append(f"{season} 시즌 집중 제품 발주")
 
-이 시기에 잘 나가는 제품들이 있어요:
-{chr(10).join(f"  · {p}" for p in s_prods)}
+    closing_variants = [
+        f'''영업사원: "오늘 이야기 나눈 거 정리할게요:\n\n{chr(10).join(f"  ✓ {item}" for item in checklist)}\n\n다 한꺼번에 하시기 부담스러우시면, 오늘은 {checklist[0]}만 먼저 해도 돼요.\n어느 쪽부터 시작하실래요?"''',
+        f'''영업사원: "오늘 제안드린 것들 다 하시면 {w(int(total*0.15))}~{w(int(total*0.25))}원 추가 매출이 가능해요.\n\n한 번에 다 하실 필요 없고요, 오늘 {checklist[0]}부터 시작해볼까요?\n발주서 바로 뽑아드릴게요."''',
+        f'''영업사원: "사장님, 6개월 후 이 매장 그림을 그려봤어요. {top_brand}는 지금보다 {pick(["20%","15%","25%"])} 더 올리고, 타프토이즈가 10%를 차지하면 연간 {w(int(total*1.3))}원이 충분히 가능해요.\n\n그 첫 걸음을 오늘 같이 내딛어볼까요? 발주 구성 최적화해서 바로 올려드릴게요."''',
+    ]
 
-특히 {'워터매트는 여름 한정이라 놓치면 내년까지 기다려야 해요.' if season=='여름' else '이 시즌에 선물 구매가 집중되니까 포장된 세트 구성을 앞에 두면 좋아요.'}
+    next_visit = pick([
+        f'3주 후에 오늘 발주한 제품들 반응 들으러 올게요. 사장님 목소리 기다려요.',
+        f'다음 달 초에 다시 방문드릴게요. 그때 신규 제품 판매 현황 같이 봐요.',
+        f'2주 후에 들를게요. 그때까지 신규 제품 첫 반응 꼭 알려주세요.',
+    ])
+    s7 = pick(closing_variants) + f'''\n\n────────────────────────\n다음 방문 약속:\n"{next_visit}"'''
 
-지금 발주 넣으시면 {'이번 주 내로 바로 납품 가능해요.' if True else ''}"'''
+    # ── 최종 조합 ─────────────────────────────────
+    def section(title, content):
+        return f"{'━'*52}\n【{title}】\n{'━'*52}\n{content}\n"
 
-    # 섹션 7: 클로징
-    s7 = f'''영업사원: "정리하면 오늘 이야기 나눈 게:
-
-  ✓ 베스트 제품 재고 확보 (1~2주치)
-  ✓ 타프토이즈 신규 3종 소량 시작
-  {'✓ ' + (missing_brands[0] if missing_brands else (weak_brands[0]['brand'] if weak_brands else '')) + ' 전시용 추가' if (missing_brands or weak_brands) else '✓ 시즌 제품 선 발주'}
-  ✓ {season} 시즌 집중 제품 발주
-
-다 합쳐도 부담스러운 금액은 아니에요.
-일단 이번 주 발주로 처리해드리고, 다음 달에 반응 보고 조정하는 걸로 할까요?
-
-제가 최적 구성으로 발주서 뽑아드릴게요.
-혹시 발주 전에 더 확인하고 싶은 제품 있으세요?"
-
-─────────────────────────
-다음 방문 약속:
-"그럼 {2 if month_now in (12,1,2,6,7,8) else 3}주 후에 다시 방문드릴게요.
-그 때까지 신규 제품 판매 어떠신지 꼭 여쭤볼게요. 항상 감사합니다, 사장님."'''
-
-    # ── 5. 전체 조합 ──────────────────────────────
-    script = f"""{'='*55}
+    now_str = dt2.now().strftime('%Y.%m.%d %H:%M')
+    script = f"""{'='*57}
   매장 영업 방문 스크립트 — {seller}
-  분석 기간: {year}년 / 생성일: {dt2.now().strftime('%Y.%m.%d')}
-{'='*55}
+  분석: {year}년 / 생성: {now_str} / 유형: [{store_tier}/{store_pattern}/타프{taft_pattern}]
+{'='*57}
 
-{section('1. 오프닝 — 관계 강화 & 자연스러운 연결', s1)}
-{section('2. 실적 공유 — 데이터로 신뢰 쌓기', s2)}
-{section('3. 베스트 제품 분석 — 잘 팔리는 이유 짚기', s3)}
-{section('4. 타프토이즈 신규 제안 — 성장 기회 열기', s4)}
-{section('5. 취약점 개선 전략 — 균형 맞추기', s5)}
-{section('6. 시즌 전략 — 지금이 타이밍', s6)}
-{section('7. 클로징 — 발주 결정 & 다음 약속', s7)}
+{section('1. 오프닝 — 첫 60초가 전체를 결정한다', s1)}
+{section('2. 실적 공유 — 숫자로 신뢰를 만든다', s2)}
+{section('3. 베스트 제품 심층 분석 — 왜 팔리는가', s3)}
+{section('4. 타프토이즈 전략 — 성장 레버 잡기', s4)}
+{section('5. 구조 개선 — 빈틈을 기회로', s5)}
+{section('6. 시즌 전략 — 지금이 골든타임', s6)}
+{section('7. 클로징 — 오늘 결정을 이끌어낸다', s7)}
 
-{'─'*55}
-  ※ 이 스크립트는 {seller}의 {year}년 실판매 데이터 기반으로
-    자동 생성되었습니다. 방문 전 내용을 한번 더 숙지하세요.
-{'─'*55}"""
+{'─'*57}
+  ※ {seller} / {year}년 실판매 데이터 기반 자동 생성
+  ※ 재생성 시마다 다른 각도의 스크립트가 나옵니다
+{'─'*57}"""
 
     return jsonify({'text': script, 'ok': True, 'seller': seller})
 
