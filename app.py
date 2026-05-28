@@ -1034,8 +1034,9 @@ def api_script_generate():
 @app.route("/api/script/report", methods=["POST"])
 @login_required
 def api_script_report():
-    """대표 보고용 매장 분석 리포트 생성"""
-    from datetime import datetime as dt2, timedelta
+    """매장 분석 리포트 생성"""
+    import random, hashlib
+    from datetime import datetime as dt2
 
     data     = request.json or {}
     seller   = data.get('seller', '')
@@ -1050,167 +1051,413 @@ def api_script_report():
     unsold_taft = analysis.get('unsold_taft', [])
     weekly      = analysis.get('weekly', [])
 
-    now = dt2.now()
+    now    = dt2.now()
+    rng    = random.Random(int(hashlib.md5(f"{seller}{now.strftime('%H%M')}".encode()).hexdigest()[:8],16))
+    def pick(lst): return rng.choice(lst)
     def w(n): return f"{int(n):,}" if n else '0'
 
-    # ── 기본 지표 ──────────────────────────────────
-    total_qty  = sum(r.get('qty',0) for r in sold_items)
-    brand_cnt  = len(brands)
-    item_cnt   = len(sold_items)
-
-    # 객단가 (건당 평균)
-    total_cnt  = sum(r.get('cnt',0) for r in sold_items)
-    avg_per_tx = int(total / total_cnt) if total_cnt else 0
+    # ── 기본 지표 ─────────────────────────────────────
+    total_qty   = sum(r.get('qty',0) for r in sold_items)
+    total_cnt   = sum(r.get('cnt',0) for r in sold_items)
+    item_cnt    = len(sold_items)
+    brand_cnt   = len(brands)
+    avg_per_tx  = int(total/total_cnt) if total_cnt else 0
 
     # 타프토이즈
-    taft_items  = [r for r in sold_items if remap_group(r.get('item_group',''), r.get('item_name',''))=='타프토이즈']
+    taft_items  = [r for r in sold_items if remap_group(r.get('item_group',''),r.get('item_name',''))=='타프토이즈']
     taft_total  = sum(r.get('total',0) for r in taft_items)
-    taft_pct    = round(taft_total/total*100,1) if total else 0
     taft_cnt_k  = len(set(normalize_item_name(r.get('item_name','')) for r in taft_items))
+    taft_pct    = round(taft_total/total*100,1) if total else 0
 
     # 주별 분석
-    week_avg   = int(sum(wk.get('total',0) for wk in weekly)/len(weekly)) if weekly else 0
-    week_max   = max(weekly, key=lambda x: x.get('total',0)) if weekly else {}
-    week_min   = min(weekly, key=lambda x: x.get('total',0)) if weekly else {}
-    week_range = week_max.get('total',0) - week_min.get('total',0)
+    week_avg    = int(sum(wk.get('total',0) for wk in weekly)/len(weekly)) if weekly else 0
+    week_max    = max(weekly, key=lambda x:x.get('total',0)) if weekly else {}
+    week_min    = min(weekly, key=lambda x:x.get('total',0)) if weekly else {}
+    week_range  = week_max.get('total',0)-week_min.get('total',0)
 
-    # 추이 판단
-    trend_label = ''
-    trend_detail = ''
+    trend_label = ''; trend_detail = ''; growth_rate = 0
     if len(weekly) >= 3:
         recent = [wk.get('total',0) for wk in weekly[-4:]]
-        growth = (recent[-1] - recent[0]) / recent[0] * 100 if recent[0] else 0
-        if growth > 15:   trend_label = '상승세'; trend_detail = f"최근 {len(recent)}주 기준 {growth:.1f}% 증가"
-        elif growth > 5:  trend_label = '완만한 상승'; trend_detail = f"최근 {len(recent)}주 기준 {growth:.1f}% 증가"
-        elif growth < -15: trend_label = '하락세'; trend_detail = f"최근 {len(recent)}주 기준 {abs(growth):.1f}% 감소"
-        elif growth < -5:  trend_label = '완만한 하락'; trend_detail = f"최근 {len(recent)}주 기준 {abs(growth):.1f}% 감소"
-        else:              trend_label = '보합'; trend_detail = f"최근 {len(recent)}주 기준 ±5% 내외 유지"
+        growth_rate = (recent[-1]-recent[0])/recent[0]*100 if recent[0] else 0
+        if   growth_rate > 20:  trend_label='강한 상승세'; trend_detail=f"최근 {len(recent)}주 {growth_rate:.1f}% 증가"
+        elif growth_rate > 8:   trend_label='상승세';       trend_detail=f"최근 {len(recent)}주 {growth_rate:.1f}% 증가"
+        elif growth_rate > 2:   trend_label='완만한 상승';  trend_detail=f"최근 {len(recent)}주 {growth_rate:.1f}% 증가"
+        elif growth_rate < -20: trend_label='급격한 하락';  trend_detail=f"최근 {len(recent)}주 {abs(growth_rate):.1f}% 감소"
+        elif growth_rate < -8:  trend_label='하락세';       trend_detail=f"최근 {len(recent)}주 {abs(growth_rate):.1f}% 감소"
+        elif growth_rate < -2:  trend_label='완만한 하락';  trend_detail=f"최근 {len(recent)}주 {abs(growth_rate):.1f}% 감소"
+        else:                   trend_label='안정';         trend_detail=f"최근 {len(recent)}주 ±2% 내외 유지"
 
-    # 전체 순위 표현
-    if total_pct >= 10:   rank_label = f"전체 거래처 상위 {total_pct}% (핵심 거래처)"
-    elif total_pct >= 5:  rank_label = f"전체 거래처 상위권 (비중 {total_pct}%)"
-    elif total_pct >= 2:  rank_label = f"중요 거래처 (비중 {total_pct}%)"
-    else:                  rank_label = f"성장형 거래처 (비중 {total_pct}%)"
+    # ── 등급 산정 (매출 기준 — DB에서 전체 매장 분포 조회) ──
+    try:
+        conn_g = get_db()
+        all_totals = sorted([r[0] for r in conn_g.execute(
+            "SELECT SUM(total) FROM sales_data WHERE real_seller!='' GROUP BY real_seller").fetchall()
+        ], reverse=True)
+        conn_g.close()
+        n = len(all_totals)
+        thresh_a = all_totals[max(0,int(n*0.10)-1)] if n >= 10 else 0
+        thresh_b = all_totals[max(0,int(n*0.30)-1)] if n >= 4  else 0
+        thresh_c = all_totals[max(0,int(n*0.70)-1)] if n >= 2  else 0
+        if total >= thresh_a:   grade='A'; grade_basis='전체 거래처 상위 10% 이내'
+        elif total >= thresh_b: grade='B'; grade_basis='전체 거래처 상위 30% 이내'
+        elif total >= thresh_c: grade='C'; grade_basis='전체 거래처 상위 70% 이내'
+        else:                   grade='D'; grade_basis='전체 거래처 하위 30%'
+    except:
+        if   total_pct >= 10: grade='A'; grade_basis='전체 비중 10% 이상'
+        elif total_pct >= 5:  grade='B'; grade_basis='전체 비중 5~10%'
+        elif total_pct >= 2:  grade='C'; grade_basis='전체 비중 2~5%'
+        else:                  grade='D'; grade_basis='전체 비중 2% 미만'
 
-    # 브랜드 집중도
-    top_brand  = brands[0]['brand'] if brands else '-'
-    top_pct_v  = brands[0]['pct'] if brands else 0
-    if top_pct_v >= 70:   concentration = '단일 브랜드 집중형'
-    elif top_pct_v >= 45: concentration = '1강 중심형'
-    elif brand_cnt >= 4:   concentration = '다브랜드 균형형'
-    else:                  concentration = '소수 브랜드형'
-
-    # 전략적 평가
+    # 브랜드 패턴
+    top_brand = brands[0]['brand'] if brands else '-'
+    top_pct_v = brands[0]['pct']   if brands else 0
+    top2_brand= brands[1]['brand'] if len(brands)>1 else ''
+    top2_pct_v= brands[1]['pct']   if len(brands)>1 else 0
     all_brand_set = set(b['brand'] for b in brands)
-    missing_brs   = [b for b in BRAND_ORDER if b not in all_brand_set and b != '타프토이즈']
-    weak_brs      = [b['brand'] for b in brands if b['pct'] < 5 and b['brand'] != '타프토이즈']
+    missing_brs   = [b for b in BRAND_ORDER if b not in all_brand_set and b!='타프토이즈']
+    weak_brs      = [b for b in brands if b['pct']<5 and b['brand']!='타프토이즈']
 
-    # 성과 등급
-    if total_pct >= 10 and (not trend_label or trend_label in ('상승세','완만한 상승','보합')):
-        grade = 'A'
-        grade_comment = '핵심 거래처로서 안정적 성과를 유지하고 있음'
-    elif total_pct >= 5:
-        grade = 'B'
-        grade_comment = '상위권 거래처로 성장 가능성이 충분함'
-    elif total_pct >= 2:
-        grade = 'C'
-        grade_comment = '중간 수준으로 집중 관리 시 성장 여지 있음'
-    else:
-        grade = 'D'
-        grade_comment = '개선이 필요한 거래처로 방문 빈도 증가 필요'
+    if top_pct_v >= 70:          concentration='단일 브랜드 집중형'
+    elif top_pct_v >= 45:        concentration='1강 중심형'
+    elif brand_cnt >= 4 and top_pct_v < 40: concentration='다브랜드 균형형'
+    elif brand_cnt <= 2:         concentration='소수 브랜드형'
+    else:                         concentration='2강 구도형'
 
-    # ── 보고서 생성 ────────────────────────────────
-    sep1  = '─' * 60
-    sep2  = '━' * 60
-    sep3  = '·' * 60
+    # ── 총괄 현황 — 수백 가지 경우의 수 ──────────────
+    # A등급별 코멘트 풀
+    grade_comments = {
+        'A': [
+            f"저희 전체 거래처 {len([1])}개 중 상위 10%에 해당하는 핵심 거래처입니다. {top_brand}를 중심으로 안정적인 매출 구조를 갖추고 있으며, 지속적인 관리가 중요합니다.",
+            f"매출 규모와 브랜드 구성 면에서 우수한 성과를 내고 있는 거래처입니다. {top_brand} 판매 역량이 특히 두드러지며, 추가 브랜드 확대 시 더 큰 성과가 기대됩니다.",
+            f"연간 {w(total)}원의 매출을 기록한 상위권 거래처로, 사장님의 적극적인 영업 활동이 실적에 반영된 결과로 판단됩니다.",
+        ],
+        'B': [
+            f"전체 거래처 중 상위 30% 이내에 위치한 성장형 거래처입니다. 현재의 판매 흐름이 지속된다면 A등급 진입도 충분히 가능합니다.",
+            f"{w(total)}원 매출로 중상위권을 유지하고 있습니다. {top_brand} 비중({top_pct_v}%)이 높아 해당 브랜드 재고 관리가 실적에 직접 영향을 미칩니다.",
+            f"안정적인 판매 기반을 갖추고 있으나, 취급 브랜드 다양화를 통해 매출 성장의 여지가 있습니다.",
+        ],
+        'C': [
+            f"중간 수준의 매출을 유지하고 있으며, 집중 관리를 통한 성장이 기대되는 거래처입니다. 방문 빈도를 높이고 제품 구성 개선이 우선 과제입니다.",
+            f"현재 매출 수준에서 브랜드 구성을 보완하고 핵심 제품의 재고 관리를 강화한다면 단기간 내 성과 개선이 가능합니다.",
+            f"{top_brand} 중심의 판매 구조를 갖추고 있으나, 추가 브랜드 도입과 타프토이즈 확대를 통해 객단가 향상이 필요합니다.",
+        ],
+        'D': [
+            f"매출 성장이 필요한 거래처로, 기본적인 제품 구성 점검과 함께 사장님과의 밀착 소통이 요구됩니다. 방문 주기를 단축하고 원인 분석이 선행되어야 합니다.",
+            f"현재 매출이 목표 대비 낮은 수준입니다. 취급 제품 라인업 검토, 진열 방식 개선, 사장님 교육을 통한 판매 역량 강화가 필요합니다.",
+            f"거래처 유지를 위한 집중 지원이 필요한 시점입니다. 방문 시 애로사항을 파악하고 단기 실행 가능한 개선 방안을 함께 마련해야 합니다.",
+        ],
+    }
 
-    # 브랜드별 상세 표
-    brand_table = ''
-    for i, b in enumerate(brands, 1):
-        bar_len = int(b['pct'] / 5)
-        bar     = '█' * bar_len + '░' * (20 - bar_len)
-        note    = '▲ 주력' if b['pct'] >= 30 else ('△ 보조' if b['pct'] < 5 else '  일반')
-        brand_table += f"  {i:2}. {b['brand']:<10}  {bar}  {b['pct']:5.1f}%  {w(b['total'])}원  ({b['qty']}개)  {note}\n"
+    # 추이별 코멘트
+    trend_comments = {
+        '강한 상승세': [
+            f"최근 판매 추이가 가파르게 상승하고 있어 매우 고무적입니다. 이 흐름을 유지하기 위한 재고 선제 확보가 중요합니다.",
+            f"주간 매출이 {growth_rate:.0f}% 이상 증가하는 강한 성장세를 보이고 있습니다. 현 상황을 적극 활용해야 합니다.",
+        ],
+        '상승세': [
+            f"꾸준한 상승 흐름이 확인됩니다. 성장 모멘텀을 유지하면서 취약 브랜드 보완을 병행하는 것이 효과적입니다.",
+            f"안정적인 성장세를 보이고 있으며, 방문 시 성장 요인을 파악하여 타 거래처에도 적용할 수 있는 사례 발굴이 필요합니다.",
+        ],
+        '완만한 상승': [
+            f"소폭의 성장이 지속되고 있습니다. 계절 수요와 신제품 도입을 통해 성장 속도를 높일 수 있을 것으로 판단됩니다.",
+        ],
+        '안정': [
+            f"판매가 안정적으로 유지되고 있습니다. 현 수준의 유지와 함께 새로운 성장 동력 발굴이 필요합니다.",
+            f"고른 판매 흐름이 지속되고 있으나, 안정세가 장기화되면 성장 둔화로 이어질 수 있어 신제품 도입을 검토할 시점입니다.",
+        ],
+        '완만한 하락': [
+            f"소폭의 매출 감소가 감지됩니다. 진열 위치 점검, 재고 상황 확인, 경쟁 매장 동향 파악이 필요합니다.",
+            f"완만한 하락 추세로, 현 시점에서 원인을 파악하고 조기 대응하는 것이 중요합니다.",
+        ],
+        '하락세': [
+            f"판매 하락이 지속되고 있어 즉각적인 원인 분석과 대응이 필요합니다. 방문 빈도를 높이고 사장님과 심층 면담을 권고합니다.",
+        ],
+        '급격한 하락': [
+            f"단기간 급격한 매출 감소가 확인되어 긴급 점검이 필요합니다. 경쟁사 진입, 매장 운영 변화, 재고 문제 등 원인을 즉시 파악해야 합니다.",
+        ],
+        '': ["판매 추이 분석을 위한 추가 데이터 축적이 필요합니다."],
+    }
 
-    # TOP 제품 표
+    # 브랜드 집중도 코멘트
+    concentration_comments = {
+        '단일 브랜드 집중형': [
+            f"{top_brand} 의존도({top_pct_v}%)가 매우 높아 단일 브랜드 리스크가 존재합니다. 보완 브랜드 도입을 통한 포트폴리오 다변화가 권고됩니다.",
+            f"{top_brand} 한 브랜드로 전체 매출의 {top_pct_v}%를 차지하고 있습니다. 해당 브랜드의 재고 관리가 전체 실적에 직결됩니다.",
+        ],
+        '1강 중심형': [
+            f"{top_brand}({top_pct_v}%)가 주력이며 {top2_brand}({top2_pct_v}%)가 보조 역할을 하는 구조입니다. 2위 브랜드 성장이 전체 매출 확대의 핵심입니다.",
+        ],
+        '다브랜드 균형형': [
+            f"다양한 브랜드를 고르게 취급하고 있어 안정적인 매출 구조를 갖추고 있습니다. 각 브랜드의 시너지 효과를 극대화하는 전략이 필요합니다.",
+        ],
+        '소수 브랜드형': [
+            f"취급 브랜드가 {brand_cnt}개로 적어 고객 선택의 폭이 제한됩니다. 1-2개 브랜드 추가를 통한 구색 확장이 시급합니다.",
+        ],
+        '2강 구도형': [
+            f"{top_brand}({top_pct_v}%)와 {top2_brand}({top2_pct_v}%)의 2강 구도가 형성되어 있습니다. 세 번째 핵심 브랜드를 육성하면 더 탄탄한 매출 기반을 만들 수 있습니다.",
+        ],
+    }
+
+    # 한줄 평 — 매장 상황별 다양한 표현
+    one_liners = {
+        ('A','강한 상승세'): f"핵심 거래처로서 성장 가속도가 붙어 있는 이상적인 상태로, 적극적인 지원과 재고 확보로 상승세를 극대화해야 할 시점이다.",
+        ('A','상승세'):      f"상위권 거래처로서 성장이 이어지고 있으며, 현재의 판매 방식과 구성을 유지하면서 추가 브랜드 도입을 검토할 적기다.",
+        ('A','안정'):        f"핵심 거래처의 안정적인 매출을 유지하고 있으나, 성장 정체를 극복하기 위한 새로운 모멘텀 발굴이 필요하다.",
+        ('A','하락세'):      f"핵심 거래처임에도 하락세가 감지되어 원인 파악과 즉각적인 대응이 요구되는 상황이다.",
+        ('B','강한 상승세'): f"중상위권에서 강한 성장세를 보이고 있어 A등급 진입 가능성이 매우 높다. 지금이 집중 지원의 적기다.",
+        ('B','상승세'):      f"안정적인 성장을 거듭하고 있는 거래처로, 지속적인 지원과 브랜드 다양화를 통해 상위 등급으로 도약이 기대된다.",
+        ('B','안정'):        f"중상위권의 안정적인 매출을 유지하고 있으며, 집중 관리를 통해 A등급 진입을 목표로 해야 한다.",
+        ('B','완만한 하락'): f"중상위권이지만 소폭 하락세가 감지되어 원인 파악과 함께 회복 전략이 필요하다.",
+        ('B','하락세'):      f"잠재력 있는 거래처에서 하락이 이어지고 있어 즉각적인 현장 점검과 사장님 밀착 소통이 필요하다.",
+        ('C','강한 상승세'): f"중간 수준이지만 강한 성장세가 확인되어 집중 지원 시 단기간 내 B등급 이상으로 성장이 가능하다.",
+        ('C','안정'):        f"중간 수준의 매출을 유지하고 있으며, 브랜드 구성 개선과 방문 빈도 강화를 통한 성장 전략이 필요하다.",
+        ('C','하락세'):      f"매출 수준과 하락세가 동시에 나타나 집중 관리가 시급한 거래처다.",
+        ('D','강한 상승세'): f"저매출이지만 성장 신호가 감지되고 있어, 집중 지원을 통해 빠른 회복이 기대된다.",
+        ('D','안정'):        f"매출 성장이 정체된 거래처로, 근본적인 판매 환경 개선과 사장님과의 긴밀한 협력이 필요하다.",
+        ('D','하락세'):      f"즉각적인 원인 파악과 집중 지원이 필요한 거래처다. 이탈 방지를 위한 적극적인 관계 관리가 요구된다.",
+    }
+    one_liner_key = (grade, trend_label)
+    one_liner = one_liners.get(one_liner_key,
+        one_liners.get((grade,'안정'),
+        f"{seller}은(는) {year}년 기준 [{grade}등급] 거래처로, {concentration}이며 매출 추이는 {trend_label if trend_label else '분석 중'}이다."))
+
+    # 코멘트 선택
+    grade_comment     = pick(grade_comments.get(grade, grade_comments['C']))
+    trend_comment     = pick(trend_comments.get(trend_label, trend_comments['']))
+    conc_comment      = pick(concentration_comments.get(concentration, ['포트폴리오 검토가 필요합니다.']))
+
+    # ── 브랜드별 실적 표 (정렬 고정) ─────────────────
+    # 숫자 오른쪽 정렬, 고정폭 폰트 기준
+    brand_table = f"  {'브랜드':<10}  {'비율':>6}  {'판매금액':>15}  {'수량':>6}  {'평가'}\n"
+    brand_table += f"  {'─'*10}  {'─'*6}  {'─'*15}  {'─'*6}  {'─'*8}\n"
+    for b in brands:
+        bar    = '■'*int(b['pct']/5) + '□'*(20-int(b['pct']/5))
+        eval_k = '◎ 핵심' if b['pct']>=35 else ('○ 주력' if b['pct']>=15 else ('△ 보조' if b['pct']>=5 else '▽ 소량'))
+        brand_table += f"  {b['brand']:<10}  {b['pct']:>5.1f}%  {w(b['total']):>15}원  {b['qty']:>5}개  {eval_k}\n"
+        brand_table += f"  {'':10}  {bar}\n"
+    brand_table += f"  {'─'*10}  {'─'*6}  {'─'*15}  {'─'*6}\n"
+    brand_table += f"  {'합 계':<10}  {'100.0':>5}%  {w(total):>15}원  {w(total_qty):>5}개\n"
+
+    # ── TOP5 제품 ──────────────────────────────────
     top_table = ''
+    brand_insights_short = {
+        '레카로':'안전 신뢰 → 전문점 강점', '줄즈':'SNS 바이럴 + 재구매', '원더폴드':'웨건 독점 포지션',
+        '엔픽스':'국내 신뢰 + 가성비', '카오스':'하이체어 프리미엄', 'ABC디자인':'유럽 감성 + 패밀리',
+        '타프토이즈':'완구 성장 + 선물 수요',
+    }
     for i, r in enumerate(top5[:5], 1):
-        nm  = normalize_item_name(r.get('item_name',''))
-        br  = remap_group(r.get('item_group',''), r.get('item_name',''))
-        qty = r.get('qty',0)
-        tot = r.get('total',0)
+        nm    = normalize_item_name(r.get('item_name',''))
+        br    = remap_group(r.get('item_group',''), r.get('item_name',''))
+        qty   = r.get('qty',0)
+        tot   = r.get('total',0)
         share = round(tot/total*100,1) if total else 0
-        top_table += f"  {i}위. [{br}] {nm}\n       {w(qty)}개 판매 / {w(tot)}원 / 전체 매출의 {share}%\n"
+        insight = brand_insights_short.get(br,'')
+        top_table += f"  {i}위. [{br}] {nm}\n"
+        top_table += f"       판매 {w(qty)}개 / {w(tot)}원 / 비중 {share}% / {insight}\n\n"
 
-    # 주별 추이 표
+    # ── 주별 추이 + 품목 상세 ────────────────────────
     weekly_table = ''
-    if weekly:
-        for i, wk in enumerate(weekly[-8:], 1):
-            bar_len  = int(wk.get('total',0) / (week_max.get('total',1)) * 15)
-            bar      = '▮' * bar_len + '▯' * (15 - bar_len)
-            weekly_table += f"  {i:2}주차 ({wk.get('week_start','')[:10]}) {bar}  {w(wk.get('total',0))}원\n"
+    conn_w = get_db()
+    for i, wk in enumerate(weekly, 1):
+        wk_key = wk.get('week','')
+        ws_    = wk.get('week_start','')[:10]
+        we_    = wk.get('week_end','')[:10]
+        tot_w  = wk.get('total',0)
+        max_t  = week_max.get('total',1) or 1
+        bar_len= int(tot_w/max_t*15)
+        bar    = '▮'*bar_len + '▯'*(15-bar_len)
+        weekly_table += f"\n  {i:2}주차 ({ws_}~{we_})\n"
+        weekly_table += f"  매출: {bar}  {w(tot_w)}원\n"
+        # 해당 주 상위 품목 (DB 조회)
+        if wk_key:
+            try:
+                wk_items = conn_w.execute("""
+                    SELECT item_group, item_name, SUM(quantity) qty, SUM(total) total
+                    FROM sales_data WHERE strftime('%Y-%W',sale_date)=? AND sale_date!=''
+                    GROUP BY item_name ORDER BY total DESC LIMIT 4""", (wk_key,)).fetchall()
+                merged_wi = {}
+                for wi in wk_items:
+                    br_n = remap_group(wi[0],wi[1]); nm_n = normalize_item_name(wi[1])
+                    k=(br_n,nm_n)
+                    if k not in merged_wi: merged_wi[k]={'qty':0,'total':0}
+                    merged_wi[k]['qty']+=wi[2]; merged_wi[k]['total']+=wi[3]
+                top_wi = sorted(merged_wi.items(), key=lambda x:-x[1]['total'])[:3]
+                if top_wi:
+                    weekly_table += f"  품목: "
+                    items_txt = ' | '.join(f"[{k[0]}]{k[1].replace('['+k[0]+']','')} {w(v['qty'])}개/{w(v['total'])}원" for k,v in top_wi)
+                    weekly_table += items_txt + '\n'
+            except: pass
+    conn_w.close()
 
-    # 개선 포인트
+    # ── 개선 포인트 ────────────────────────────────
     improvements = []
-    if missing_brs:
-        improvements.append(f"미취급 브랜드 도입 검토 필요 ({', '.join(missing_brs[:3])})")
-    if weak_brs:
-        improvements.append(f"저비중 브랜드 활성화 방안 수립 ({', '.join(weak_brs[:2])})")
-    if taft_pct < 5:
-        improvements.append(f"타프토이즈 비중 확대 필요 (현재 {taft_pct}% → 목표 10%)")
-    if trend_label == '하락세':
-        improvements.append("판매 감소 추이 원인 분석 및 대응 방안 마련")
-    if not improvements:
-        improvements.append("현재 지표 양호 — 현 수준 유지 및 점진적 확대 권고")
+    imp_details  = []
 
-    # 목표 설정
-    target_monthly = int(total / max(len(weekly), 1)) if weekly else int(total / 6)
-    target_annual  = int(total * 1.2)
+    if missing_brs:
+        brs_str = ', '.join(missing_brs[:3])
+        improvements.append(f"미취급 브랜드 도입 검토 ({brs_str})")
+        imp_details.append(pick([
+            f"{missing_brs[0]}는 현재 매장 고객층과 부합하는 브랜드입니다. 전시용 1개부터 시작하여 반응을 확인하는 방식을 권고합니다.",
+            f"{brs_str} 도입 시 현재 취급 브랜드와의 시너지 효과가 기대되며, 객단가 향상에도 기여할 수 있습니다.",
+        ]))
+
+    if weak_brs:
+        wb_str = ', '.join(weak_brs[:2])
+        improvements.append(f"저비중 브랜드 활성화 ({wb_str})")
+        imp_details.append(pick([
+            f"{wb_str} 진열 위치를 주력 제품 옆으로 변경하고, 함께 구매 시 효과적인 조합을 사장님과 논의하는 것을 권고합니다.",
+            f"{wb_str}은 단독 판매보다 기존 인기 제품과의 세트 구성으로 접근하면 판매 활성화에 도움이 됩니다.",
+        ]))
+
+    if taft_pct < 3:
+        improvements.append(f"타프토이즈 신규 도입 필요 (현재 {taft_pct}%)")
+        improvements.append(f"완구 카테고리 공백으로 인한 기회 손실 발생 가능")
+        imp_details.append(pick([
+            "카시트·유모차 구매 고객에게 타프토이즈를 번들 제안하면 추가 구매를 유도할 수 있습니다. 초기 3~5종으로 시작을 권고합니다.",
+            "타프토이즈 미취급으로 인해 고객이 완구 구매 시 타 채널로 이탈하는 상황입니다. 진입 장벽이 낮은 20,000원대 제품부터 시작을 권고합니다.",
+        ]))
+    elif taft_pct < 8:
+        improvements.append(f"타프토이즈 비중 확대 필요 (현재 {taft_pct}% → 목표 10%)")
+        imp_details.append(pick([
+            f"현재 {taft_cnt_k}종을 취급하고 있습니다. 미취급 카테고리(아치, 비지북, 큐브 등)를 보완하면 타프 매출이 2배 이상 성장 가능합니다.",
+            "타프토이즈 판매 고객의 재방문율이 높습니다. 시리즈 구성으로 연속 구매를 유도하는 전략이 효과적입니다.",
+        ]))
+
+    if trend_label in ('하락세','급격한 하락'):
+        improvements.append("판매 감소 원인 분석 및 즉각적 대응 필요")
+        imp_details.append(pick([
+            "방문 시 경쟁 매장 동향, 재고 상황, 진열 변화 여부를 파악하고 단기 실행 가능한 개선책을 제시해야 합니다.",
+            "판매 하락의 주요 원인(재고 부족, 진열 문제, 경쟁사 진입 등)을 현장에서 직접 확인하고 즉시 대응이 필요합니다.",
+        ]))
+
+    if avg_per_tx < 100000:
+        improvements.append(f"건당 매출 향상 필요 (현재 {w(avg_per_tx)}원)")
+        imp_details.append("고가 제품(레카로 카시트, 원더폴드 웨건 등)과 타프토이즈 번들 구성을 통해 건당 구매액을 높이는 전략이 필요합니다.")
+
+    if not improvements:
+        improvements.append("현재 지표 전반 양호 — 현 수준 유지 및 점진적 확대 권고")
+        imp_details.append("모든 핵심 지표가 양호한 수준입니다. 현재의 운영 방식을 유지하면서 신규 시즌 제품 선주문을 통한 기회 선점을 권고합니다.")
+
+    imp_block = ''
+    for i, (item, detail) in enumerate(zip(improvements, imp_details), 1):
+        imp_block += f"\n  {i}. {item}\n     → {detail}\n"
+
+    # ── 향후 관리 방향 — 등급·추이·거리·패턴별 ─────
+    # 방문 주기 (100개 매장 관리 현실 반영)
+    if grade == 'A' and trend_label in ('하락세','급격한 하락'):  visit_cycle = '1~2주'
+    elif grade == 'A':                                              visit_cycle = '3~4주'
+    elif grade == 'B' and trend_label in ('강한 상승세','상승세'): visit_cycle = '2~3주'
+    elif grade == 'B':                                              visit_cycle = '3~4주'
+    elif grade == 'C' and trend_label in ('하락세','급격한 하락'): visit_cycle = '1~2주'
+    elif grade == 'C':                                              visit_cycle = '4~6주'
+    elif grade == 'D' and trend_label in ('강한 상승세','상승세'): visit_cycle = '2~3주'
+    elif grade == 'D':                                              visit_cycle = '2~4주'
+    else:                                                           visit_cycle = '4주'
+
+    # 목표 매출 (현실적 수치)
+    if trend_label in ('강한 상승세','상승세'):  growth_target = 1.20
+    elif trend_label in ('완만한 상승','안정'):   growth_target = 1.10
+    elif trend_label in ('완만한 하락'):          growth_target = 1.05
+    elif trend_label in ('하락세','급격한 하락'): growth_target = 1.00
+    else:                                          growth_target = 1.10
+    target_total = int(total * growth_target)
+
+    # 핵심 액션 아이템 (상황별 자동 생성)
+    action_items = []
+    if grade == 'A':
+        action_items.append(pick([
+            f"{top_brand} 안전 재고 유지 (2~3주치 상시 확보) — 품절은 고객 이탈로 직결",
+            f"시즌별 선주문 체계 구축 — {top_brand} 수요 예측 기반 선제적 재고 관리",
+        ]))
+        if taft_pct < 5:
+            action_items.append("타프토이즈 카테고리 도입으로 객단가 추가 향상")
+    elif grade == 'B':
+        action_items.append(pick([
+            f"{top_brand} 판매량 20% 확대 목표 수립 — 구체적 실행 방안 현장에서 협의",
+            "A등급 진입을 위한 분기별 성과 점검 체계 수립",
+        ]))
+    elif grade == 'C':
+        action_items.append(pick([
+            "방문 빈도 강화 및 진열 개선 지원 — 현장 점검을 통한 즉각적 개선",
+            "핵심 제품 집중 전략 수립 — 잘 팔리는 제품 라인 강화부터 시작",
+        ]))
+    else:
+        action_items.append(pick([
+            "긴급 현장 점검 및 사장님 면담 — 운영 현황과 애로사항 파악 선행",
+            "단기 성과 목표 설정 — 1개월 내 가시적 개선 지표 공동 설정",
+        ]))
+
+    if missing_brs:
+        action_items.append(f"{missing_brs[0]} 도입 제안 및 초기 교육 지원")
+    if taft_pct > 0 and taft_pct < 10:
+        action_items.append("타프토이즈 시리즈 판매 가이드 제공 및 전시 레이아웃 개선")
+    if trend_label in ('강한 상승세','상승세'):
+        action_items.append("성공 사례 문서화 — 타 거래처 적용 방안 검토")
+
+    # 관리 방향 코멘트
+    mgmt_comments = {
+        ('A','강한 상승세'): "현재의 상승세를 최대한 활용할 수 있도록 재고 충분 공급과 신제품 우선 배정을 지원합니다.",
+        ('A','안정'):        "핵심 거래처로서의 안정적 관계 유지를 최우선으로 하며, 정기 방문을 통한 신뢰 강화에 집중합니다.",
+        ('A','하락세'):      "즉각적인 현장 방문을 통해 하락 원인을 파악하고, 핵심 거래처 이탈을 방지하기 위한 적극적 지원이 필요합니다.",
+        ('B','상승세'):      "성장 모멘텀을 유지하면서 A등급 진입을 위한 중점 관리 대상으로 선정하여 집중 지원합니다.",
+        ('B','안정'):        "안정적 성과를 인정하고 다음 단계 성장을 위한 구체적 방안을 함께 수립합니다.",
+        ('C','강한 상승세'): "성장 신호를 놓치지 않도록 방문 빈도를 높이고, 성장 가속화를 위한 집중 지원을 시작합니다.",
+        ('C','안정'):        "현상 유지에서 벗어나 성장 단계로 전환하기 위한 체계적인 지원 계획을 수립합니다.",
+        ('D','상승세'):      "하위 등급에서의 성장 신호는 중요한 기회입니다. 즉각적인 지원으로 성장세를 가속화합니다.",
+        ('D','하락세'):      "최하위 등급의 하락세는 거래처 이탈 위험을 의미합니다. 관계 유지를 최우선으로 집중 지원합니다.",
+    }
+    mgmt_key = (grade, trend_label)
+    mgmt_comment = mgmt_comments.get(mgmt_key,
+        mgmt_comments.get((grade,'안정'),
+        f"[{grade}등급] 거래처로서 {visit_cycle} 주기의 정기 방문과 지속적인 관계 관리를 권고합니다."))
+
+    action_block = '\n'.join(f"  {i+1}. {a}" for i,a in enumerate(action_items))
+
+    # ── 최종 보고서 ────────────────────────────────
+    sep1 = '─'*60; sep2 = '━'*60; sep3 = '·'*60
 
     report = f"""{sep2}
-  매장 분석 보고서
+  매장 분석 리포트
 {sep2}
   거래처명   : {seller}
-  분석 기간  : {year}년
-  작성 일자  : {now.strftime('%Y년 %m월 %d일')}
-  담당자     :
+  분석 기간  : {year}년 / 작성 일자 : {now.strftime('%Y년 %m월 %d일')}
+  담당자     :                   제출처 :
 {sep2}
 
 {sep1}
   1. 총괄 현황
 {sep1}
 
+  [ 실적 요약 ]
   연간 매출      : {w(total)}원
-  거래처 등급    : {rank_label}
-  매출 추이      : {trend_label} ({trend_detail})
-  종합 평가      : [{grade}등급] {grade_comment}
+  거래처 등급    : {grade}등급  ({grade_basis})
+  매출 추이      : {trend_label if trend_label else '-'}  ({trend_detail if trend_detail else '-'})
 
   판매 건수      : {w(total_cnt)}건
   판매 수량      : {w(total_qty)}개
   건당 평균 매출 : {w(avg_per_tx)}원
-  취급 브랜드 수 : {brand_cnt}개
-  취급 제품 종류 : {item_cnt}종
-
-  브랜드 구성 유형 : {concentration}
-  주력 브랜드      : {top_brand} ({top_pct_v}%)
-  타프토이즈 비중  : {taft_pct}% ({taft_cnt_k}종 / {w(taft_total)}원)
+  취급 브랜드 수 : {brand_cnt}개 / 취급 제품 종류 : {item_cnt}종
+  타프토이즈     : {taft_pct}% ({taft_cnt_k}종 / {w(taft_total)}원)
 
 {sep3}
-  [ 한줄 평 ]
-  {seller}은(는) {year}년 기준 {rank_label}로,
-  {top_brand} 중심의 {concentration}이다.
-  매출 추이는 {trend_label}이며, 종합 [{grade}등급]으로 평가된다.
+  [ 종합 평가 ]
+  {grade_comment}
+
+  [ 매출 추이 분석 ]
+  {trend_comment}
+
+  [ 브랜드 구성 분석 ]
+  {conc_comment}
+
+  [ 한 줄 평 ]
+  {one_liner}
 {sep3}
 
 {sep1}
   2. 브랜드별 판매 실적
 {sep1}
 
-  브랜드          판매 비중              비율    금액           (수량)   비고
-{sep3}
 {brand_table}
-  계                                     100%   {w(total)}원  ({w(total_qty)}개)
-
 {sep1}
   3. 주요 판매 제품 (TOP 5)
 {sep1}
@@ -1220,50 +1467,48 @@ def api_script_report():
   4. 주별 판매 추이
 {sep1}
 
-  주간 평균 매출 : {w(week_avg)}원
-  최고 판매 주  : {week_max.get('week_start','')[:10]}~{week_max.get('week_end','')[:10]} ({w(week_max.get('total',0))}원)
-  최저 판매 주  : {week_min.get('week_start','')[:10]}~{week_min.get('week_end','')[:10]} ({w(week_min.get('total',0))}원)
-  주간 편차     : {w(week_range)}원
-
-  추이 그래프 (최근 {min(len(weekly),8)}주):
+  주간 평균 : {w(week_avg)}원  /  최고 주 : {w(week_max.get('total',0))}원  /  최저 주 : {w(week_min.get('total',0))}원  /  편차 : {w(week_range)}원
 {sep3}
-{weekly_table if weekly_table else '  (데이터 없음)'}
+{weekly_table if weekly_table else chr(10)+'  (데이터 없음)'+chr(10)}
 {sep3}
 
 {sep1}
   5. 개선 필요 사항
 {sep1}
-{''.join(f'{chr(10)}  {i+1}. {item}' for i, item in enumerate(improvements))}
-
+{imp_block}
 {sep1}
   6. 향후 관리 방향
 {sep1}
 
-  방문 권고 주기 : {'2주' if grade in ('A','B') else '1주'}
-  목표 주간 매출 : {w(target_monthly)}원 이상 유지
-  연간 목표 매출 : {w(target_annual)}원 (전년 대비 +20%)
+  {mgmt_comment}
 
-  중점 관리 항목 :
-{''.join(f'{chr(10)}  - {item}' for item in improvements[:3])}
+  방문 권고 주기  : {visit_cycle}
+  연간 목표 매출  : {w(target_total)}원  (현재 대비 +{int((growth_target-1)*100)}%)
+
+  핵심 실행 항목:
+{action_block}
 
 {sep1}
   7. 담당자 기록란
 {sep1}
 
-  방문일       :                     방문 목적  :
-  사장님 반응  :
+  방문일 :                         방문 유형 : □ 정기  □ 긴급  □ 기타
+  사장님 반응 :
 
-  특이사항 :
+  주요 논의 내용 :
 
 
   발주 내역 :
 
 
-  다음 방문 예정일 :                 비고 :
+  특이사항 및 메모 :
+
+
+  다음 방문 예정일 :               담당자 서명 :
 
 {sep2}
-  ※ 본 보고서는 {year}년 실판매 데이터 기반으로 작성되었습니다.
-  ※ 제출 전 담당자 확인 필수.
+  ※ 본 리포트는 {year}년 실판매 데이터를 기반으로 작성되었습니다.
+  ※ 제출 전 담당자 확인 및 서명 필수.
 {sep2}"""
 
     return jsonify({'report': report, 'ok': True})
@@ -1644,12 +1889,53 @@ def export_xlsx_monthly():
         ml=max((len(str(c.value or '')) for c in col),default=8)
         ws3.column_dimensions[get_column_letter(col[0].column)].width=min(ml+3,35)
 
+    # ── 시트4: 월별 브랜드 요약 (세로형 — 출력 최적화) ──
+    ws4 = wb.create_sheet("월별 브랜드 요약")
+    ws4.merge_cells("A1:G1")
+    c=ws4.cell(row=1,column=1,value=f"월별 브랜드 판매 요약_{year}")
+    c.fill=mf(WHITE); c.font=mft(FONT_BLACK,True,12); c.alignment=center
+    ws4.row_dimensions[1].height=26
+    m_hdrs=['월','브랜드','판매금액(원)','판매수량','비율(%)','월합계(원)','누계(원)']
+    for ci,h in enumerate(m_hdrs,1):
+        c=ws4.cell(row=2,column=ci,value=h)
+        c.fill=mf(GRAY_LIGHT); c.font=mft(FONT_GRAY,True,10); c.alignment=center; c.border=bdr_left
+    ws4.row_dimensions[2].height=20
+    ri4=3; cum_m=0
+    for mo in months:
+        mo_total = sum(idx.get((s,mo,b),{}).get('total',0) for s in sellers_list for b in brands)
+        mo_qty   = sum(idx.get((s,mo,b),{}).get('qty',0)   for s in sellers_list for b in brands)
+        cum_m += mo_total
+        ws4.cell(row=ri4,column=1,value=f"{mo}월").fill=mf(GRAY_LIGHT)
+        ws4.cell(row=ri4,column=2,value="전체 합계").fill=mf(GRAY_LIGHT)
+        for ci,val in [(3,mo_total),(4,mo_qty),(5,100.0),(6,mo_total),(7,cum_m)]:
+            c4=ws4.cell(row=ri4,column=ci,value=val)
+            c4.fill=mf(GRAY_LIGHT); c4.font=mft(FONT_GRAY,True,10)
+            c4.border=bdr_none; c4.alignment=right
+            if ci in (3,6,7): c4.number_format=num_fmt
+            if ci==5: c4.number_format='0.0'
+        for ci in range(1,3):
+            ws4.cell(row=ri4,column=ci).font=mft(FONT_GRAY,True,10)
+            ws4.cell(row=ri4,column=ci).border=bdr_left
+        ws4.row_dimensions[ri4].height=18; ri4+=1
+        for b in brands:
+            bv=sum(idx.get((s,mo,b),{}).get('total',0) for s in sellers_list)
+            bq=sum(idx.get((s,mo,b),{}).get('qty',0)   for s in sellers_list)
+            if bv==0: continue
+            pct_b=round(bv/mo_total*100,1) if mo_total else 0
+            ws4.cell(row=ri4,column=1,value=""); ws4.cell(row=ri4,column=2,value=f"  └ {b}")
+            for ci,val in [(3,bv),(4,bq),(5,pct_b),(6,""),(7,"")]:
+                c4=ws4.cell(row=ri4,column=ci,value=val); c4.border=bdr_none; c4.alignment=right
+                if ci==3 and isinstance(val,int): c4.number_format=num_fmt
+                if ci==5: c4.number_format='0.0'
+            ws4.row_dimensions[ri4].height=16; ri4+=1
+        ws4.row_dimensions[ri4].height=6; ri4+=1
+    for ci,ww in enumerate([8,18,16,10,10,16,16],1):
+        ws4.column_dimensions[get_column_letter(ci)].width=ww
+
     buf=io.BytesIO(); wb.save(buf); buf.seek(0)
     fname=f"오프라인_브랜드별정리_{year}{'_'+month+'월' if month else ''}.xlsx"
     return send_file(buf,mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
                      as_attachment=True,download_name=fname)
-
-    # 월 목록
     if month:
         months = [int(month)]
     else:
@@ -2132,19 +2418,68 @@ def export_xlsx_weekly():
             c.alignment=right; c.number_format=num_fmt; col+=1
         ws.freeze_panes="D5"
 
-    # ── 시트1: 주별 요약 (맨 앞) ──
+    # ── 시트1: 주별 요약 (세로형 — 출력 최적화) ──
     ws_sum = wb.active; ws_sum.title="주별 요약"
-    hdrs=['주차','기간','판매건수','판매수량','판매금액(원)']
-    for ci,h in enumerate(hdrs,1):
-        c=ws_sum.cell(row=1,column=ci,value=h)
+
+    # 타이틀
+    ws_sum.merge_cells("A1:G1")
+    c=ws_sum.cell(row=1,column=1,value=f"주별 판매 실적 요약_{year}")
+    c.fill=mf(WHITE); c.font=mft(FONT_BLACK,True,12); c.alignment=center
+    ws_sum.row_dimensions[1].height=26
+
+    # 헤더행
+    sum_hdrs=['주차','기간','브랜드','판매금액(원)','판매수량','비율(%)','누계금액(원)']
+    for ci,h in enumerate(sum_hdrs,1):
+        c=ws_sum.cell(row=2,column=ci,value=h)
         c.fill=mf(GRAY_LIGHT); c.font=mft(FONT_GRAY,True,10); c.alignment=center; c.border=bdr_left
-    ws_sum.row_dimensions[1].height=20
-    for i,r in enumerate(weeks,2):
-        for ci,v in enumerate([f"{i-1}주차",f"{r['ws']}~{r['we']}",r['cnt'],r['qty'],r['total']],1):
-            c=ws_sum.cell(row=i,column=ci,value=v); c.border=bdr_left if ci<=2 else bdr_none
-            if ci>=3: c.alignment=right
-            if ci==5 and isinstance(v,int): c.number_format=num_fmt
-    for ci,w in enumerate([10,26,12,12,16],1): ws_sum.column_dimensions[get_column_letter(ci)].width=w
+    ws_sum.row_dimensions[2].height=20
+
+    ri=3
+    cumulative=0
+    for i,r in enumerate(weeks):
+        wk=r['wk']
+        wk_total=r.get('total',0); wk_qty=r.get('qty',0); wk_cnt=r.get('cnt',0)
+        cumulative+=wk_total
+
+        # 주차 소계 행
+        ws_sum.cell(row=ri,column=1,value=f"{i+1}주차").fill=mf(GRAY_LIGHT)
+        ws_sum.cell(row=ri,column=2,value=f"{r['ws']}~{r['we']}").fill=mf(GRAY_LIGHT)
+        ws_sum.cell(row=ri,column=3,value="전체 합계").fill=mf(GRAY_LIGHT)
+        for ci,val in [(4,wk_total),(5,wk_qty),(6,100.0),(7,cumulative)]:
+            c=ws_sum.cell(row=ri,column=ci,value=val)
+            c.fill=mf(GRAY_LIGHT); c.font=mft(FONT_GRAY,True,10)
+            c.border=bdr_none; c.alignment=right
+            if ci in (4,7): c.number_format=num_fmt
+            if ci==6: c.number_format='0.0'
+        for ci in range(1,3):
+            ws_sum.cell(row=ri,column=ci).font=mft(FONT_GRAY,True,10)
+            ws_sum.cell(row=ri,column=ci).border=bdr_left
+        ws_sum.row_dimensions[ri].height=18
+        ri+=1
+
+        # 브랜드별 세부 행 (해당 주차)
+        for b in brands:
+            bv = sum(idx_seller.get((wk,b,s),{}).get('total',0) for s in sellers_list)
+            bq = sum(idx_seller.get((wk,b,s),{}).get('qty',0) for s in sellers_list)
+            if bv == 0: continue
+            pct = round(bv/wk_total*100,1) if wk_total else 0
+            ws_sum.cell(row=ri,column=1,value="")
+            ws_sum.cell(row=ri,column=2,value="")
+            ws_sum.cell(row=ri,column=3,value=f"  └ {b}")
+            for ci,val in [(4,bv),(5,bq),(6,pct),(7,"")]:
+                c=ws_sum.cell(row=ri,column=ci,value=val)
+                c.border=bdr_none; c.alignment=right
+                if ci==4 and isinstance(val,int): c.number_format=num_fmt
+                if ci==6: c.number_format='0.0'
+            ws_sum.row_dimensions[ri].height=16
+            ri+=1
+
+        # 구분 공백행
+        ws_sum.row_dimensions[ri].height=6; ri+=1
+
+    # 열 너비
+    for ci,w in enumerate([10,28,18,16,10,10,16],1):
+        ws_sum.column_dimensions[get_column_letter(ci)].width=w
 
     # ── 시트2: 브랜드별 금액 ──
     build_brand_sheet(wb, "브랜드별 금액", "total", False)
