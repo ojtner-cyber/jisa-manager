@@ -1302,7 +1302,8 @@ def api_script_report():
         ]))
 
     if weak_brs:
-        wb_str = ', '.join(weak_brs[:2])
+        wb_str = ', '.join(b['brand'] for b in weak_brs[:2])
+        wb1_name = weak_brs[0]['brand']; wb1_pct = weak_brs[0]['pct']
         improvements.append(f"저비중 브랜드 활성화 ({wb_str})")
         imp_details.append(pick([
             f"{wb_str} 진열 위치를 주력 제품 옆으로 변경하고, 함께 구매 시 효과적인 조합을 사장님과 논의하는 것을 권고합니다.",
