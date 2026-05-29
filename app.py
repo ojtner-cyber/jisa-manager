@@ -1267,25 +1267,37 @@ def api_script_report():
         bar_len= int(tot_w/max_t*15)
         bar    = '▮'*bar_len + '▯'*(15-bar_len)
         weekly_table += f"\n  {i:2}주차 ({ws_}~{we_})\n"
-        weekly_table += f"  매출: {bar}  {w(tot_w)}원\n"
-        # 해당 주 상위 품목 (DB 조회)
+        weekly_table += f"  매출: {bar}  {w(tot_w)}원  ({wk.get('qty',0)}개)\n"
+        # 해당 주·해당 매장의 브랜드별 판매 상세
         if wk_key:
             try:
+                # 해당 매장 + 해당 주 데이터만
                 wk_items = conn_w.execute("""
                     SELECT item_group, item_name, SUM(quantity) qty, SUM(total) total
-                    FROM sales_data WHERE strftime('%Y-%W',sale_date)=? AND sale_date!=''
-                    GROUP BY item_name ORDER BY total DESC LIMIT 4""", (wk_key,)).fetchall()
-                merged_wi = {}
+                    FROM sales_data
+                    WHERE strftime('%Y-%W',sale_date)=? AND sale_date!=''
+                      AND (real_seller=? OR real_seller=?)
+                    GROUP BY item_name ORDER BY total DESC LIMIT 20""",
+                    (wk_key, seller, seller_raw)).fetchall()
+
+                # 브랜드별 집계
+                brand_wi = {}
                 for wi in wk_items:
-                    br_n = remap_group(wi[0],wi[1]); nm_n = normalize_item_name(wi[1])
-                    k=(br_n,nm_n)
-                    if k not in merged_wi: merged_wi[k]={'qty':0,'total':0}
-                    merged_wi[k]['qty']+=wi[2]; merged_wi[k]['total']+=wi[3]
-                top_wi = sorted(merged_wi.items(), key=lambda x:-x[1]['total'])[:3]
-                if top_wi:
-                    weekly_table += f"  품목: "
-                    items_txt = ' | '.join(f"[{k[0]}]{k[1].replace('['+k[0]+']','')} {w(v['qty'])}개/{w(v['total'])}원" for k,v in top_wi)
-                    weekly_table += items_txt + '\n'
+                    br_n = remap_group(wi[0], wi[1])
+                    nm_n = normalize_item_name(wi[1])
+                    if br_n not in brand_wi:
+                        brand_wi[br_n] = {'qty': 0, 'total': 0, 'items': []}
+                    brand_wi[br_n]['qty']   += wi[2]
+                    brand_wi[br_n]['total'] += wi[3]
+                    brand_wi[br_n]['items'].append(nm_n)
+
+                if brand_wi:
+                    weekly_table += f"  ┌ 브랜드별 현황:\n"
+                    for br_n, bv in sorted(brand_wi.items(), key=lambda x:-x[1]['total']):
+                        pct_w = round(bv['total']/tot_w*100,1) if tot_w else 0
+                        top_item = bv['items'][0].replace(f'[{br_n}]','').strip() if bv['items'] else ''
+                        weekly_table += f"  │ {br_n:<10} {w(bv['qty']):>5}개  {w(bv['total']):>12}원  ({pct_w}%)  주력:{top_item}\n"
+                    weekly_table += f"  └\n"
             except: pass
     conn_w.close()
 
@@ -2711,7 +2723,62 @@ def export_xlsx_branches():
     return send_file(buf,mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
                      as_attachment=True,download_name=fname)
 
-@app.route("/api/sales-data/summary")
+@app.route("/api/products/trend")
+@login_required
+def api_product_trend():
+    """제품별 일별·주별 판매 추이"""
+    item   = request.args.get("item",   "")
+    group  = request.args.get("group",  "")
+    year   = request.args.get("year",   str(datetime.now().year))
+    month  = request.args.get("month",  "")
+    conn   = get_db()
+    date_cond = f"{year}-{month.zfill(2)}%" if month else f"{year}%"
+
+    # item_name 정규화 역매핑 — normalize된 이름으로 like 쿼리
+    conds  = ["sale_date LIKE ?", "sale_date != ''"]
+    params = [date_cond]
+    if group: conds.append("item_group=?"); params.append(group)
+    # item은 정규화명이므로 LIKE로 포함 검색
+    if item:
+        # [브랜드] 부분 제거하고 모델명만 검색
+        clean = item.replace('[','').replace(']','')
+        import re
+        brand_m = re.match(r'^([^\]]+)\]', item[1:]) if item.startswith('[') else None
+        model   = re.sub(r'^\[[^\]]+\]', '', item).strip()
+        if model:
+            conds.append("item_name LIKE ?"); params.append(f"%{model}%")
+
+    # 일별 추이
+    daily = [dict(r) for r in conn.execute(f"""
+        SELECT sale_date, SUM(quantity) qty, SUM(total) total, COUNT(*) cnt
+        FROM sales_data WHERE {' AND '.join(conds)}
+        GROUP BY sale_date ORDER BY sale_date""", params).fetchall()]
+
+    # 주별 추이
+    weekly_raw = conn.execute(f"""
+        SELECT strftime('%Y-%W', sale_date) wk, MIN(sale_date) md,
+               SUM(quantity) qty, SUM(total) total
+        FROM sales_data WHERE {' AND '.join(conds)} AND sale_date!=''
+        GROUP BY wk ORDER BY wk""", params).fetchall()
+
+    from datetime import datetime as dt2, timedelta
+    weekly = []
+    for r in weekly_raw:
+        try:
+            d = dt2.strptime(r[1], "%Y-%m-%d")
+            sun = d - timedelta(days=(d.weekday()+1)%7)
+            label = sun.strftime("%m/%d")
+        except: label = r[0]
+        weekly.append({'wk': r[0], 'label': label, 'qty': r[2], 'total': r[3]})
+
+    # 매장별 판매 현황 (기존 by-seller와 동일)
+    by_seller = [dict(r) for r in conn.execute(f"""
+        SELECT real_seller seller_name, SUM(quantity) qty, SUM(total) total, COUNT(*) cnt
+        FROM sales_data WHERE {' AND '.join(conds)} AND real_seller!=''
+        GROUP BY real_seller ORDER BY total DESC LIMIT 20""", params).fetchall()]
+
+    conn.close()
+    return jsonify({'daily': daily, 'weekly': weekly, 'by_seller': by_seller, 'item': item})
 @login_required
 def sales_data_summary():
     year  = request.args.get("year", "")

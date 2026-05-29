@@ -733,7 +733,20 @@ td.center{text-align:center}
             <tbody id="prod-seller-tbody"></tbody>
           </table>
         </div>
-        <button class="btn btn-ghost btn-sm" style="margin-top:10px" onclick="document.getElementById('prod-seller-panel').style.display='none'">✕ 닫기</button>
+
+        <!-- 일별·주별 추이 차트 -->
+        <div class="cr cr-1-1" style="margin-top:16px" id="prod-trend-panel">
+          <div class="cc">
+            <div class="cc-t" id="prod-daily-label">일별 판매 추이</div>
+            <canvas id="c-prod-daily" style="max-height:180px"></canvas>
+          </div>
+          <div class="cc">
+            <div class="cc-t" id="prod-weekly-label">주별 판매 추이</div>
+            <canvas id="c-prod-weekly" style="max-height:180px"></canvas>
+          </div>
+        </div>
+
+        <button class="btn btn-ghost btn-sm" style="margin-top:10px" onclick="closeProdSeller()">✕ 닫기</button>
       </div>
     </div>
 
@@ -1300,16 +1313,28 @@ function filterProductTable(){
   renderProductTable(filtered);
 }
 
+let cProdDaily=null, cProdWeekly=null;
+function closeProdSeller(){
+  document.getElementById('prod-seller-panel').style.display='none';
+  if(cProdDaily){cProdDaily.destroy();cProdDaily=null;}
+  if(cProdWeekly){cProdWeekly.destroy();cProdWeekly=null;}
+}
 async function loadProductBySeller(item,group){
   const year=document.getElementById('prod-year')?.value||new Date().getFullYear();
   const month=document.getElementById('prod-month')?.value||'';
   const p=new URLSearchParams({year,item,group});
   if(month)p.set('month',month);
-  const rows=await api(`/api/products/by-seller?${p}`);
+
+  const [rows,trendData]=await Promise.all([
+    api(`/api/products/by-seller?${p}`),
+    api(`/api/products/trend?${p}`)
+  ]);
   if(!rows)return;
+
+  const itemShort=item.replace(/\[[^\]]*\]/g,'').trim()||item;
   document.getElementById('prod-seller-label').innerHTML=
-    `<strong>${item}</strong> — 매장별 판매 현황`;
-  const td='border-bottom:1px solid rgba(0,0,0,.04);padding:10px 12px';
+    `<strong>${itemShort}</strong> — 매장별 판매 현황`;
+  const td='padding:9px 12px;border-bottom:1px solid rgba(0,0,0,.04)';
   document.getElementById('prod-seller-tbody').innerHTML=rows.map((r,i)=>`<tr>
     <td style="${td};text-align:center;color:var(--ink-300)">${i+1}</td>
     <td style="${td};font-weight:600">${r.seller_name||'—'}</td>
@@ -1318,6 +1343,60 @@ async function loadProductBySeller(item,group){
     <td style="${td};text-align:right;padding-right:12px;font-family:var(--fd);font-weight:700;color:var(--accent-m)">${N(r.total||0)}원</td>
   </tr>`).join('');
   document.getElementById('prod-seller-panel').style.display='block';
+
+  // ── 추이 차트 ──
+  if(trendData){
+    document.getElementById('prod-daily-label').textContent =`${itemShort} — 일별 판매 추이`;
+    document.getElementById('prod-weekly-label').textContent=`${itemShort} — 주별 판매 추이`;
+
+    if(cProdDaily){cProdDaily.destroy();cProdDaily=null;}
+    const daily=trendData.daily||[];
+    if(daily.length){
+      cProdDaily=new Chart(document.getElementById('c-prod-daily'),{
+        type:'bar',
+        data:{
+          labels:daily.map(d=>d.sale_date?.substring(5)||''),
+          datasets:[
+            {label:'금액',data:daily.map(d=>d.total||0),backgroundColor:'rgba(79,70,229,.7)',borderRadius:3,yAxisID:'y'},
+            {label:'수량',data:daily.map(d=>d.qty||0),type:'line',borderColor:'#F59E0B',borderWidth:2,pointRadius:3,tension:.3,yAxisID:'y2'}
+          ]
+        },
+        options:{responsive:true,maintainAspectRatio:false,
+          interaction:{mode:'index',intersect:false},
+          plugins:{legend:{labels:{font:{size:10},usePointStyle:true,boxWidth:8}}},
+          scales:{
+            x:{grid:{display:false},ticks:{font:{size:9},maxRotation:45,maxTicksLimit:15}},
+            y:{grid:{color:'rgba(232,232,240,.5)'},ticks:{font:{size:9},callback:v=>N(v)},position:'left'},
+            y2:{grid:{display:false},ticks:{font:{size:9}},position:'right'}
+          }}
+      });
+    } else {
+      document.getElementById('c-prod-daily').parentElement.querySelector('.cc-t').textContent=`${itemShort} — 일별 데이터 없음`;
+    }
+
+    if(cProdWeekly){cProdWeekly.destroy();cProdWeekly=null;}
+    const weekly=trendData.weekly||[];
+    if(weekly.length){
+      cProdWeekly=new Chart(document.getElementById('c-prod-weekly'),{
+        type:'bar',
+        data:{
+          labels:weekly.map(w=>w.label||w.wk),
+          datasets:[
+            {label:'금액',data:weekly.map(w=>w.total||0),backgroundColor:'rgba(99,102,241,.75)',borderRadius:4,yAxisID:'y'},
+            {label:'수량',data:weekly.map(w=>w.qty||0),type:'line',borderColor:'#10B981',borderWidth:2,pointRadius:4,tension:.3,yAxisID:'y2'}
+          ]
+        },
+        options:{responsive:true,maintainAspectRatio:false,
+          interaction:{mode:'index',intersect:false},
+          plugins:{legend:{labels:{font:{size:10},usePointStyle:true,boxWidth:8}}},
+          scales:{
+            x:{grid:{display:false},ticks:{font:{size:10}}},
+            y:{grid:{color:'rgba(232,232,240,.5)'},ticks:{font:{size:9},callback:v=>N(v)},position:'left'},
+            y2:{grid:{display:false},ticks:{font:{size:9}},position:'right'}
+          }}
+      });
+    }
+  }
   document.getElementById('prod-seller-panel').scrollIntoView({behavior:'smooth'});
 }
 async function doLogin(){
