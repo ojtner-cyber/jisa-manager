@@ -720,6 +720,18 @@ td.center{text-align:center}
 
       <!-- 매장별 현황 (제품 클릭 시) -->
       <div id="prod-seller-panel" style="display:none;margin-top:20px">
+        <!-- 일별·주별 추이 차트 (매장별 현황 위에) -->
+        <div class="cr cr-1-1" style="margin-bottom:16px" id="prod-trend-panel">
+          <div class="cc">
+            <div class="cc-t" id="prod-daily-label">일별 판매 추이</div>
+            <canvas id="c-prod-daily" style="max-height:200px"></canvas>
+          </div>
+          <div class="cc">
+            <div class="cc-t" id="prod-weekly-label">주별 판매 추이</div>
+            <canvas id="c-prod-weekly" style="max-height:200px"></canvas>
+          </div>
+        </div>
+
         <div class="slbl" id="prod-seller-label">매장별 판매 현황</div>
         <div class="tw">
           <table style="table-layout:fixed">
@@ -733,19 +745,6 @@ td.center{text-align:center}
             <tbody id="prod-seller-tbody"></tbody>
           </table>
         </div>
-
-        <!-- 일별·주별 추이 차트 -->
-        <div class="cr cr-1-1" style="margin-top:16px" id="prod-trend-panel">
-          <div class="cc">
-            <div class="cc-t" id="prod-daily-label">일별 판매 추이</div>
-            <canvas id="c-prod-daily" style="max-height:180px"></canvas>
-          </div>
-          <div class="cc">
-            <div class="cc-t" id="prod-weekly-label">주별 판매 추이</div>
-            <canvas id="c-prod-weekly" style="max-height:180px"></canvas>
-          </div>
-        </div>
-
         <button class="btn btn-ghost btn-sm" style="margin-top:10px" onclick="closeProdSeller()">✕ 닫기</button>
       </div>
     </div>

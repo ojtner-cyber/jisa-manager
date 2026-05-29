@@ -2779,6 +2779,8 @@ def api_product_trend():
 
     conn.close()
     return jsonify({'daily': daily, 'weekly': weekly, 'by_seller': by_seller, 'item': item})
+
+@app.route("/api/sales-data/summary")
 @login_required
 def sales_data_summary():
     year  = request.args.get("year", "")
