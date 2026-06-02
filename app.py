@@ -113,25 +113,43 @@ def init_db():
     except Exception:
         pass
 
-    # SNS 정보 테이블
+    # SNS 정보 테이블 (블로그 중심)
     conn.execute("""CREATE TABLE IF NOT EXISTS sns_info (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         seller_name TEXT UNIQUE,
-        instagram_id TEXT DEFAULT '',
-        instagram_url TEXT DEFAULT '',
-        instagram_followers TEXT DEFAULT '',
-        instagram_post_freq TEXT DEFAULT '',
         blog_url TEXT DEFAULT '',
         blog_name TEXT DEFAULT '',
-        blog_post_freq TEXT DEFAULT '',
-        uses_product_tag INTEGER DEFAULT 0,
-        uses_hashtag INTEGER DEFAULT 0,
-        hashtags TEXT DEFAULT '',
-        sns_score INTEGER DEFAULT 0,
-        last_checked TEXT DEFAULT '',
+        blog_platform TEXT DEFAULT '',
+        blog_total_posts INTEGER DEFAULT 0,
+        blog_latest_date TEXT DEFAULT '',
+        blog_recent_30d INTEGER DEFAULT 0,
+        blog_recent_titles TEXT DEFAULT '',
+        blog_keywords TEXT DEFAULT '',
+        blog_has_product_post INTEGER DEFAULT 0,
+        blog_score INTEGER DEFAULT 0,
+        blog_grade TEXT DEFAULT '',
+        last_searched TEXT DEFAULT '',
         memo TEXT DEFAULT '',
         updated_at TEXT DEFAULT ''
     )""")
+    # 마이그레이션: 기존 테이블에 컬럼 추가
+    try:
+        sns_cols = [r[1] for r in conn.execute("PRAGMA table_info(sns_info)").fetchall()]
+        new_cols = {
+            'blog_platform': 'TEXT DEFAULT ""',
+            'blog_total_posts': 'INTEGER DEFAULT 0',
+            'blog_latest_date': 'TEXT DEFAULT ""',
+            'blog_recent_30d': 'INTEGER DEFAULT 0',
+            'blog_recent_titles': 'TEXT DEFAULT ""',
+            'blog_keywords': 'TEXT DEFAULT ""',
+            'blog_has_product_post': 'INTEGER DEFAULT 0',
+            'blog_grade': 'TEXT DEFAULT ""',
+            'last_searched': 'TEXT DEFAULT ""',
+        }
+        for col, typ in new_cols.items():
+            if col not in sns_cols:
+                conn.execute(f"ALTER TABLE sns_info ADD COLUMN {col} {typ}")
+    except: pass
 
     # 기본 계정만 생성 (샘플 데이터 없음)
     conn.execute("INSERT OR IGNORE INTO users(email,password,name,role) VALUES(?,?,?,?)",
@@ -3562,264 +3580,243 @@ def upload_sales_commit():
     return jsonify({"ok": True, "total": len(rows)})
 
 # ── SNS 활용 매장 API ────────────────────────────────
-@app.route("/api/sns/naver-search", methods=["POST"])
+@app.route("/api/sns/search", methods=["POST"])
 @login_required
-def api_sns_naver_search():
-    """네이버 블로그 검색으로 SNS 현황 자동 파악"""
-    import urllib.request, urllib.parse, os
+def api_sns_search():
+    """네이버 블로그 검색으로 매장별 블로그 현황 자동 분석"""
+    import urllib.request, urllib.parse, os, re
     from datetime import datetime as dt2
 
-    sellers = request.json.get('sellers', [])  # 매장명 리스트
+    sellers = request.json.get('sellers', [])
     if not sellers:
         return jsonify({'ok': False, 'msg': '매장명 없음'}), 400
 
-    client_id     = os.environ.get('NAVER_CLIENT_ID', 'InqUUQfvWZN1rAZM4whk')
+    client_id     = os.environ.get('NAVER_CLIENT_ID',     'InqUUQfvWZN1rAZM4whk')
     client_secret = os.environ.get('NAVER_CLIENT_SECRET', 'fXYMLK1N1X')
 
-    def naver_blog_search(query, display=10):
+    def strip_tags(s): return re.sub('<[^>]+>', '', s or '')
+
+    def naver_blog(query, display=20, sort='date'):
         url = ('https://openapi.naver.com/v1/search/blog.json?query='
-               + urllib.parse.quote(query)
-               + f'&display={display}&sort=date')
+               + urllib.parse.quote(query) + f'&display={display}&sort={sort}')
         req = urllib.request.Request(url)
         req.add_header('X-Naver-Client-Id',     client_id)
         req.add_header('X-Naver-Client-Secret', client_secret)
-        with urllib.request.urlopen(req, timeout=8) as r:
+        with urllib.request.urlopen(req, timeout=10) as r:
             return json.loads(r.read().decode('utf-8'))
 
-    def parse_postdate(s):
-        """'20260528' → '2026-05-28'"""
+    def parse_date(s):
         try: return f"{s[:4]}-{s[4:6]}-{s[6:8]}"
         except: return ''
 
-    def score_from_blog(total, latest_date):
-        """블로그 데이터로 점수 산정"""
+    def calc_score(total, latest, recent_30d, has_product):
         score = 0
-        # 게시글 수
-        if total >= 100: score += 25
-        elif total >= 30: score += 20
-        elif total >= 10: score += 15
-        elif total >= 3:  score += 10
-        elif total >= 1:  score += 5
-        # 최신글 날짜
-        if latest_date:
+        # 총 게시글 수 (최대 30점)
+        if total >= 200: score += 30
+        elif total >= 100: score += 25
+        elif total >= 50:  score += 20
+        elif total >= 20:  score += 15
+        elif total >= 5:   score += 10
+        elif total >= 1:   score += 5
+        # 최근 글 날짜 (최대 40점)
+        if latest:
             try:
-                days = (dt2.now() - dt2.strptime(latest_date, '%Y-%m-%d')).days
-                if days <= 7:   score += 25   # 1주 이내
-                elif days <= 30: score += 20  # 1달 이내
-                elif days <= 90: score += 15  # 3달 이내
-                elif days <= 180: score += 8  # 6달 이내
-                elif days <= 365: score += 3  # 1년 이내
+                days = (dt2.now() - dt2.strptime(latest, '%Y-%m-%d')).days
+                if   days <= 7:   score += 40
+                elif days <= 14:  score += 35
+                elif days <= 30:  score += 28
+                elif days <= 60:  score += 20
+                elif days <= 90:  score += 12
+                elif days <= 180: score += 6
+                elif days <= 365: score += 2
             except: pass
-        return score
+        # 30일 이내 게시글 수 (최대 20점)
+        if   recent_30d >= 20: score += 20
+        elif recent_30d >= 10: score += 16
+        elif recent_30d >= 5:  score += 12
+        elif recent_30d >= 3:  score += 8
+        elif recent_30d >= 1:  score += 4
+        # 제품 관련 포스팅 (10점)
+        if has_product: score += 10
+        return min(score, 100)
+
+    def grade(score):
+        if score >= 80: return 'A'
+        if score >= 60: return 'B'
+        if score >= 40: return 'C'
+        if score >= 20: return 'D'
+        return 'E'
+
+    PRODUCT_KEYWORDS = ['엔픽스','줄즈','레카로','원더폴드','카오스','타프토이즈',
+                        '유모차','카시트','보행기','웨건','하이체어','유아용품']
 
     results = []
-    for seller in sellers[:30]:  # 한번에 최대 30개 (API 속도 고려)
-        result = {
-            'seller_name': seller,
-            'blog_total': 0,
-            'blog_latest': '',
-            'blog_score': 0,
-            'blog_titles': [],
-            'ok': False,
-            'error': ''
-        }
+    for seller in sellers[:50]:
+        res = {'seller_name': seller, 'ok': False, 'error': '',
+               'blog_total': 0, 'blog_latest': '', 'blog_recent_30d': 0,
+               'blog_score': 0, 'blog_grade': 'E', 'blog_platform': '',
+               'blog_has_product_post': 0, 'blog_recent_titles': '', 'blog_keywords': ''}
         try:
-            # 매장명으로 검색 (언더바→공백, 불필요한 단어 제거)
-            clean_name = seller.replace('_', ' ').replace('베이비하우스', '베이비하우스').strip()
-            d = naver_blog_search(clean_name, 10)
+            clean = seller.replace('_', ' ').strip()
+            d = naver_blog(clean, 20, 'date')
             total = d.get('total', 0)
             items = d.get('items', [])
-            latest = parse_postdate(items[0].get('postdate', '')) if items else ''
-            titles = [i.get('title', '').replace('<b>', '').replace('</b>', '')[:40]
-                      for i in items[:3]]
-            blog_score = score_from_blog(total, latest)
-            result.update({
+
+            # 최신 날짜
+            dates = [parse_date(i.get('postdate','')) for i in items if i.get('postdate')]
+            latest = dates[0] if dates else ''
+
+            # 30일 이내 글 수
+            now = dt2.now()
+            recent_30d = 0
+            for i in items:
+                pd = parse_date(i.get('postdate',''))
+                if pd:
+                    try:
+                        if (now - dt2.strptime(pd, '%Y-%m-%d')).days <= 30:
+                            recent_30d += 1
+                    except: pass
+
+            # 제품 관련 포스팅 여부
+            all_text = ' '.join(strip_tags(i.get('title','')) + strip_tags(i.get('description',''))
+                                for i in items)
+            has_product = any(kw in all_text for kw in PRODUCT_KEYWORDS)
+
+            # 블로그 플랫폼 파악
+            platforms = []
+            for i in items:
+                link = i.get('link', '')
+                if 'blog.naver' in link: platforms.append('네이버')
+                elif 'tistory' in link:  platforms.append('티스토리')
+                elif 'brunch' in link:   platforms.append('브런치')
+                elif 'instagram' in link: platforms.append('인스타')
+                elif 'youtube' in link:  platforms.append('유튜브')
+            from collections import Counter
+            platform_str = ', '.join(f"{k}({v})" for k,v in Counter(platforms).most_common(3))
+
+            # 최근 제목 3개
+            titles = [strip_tags(i.get('title',''))[:30] for i in items[:3]]
+
+            # 키워드 추출 (제목에서)
+            all_titles = ' '.join(strip_tags(i.get('title','')) for i in items[:10])
+            found_kws = [kw for kw in PRODUCT_KEYWORDS if kw in all_titles]
+
+            score = calc_score(total, latest, recent_30d, has_product)
+
+            res.update({
+                'ok': True,
                 'blog_total': total,
                 'blog_latest': latest,
-                'blog_score': blog_score,
-                'blog_titles': titles,
-                'ok': True
+                'blog_recent_30d': recent_30d,
+                'blog_has_product_post': 1 if has_product else 0,
+                'blog_platform': platform_str,
+                'blog_recent_titles': ' | '.join(titles),
+                'blog_keywords': ', '.join(found_kws),
+                'blog_score': score,
+                'blog_grade': grade(score),
             })
         except urllib.error.HTTPError as e:
-            result['error'] = f'API 오류 {e.code}'
+            res['error'] = f'HTTP {e.code}'
         except Exception as e:
-            result['error'] = str(e)[:50]
-        results.append(result)
+            res['error'] = str(e)[:60]
+        results.append(res)
 
     return jsonify({'results': results, 'ok': True})
 
-@app.route("/api/sns/auto-score", methods=["POST"])
-@login_required
-def api_sns_auto_score():
-    """네이버 검색 결과 기반으로 SNS 점수 자동 저장"""
-    import os
-    results = request.json.get('results', [])
-    if not results:
-        return jsonify({'ok': False}), 400
 
+@app.route("/api/sns/save-search", methods=["POST"])
+@login_required
+def api_sns_save_search():
+    """검색 결과 DB 저장"""
+    results = request.json.get('results', [])
     conn = get_db()
     updated = 0
+    now = datetime.now().strftime('%Y-%m-%d %H:%M')
     for r in results:
         if not r.get('ok'): continue
-        seller = r['seller_name']
-        blog_score = r.get('blog_score', 0)
-        blog_latest = r.get('blog_latest', '')
-        blog_total = r.get('blog_total', 0)
-        now = datetime.now().strftime('%Y-%m-%d %H:%M')
-
-        # 기존 점수와 합산 (인스타 점수 유지 + 블로그 점수 갱신)
-        existing = conn.execute(
-            "SELECT sns_score, blog_post_freq FROM sns_info WHERE seller_name=?",
-            (seller,)).fetchone()
-
-        # 블로그 게시빈도 판단
-        if blog_total >= 1:
-            if blog_latest:
-                from datetime import datetime as dt2
-                try:
-                    days = (dt2.now() - dt2.strptime(blog_latest, '%Y-%m-%d')).days
-                    if days <= 14:   freq = '주 1회 이상'
-                    elif days <= 60: freq = '월 2~3회'
-                    elif days <= 180: freq = '월 1회 이하'
-                    else:            freq = '거의 안함'
-                except: freq = '월 1회 이하'
-            else: freq = '월 1회 이하'
-        else: freq = ''
-
-        # 기존 sns_score에서 블로그 제외 점수(인스타 점수)를 유지하고 블로그 점수 더하기
-        prev_score = existing[0] if existing else 0
-        # 블로그 점수만 갱신: 기존 점수에서 최대 50점은 블로그, 나머지는 인스타
-        # 간단하게: 블로그 점수를 새로 계산하여 저장
-        memo_add = f"\n[자동] 블로그 {blog_total}건 / 최신 {blog_latest}" if blog_total else ""
-
         conn.execute("""INSERT INTO sns_info
-            (seller_name, blog_post_freq, sns_score, last_checked, updated_at)
-            VALUES(?,?,?,?,?)
+            (seller_name, blog_total_posts, blog_latest_date, blog_recent_30d,
+             blog_has_product_post, blog_platform, blog_recent_titles, blog_keywords,
+             blog_score, blog_grade, last_searched, updated_at)
+            VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
             ON CONFLICT(seller_name) DO UPDATE SET
-            blog_post_freq=CASE WHEN ?!='' THEN ? ELSE blog_post_freq END,
-            sns_score=?,
-            last_checked=?,
-            updated_at=?""",
-            (seller, freq, blog_score, now, now,
-             freq, freq, blog_score, now, now))
+            blog_total_posts=excluded.blog_total_posts,
+            blog_latest_date=excluded.blog_latest_date,
+            blog_recent_30d=excluded.blog_recent_30d,
+            blog_has_product_post=excluded.blog_has_product_post,
+            blog_platform=excluded.blog_platform,
+            blog_recent_titles=excluded.blog_recent_titles,
+            blog_keywords=excluded.blog_keywords,
+            blog_score=excluded.blog_score,
+            blog_grade=excluded.blog_grade,
+            last_searched=excluded.last_searched,
+            updated_at=excluded.updated_at""",
+            (r['seller_name'], r['blog_total'], r['blog_latest'], r['blog_recent_30d'],
+             r['blog_has_product_post'], r['blog_platform'], r['blog_recent_titles'],
+             r['blog_keywords'], r['blog_score'], r['blog_grade'], now, now))
         updated += 1
     conn.commit(); conn.close()
     return jsonify({'ok': True, 'updated': updated})
 
+
 @app.route("/api/sns/list")
 @login_required
 def api_sns_list():
-    """SNS 정보 전체 목록 + 판매 실적 조인"""
     year = request.args.get("year", str(datetime.now().year))
     conn = get_db()
-    # 판매처 목록 (실적 있는 매장 우선)
     sellers = [r[0] for r in conn.execute(
-        f"SELECT DISTINCT real_seller FROM sales_data WHERE real_seller!='' "
-        f"AND sale_date LIKE '{year}%' ORDER BY real_seller").fetchall()]
-    # SNS 정보 조회
-    sns_map = {r['seller_name']: dict(r) for r in conn.execute(
-        "SELECT * FROM sns_info").fetchall()}
-    # 매출 조회
+        f"SELECT DISTINCT real_seller FROM sales_data "
+        f"WHERE real_seller!='' AND sale_date LIKE '{year}%' ORDER BY real_seller").fetchall()]
+    sns_map = {r['seller_name']: dict(r) for r in conn.execute("SELECT * FROM sns_info").fetchall()}
     sales_map = {r[0]: r[1] for r in conn.execute(
-        f"SELECT real_seller, SUM(total) t FROM sales_data "
-        f"WHERE sale_date LIKE '{year}%' AND real_seller!='' "
-        f"GROUP BY real_seller").fetchall()}
+        f"SELECT real_seller, SUM(total) FROM sales_data "
+        f"WHERE sale_date LIKE '{year}%' AND real_seller!='' GROUP BY real_seller").fetchall()}
     conn.close()
-
     result = []
     for s in sellers:
         info = sns_map.get(s, {})
         result.append({
-            'seller_name': s,
-            'instagram_id': info.get('instagram_id',''),
-            'instagram_url': info.get('instagram_url',''),
-            'instagram_followers': info.get('instagram_followers',''),
-            'instagram_post_freq': info.get('instagram_post_freq',''),
-            'blog_url': info.get('blog_url',''),
-            'blog_name': info.get('blog_name',''),
-            'blog_post_freq': info.get('blog_post_freq',''),
-            'uses_product_tag': info.get('uses_product_tag',0),
-            'uses_hashtag': info.get('uses_hashtag',0),
-            'hashtags': info.get('hashtags',''),
-            'sns_score': info.get('sns_score',0),
-            'last_checked': info.get('last_checked',''),
-            'memo': info.get('memo',''),
-            'updated_at': info.get('updated_at',''),
-            'year_sales': sales_map.get(s, 0),
+            'seller_name':         s,
+            'blog_url':            info.get('blog_url',''),
+            'blog_name':           info.get('blog_name',''),
+            'blog_platform':       info.get('blog_platform',''),
+            'blog_total_posts':    info.get('blog_total_posts',0),
+            'blog_latest_date':    info.get('blog_latest_date',''),
+            'blog_recent_30d':     info.get('blog_recent_30d',0),
+            'blog_has_product_post': info.get('blog_has_product_post',0),
+            'blog_recent_titles':  info.get('blog_recent_titles',''),
+            'blog_keywords':       info.get('blog_keywords',''),
+            'blog_score':          info.get('blog_score',0),
+            'blog_grade':          info.get('blog_grade',''),
+            'last_searched':       info.get('last_searched',''),
+            'memo':                info.get('memo',''),
+            'year_sales':          sales_map.get(s,0),
         })
     result.sort(key=lambda x: -x['year_sales'])
     return jsonify(result)
 
-@app.route("/api/sns/save", methods=["POST"])
+
+@app.route("/api/sns/save-memo", methods=["POST"])
 @login_required
-def api_sns_save():
-    """SNS 정보 저장 (upsert)"""
+def api_sns_save_memo():
+    """메모 + 블로그 URL/이름 수동 저장"""
     d    = request.json or {}
     name = d.get('seller_name','').strip()
-    if not name: return jsonify({'ok':False,'msg':'매장명 필요'}), 400
+    if not name: return jsonify({'ok':False}), 400
     now  = datetime.now().strftime('%Y-%m-%d %H:%M')
     conn = get_db()
-    conn.execute("""INSERT INTO sns_info
-        (seller_name,instagram_id,instagram_url,instagram_followers,instagram_post_freq,
-         blog_url,blog_name,blog_post_freq,uses_product_tag,uses_hashtag,
-         hashtags,sns_score,last_checked,memo,updated_at)
-        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+    conn.execute("""INSERT INTO sns_info(seller_name,blog_url,blog_name,memo,updated_at)
+        VALUES(?,?,?,?,?)
         ON CONFLICT(seller_name) DO UPDATE SET
-        instagram_id=excluded.instagram_id,
-        instagram_url=excluded.instagram_url,
-        instagram_followers=excluded.instagram_followers,
-        instagram_post_freq=excluded.instagram_post_freq,
-        blog_url=excluded.blog_url,
-        blog_name=excluded.blog_name,
-        blog_post_freq=excluded.blog_post_freq,
-        uses_product_tag=excluded.uses_product_tag,
-        uses_hashtag=excluded.uses_hashtag,
-        hashtags=excluded.hashtags,
-        sns_score=excluded.sns_score,
-        last_checked=excluded.last_checked,
-        memo=excluded.memo,
-        updated_at=excluded.updated_at""",
-        (name,
-         d.get('instagram_id',''), d.get('instagram_url',''),
-         d.get('instagram_followers',''), d.get('instagram_post_freq',''),
-         d.get('blog_url',''), d.get('blog_name',''), d.get('blog_post_freq',''),
-         1 if d.get('uses_product_tag') else 0,
-         1 if d.get('uses_hashtag') else 0,
-         d.get('hashtags',''), int(d.get('sns_score',0)),
-         d.get('last_checked',''), d.get('memo',''), now))
+        blog_url=CASE WHEN ?!='' THEN ? ELSE blog_url END,
+        blog_name=CASE WHEN ?!='' THEN ? ELSE blog_name END,
+        memo=excluded.memo, updated_at=excluded.updated_at""",
+        (name, d.get('blog_url',''), d.get('blog_name',''), d.get('memo',''), now,
+         d.get('blog_url',''), d.get('blog_url',''),
+         d.get('blog_name',''), d.get('blog_name','')))
     conn.commit(); conn.close()
     return jsonify({'ok': True})
 
-@app.route("/api/sns/score-calc", methods=["POST"])
-@login_required
-def api_sns_score_calc():
-    """SNS 활성도 점수 자동 계산 (0~100)"""
-    d = request.json or {}
-    score = 0
-    # 인스타 계정 있음 (+20)
-    if d.get('instagram_id'): score += 20
-    # 팔로워 규모
-    followers = d.get('instagram_followers','')
-    if '10만' in followers or '100k' in followers.lower(): score += 30
-    elif '1만' in followers or '10k' in followers.lower(): score += 20
-    elif '5천' in followers or '5k' in followers.lower():  score += 15
-    elif '1천' in followers or '1k' in followers.lower():  score += 10
-    elif followers: score += 5
-    # 게시 빈도
-    freq = d.get('instagram_post_freq','')
-    if '매일' in freq or '일 1' in freq: score += 20
-    elif '주 3' in freq or '주3' in freq: score += 15
-    elif '주 1' in freq or '주1' in freq: score += 10
-    elif '월 2' in freq or '월2' in freq: score += 7
-    elif '월 1' in freq or '월1' in freq: score += 4
-    elif freq: score += 2
-    # 블로그 있음 (+10)
-    if d.get('blog_url'): score += 10
-    # 제품 태그 사용 (+10)
-    if d.get('uses_product_tag'): score += 10
-    # 해시태그 사용 (+10)
-    if d.get('uses_hashtag'): score += 10
-    return jsonify({'score': min(score, 100)})
 
 # Render/gunicorn 실행 시 자동 초기화
 init_db()
