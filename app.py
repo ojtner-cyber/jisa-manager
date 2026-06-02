@@ -113,6 +113,26 @@ def init_db():
     except Exception:
         pass
 
+    # SNS 정보 테이블
+    conn.execute("""CREATE TABLE IF NOT EXISTS sns_info (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        seller_name TEXT UNIQUE,
+        instagram_id TEXT DEFAULT '',
+        instagram_url TEXT DEFAULT '',
+        instagram_followers TEXT DEFAULT '',
+        instagram_post_freq TEXT DEFAULT '',
+        blog_url TEXT DEFAULT '',
+        blog_name TEXT DEFAULT '',
+        blog_post_freq TEXT DEFAULT '',
+        uses_product_tag INTEGER DEFAULT 0,
+        uses_hashtag INTEGER DEFAULT 0,
+        hashtags TEXT DEFAULT '',
+        sns_score INTEGER DEFAULT 0,
+        last_checked TEXT DEFAULT '',
+        memo TEXT DEFAULT '',
+        updated_at TEXT DEFAULT ''
+    )""")
+
     # 기본 계정만 생성 (샘플 데이터 없음)
     conn.execute("INSERT OR IGNORE INTO users(email,password,name,role) VALUES(?,?,?,?)",
         ("hwkim@enfix.com","hwkim123!","관리자","admin"))
@@ -3540,6 +3560,122 @@ def upload_sales_commit():
                 (r["branch_id"], r["year"], m["month"], m["target"], m["actual"]))
     conn.commit(); conn.close()
     return jsonify({"ok": True, "total": len(rows)})
+
+# ── SNS 활용 매장 API ────────────────────────────────
+@app.route("/api/sns/list")
+@login_required
+def api_sns_list():
+    """SNS 정보 전체 목록 + 판매 실적 조인"""
+    year = request.args.get("year", str(datetime.now().year))
+    conn = get_db()
+    # 판매처 목록 (실적 있는 매장 우선)
+    sellers = [r[0] for r in conn.execute(
+        f"SELECT DISTINCT real_seller FROM sales_data WHERE real_seller!='' "
+        f"AND sale_date LIKE '{year}%' ORDER BY real_seller").fetchall()]
+    # SNS 정보 조회
+    sns_map = {r['seller_name']: dict(r) for r in conn.execute(
+        "SELECT * FROM sns_info").fetchall()}
+    # 매출 조회
+    sales_map = {r[0]: r[1] for r in conn.execute(
+        f"SELECT real_seller, SUM(total) t FROM sales_data "
+        f"WHERE sale_date LIKE '{year}%' AND real_seller!='' "
+        f"GROUP BY real_seller").fetchall()}
+    conn.close()
+
+    result = []
+    for s in sellers:
+        info = sns_map.get(s, {})
+        result.append({
+            'seller_name': s,
+            'instagram_id': info.get('instagram_id',''),
+            'instagram_url': info.get('instagram_url',''),
+            'instagram_followers': info.get('instagram_followers',''),
+            'instagram_post_freq': info.get('instagram_post_freq',''),
+            'blog_url': info.get('blog_url',''),
+            'blog_name': info.get('blog_name',''),
+            'blog_post_freq': info.get('blog_post_freq',''),
+            'uses_product_tag': info.get('uses_product_tag',0),
+            'uses_hashtag': info.get('uses_hashtag',0),
+            'hashtags': info.get('hashtags',''),
+            'sns_score': info.get('sns_score',0),
+            'last_checked': info.get('last_checked',''),
+            'memo': info.get('memo',''),
+            'updated_at': info.get('updated_at',''),
+            'year_sales': sales_map.get(s, 0),
+        })
+    result.sort(key=lambda x: -x['year_sales'])
+    return jsonify(result)
+
+@app.route("/api/sns/save", methods=["POST"])
+@login_required
+def api_sns_save():
+    """SNS 정보 저장 (upsert)"""
+    d    = request.json or {}
+    name = d.get('seller_name','').strip()
+    if not name: return jsonify({'ok':False,'msg':'매장명 필요'}), 400
+    now  = datetime.now().strftime('%Y-%m-%d %H:%M')
+    conn = get_db()
+    conn.execute("""INSERT INTO sns_info
+        (seller_name,instagram_id,instagram_url,instagram_followers,instagram_post_freq,
+         blog_url,blog_name,blog_post_freq,uses_product_tag,uses_hashtag,
+         hashtags,sns_score,last_checked,memo,updated_at)
+        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        ON CONFLICT(seller_name) DO UPDATE SET
+        instagram_id=excluded.instagram_id,
+        instagram_url=excluded.instagram_url,
+        instagram_followers=excluded.instagram_followers,
+        instagram_post_freq=excluded.instagram_post_freq,
+        blog_url=excluded.blog_url,
+        blog_name=excluded.blog_name,
+        blog_post_freq=excluded.blog_post_freq,
+        uses_product_tag=excluded.uses_product_tag,
+        uses_hashtag=excluded.uses_hashtag,
+        hashtags=excluded.hashtags,
+        sns_score=excluded.sns_score,
+        last_checked=excluded.last_checked,
+        memo=excluded.memo,
+        updated_at=excluded.updated_at""",
+        (name,
+         d.get('instagram_id',''), d.get('instagram_url',''),
+         d.get('instagram_followers',''), d.get('instagram_post_freq',''),
+         d.get('blog_url',''), d.get('blog_name',''), d.get('blog_post_freq',''),
+         1 if d.get('uses_product_tag') else 0,
+         1 if d.get('uses_hashtag') else 0,
+         d.get('hashtags',''), int(d.get('sns_score',0)),
+         d.get('last_checked',''), d.get('memo',''), now))
+    conn.commit(); conn.close()
+    return jsonify({'ok': True})
+
+@app.route("/api/sns/score-calc", methods=["POST"])
+@login_required
+def api_sns_score_calc():
+    """SNS 활성도 점수 자동 계산 (0~100)"""
+    d = request.json or {}
+    score = 0
+    # 인스타 계정 있음 (+20)
+    if d.get('instagram_id'): score += 20
+    # 팔로워 규모
+    followers = d.get('instagram_followers','')
+    if '10만' in followers or '100k' in followers.lower(): score += 30
+    elif '1만' in followers or '10k' in followers.lower(): score += 20
+    elif '5천' in followers or '5k' in followers.lower():  score += 15
+    elif '1천' in followers or '1k' in followers.lower():  score += 10
+    elif followers: score += 5
+    # 게시 빈도
+    freq = d.get('instagram_post_freq','')
+    if '매일' in freq or '일 1' in freq: score += 20
+    elif '주 3' in freq or '주3' in freq: score += 15
+    elif '주 1' in freq or '주1' in freq: score += 10
+    elif '월 2' in freq or '월2' in freq: score += 7
+    elif '월 1' in freq or '월1' in freq: score += 4
+    elif freq: score += 2
+    # 블로그 있음 (+10)
+    if d.get('blog_url'): score += 10
+    # 제품 태그 사용 (+10)
+    if d.get('uses_product_tag'): score += 10
+    # 해시태그 사용 (+10)
+    if d.get('uses_hashtag'): score += 10
+    return jsonify({'score': min(score, 100)})
 
 # Render/gunicorn 실행 시 자동 초기화
 init_db()
