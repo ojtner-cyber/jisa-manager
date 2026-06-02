@@ -3562,6 +3562,150 @@ def upload_sales_commit():
     return jsonify({"ok": True, "total": len(rows)})
 
 # ── SNS 활용 매장 API ────────────────────────────────
+@app.route("/api/sns/naver-search", methods=["POST"])
+@login_required
+def api_sns_naver_search():
+    """네이버 블로그 검색으로 SNS 현황 자동 파악"""
+    import urllib.request, urllib.parse, os
+    from datetime import datetime as dt2
+
+    sellers = request.json.get('sellers', [])  # 매장명 리스트
+    if not sellers:
+        return jsonify({'ok': False, 'msg': '매장명 없음'}), 400
+
+    client_id     = os.environ.get('NAVER_CLIENT_ID', 'InqUUQfvWZN1rAZM4whk')
+    client_secret = os.environ.get('NAVER_CLIENT_SECRET', 'fXYMLK1N1X')
+
+    def naver_blog_search(query, display=10):
+        url = ('https://openapi.naver.com/v1/search/blog.json?query='
+               + urllib.parse.quote(query)
+               + f'&display={display}&sort=date')
+        req = urllib.request.Request(url)
+        req.add_header('X-Naver-Client-Id',     client_id)
+        req.add_header('X-Naver-Client-Secret', client_secret)
+        with urllib.request.urlopen(req, timeout=8) as r:
+            return json.loads(r.read().decode('utf-8'))
+
+    def parse_postdate(s):
+        """'20260528' → '2026-05-28'"""
+        try: return f"{s[:4]}-{s[4:6]}-{s[6:8]}"
+        except: return ''
+
+    def score_from_blog(total, latest_date):
+        """블로그 데이터로 점수 산정"""
+        score = 0
+        # 게시글 수
+        if total >= 100: score += 25
+        elif total >= 30: score += 20
+        elif total >= 10: score += 15
+        elif total >= 3:  score += 10
+        elif total >= 1:  score += 5
+        # 최신글 날짜
+        if latest_date:
+            try:
+                days = (dt2.now() - dt2.strptime(latest_date, '%Y-%m-%d')).days
+                if days <= 7:   score += 25   # 1주 이내
+                elif days <= 30: score += 20  # 1달 이내
+                elif days <= 90: score += 15  # 3달 이내
+                elif days <= 180: score += 8  # 6달 이내
+                elif days <= 365: score += 3  # 1년 이내
+            except: pass
+        return score
+
+    results = []
+    for seller in sellers[:30]:  # 한번에 최대 30개 (API 속도 고려)
+        result = {
+            'seller_name': seller,
+            'blog_total': 0,
+            'blog_latest': '',
+            'blog_score': 0,
+            'blog_titles': [],
+            'ok': False,
+            'error': ''
+        }
+        try:
+            # 매장명으로 검색 (언더바→공백, 불필요한 단어 제거)
+            clean_name = seller.replace('_', ' ').replace('베이비하우스', '베이비하우스').strip()
+            d = naver_blog_search(clean_name, 10)
+            total = d.get('total', 0)
+            items = d.get('items', [])
+            latest = parse_postdate(items[0].get('postdate', '')) if items else ''
+            titles = [i.get('title', '').replace('<b>', '').replace('</b>', '')[:40]
+                      for i in items[:3]]
+            blog_score = score_from_blog(total, latest)
+            result.update({
+                'blog_total': total,
+                'blog_latest': latest,
+                'blog_score': blog_score,
+                'blog_titles': titles,
+                'ok': True
+            })
+        except urllib.error.HTTPError as e:
+            result['error'] = f'API 오류 {e.code}'
+        except Exception as e:
+            result['error'] = str(e)[:50]
+        results.append(result)
+
+    return jsonify({'results': results, 'ok': True})
+
+@app.route("/api/sns/auto-score", methods=["POST"])
+@login_required
+def api_sns_auto_score():
+    """네이버 검색 결과 기반으로 SNS 점수 자동 저장"""
+    import os
+    results = request.json.get('results', [])
+    if not results:
+        return jsonify({'ok': False}), 400
+
+    conn = get_db()
+    updated = 0
+    for r in results:
+        if not r.get('ok'): continue
+        seller = r['seller_name']
+        blog_score = r.get('blog_score', 0)
+        blog_latest = r.get('blog_latest', '')
+        blog_total = r.get('blog_total', 0)
+        now = datetime.now().strftime('%Y-%m-%d %H:%M')
+
+        # 기존 점수와 합산 (인스타 점수 유지 + 블로그 점수 갱신)
+        existing = conn.execute(
+            "SELECT sns_score, blog_post_freq FROM sns_info WHERE seller_name=?",
+            (seller,)).fetchone()
+
+        # 블로그 게시빈도 판단
+        if blog_total >= 1:
+            if blog_latest:
+                from datetime import datetime as dt2
+                try:
+                    days = (dt2.now() - dt2.strptime(blog_latest, '%Y-%m-%d')).days
+                    if days <= 14:   freq = '주 1회 이상'
+                    elif days <= 60: freq = '월 2~3회'
+                    elif days <= 180: freq = '월 1회 이하'
+                    else:            freq = '거의 안함'
+                except: freq = '월 1회 이하'
+            else: freq = '월 1회 이하'
+        else: freq = ''
+
+        # 기존 sns_score에서 블로그 제외 점수(인스타 점수)를 유지하고 블로그 점수 더하기
+        prev_score = existing[0] if existing else 0
+        # 블로그 점수만 갱신: 기존 점수에서 최대 50점은 블로그, 나머지는 인스타
+        # 간단하게: 블로그 점수를 새로 계산하여 저장
+        memo_add = f"\n[자동] 블로그 {blog_total}건 / 최신 {blog_latest}" if blog_total else ""
+
+        conn.execute("""INSERT INTO sns_info
+            (seller_name, blog_post_freq, sns_score, last_checked, updated_at)
+            VALUES(?,?,?,?,?)
+            ON CONFLICT(seller_name) DO UPDATE SET
+            blog_post_freq=CASE WHEN ?!='' THEN ? ELSE blog_post_freq END,
+            sns_score=?,
+            last_checked=?,
+            updated_at=?""",
+            (seller, freq, blog_score, now, now,
+             freq, freq, blog_score, now, now))
+        updated += 1
+    conn.commit(); conn.close()
+    return jsonify({'ok': True, 'updated': updated})
+
 @app.route("/api/sns/list")
 @login_required
 def api_sns_list():

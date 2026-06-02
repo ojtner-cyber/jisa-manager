@@ -848,11 +848,24 @@ td.center{text-align:center}
     <!-- ██ SNS 활용 매장 ██ -->
     <div class="page" id="page-sns">
       <div class="ph">
-        <div><h2>SNS 활용 매장</h2><p>인스타그램·블로그 운영 현황 관리 및 검색 링크</p></div>
+        <div><h2>SNS 활용 매장</h2><p>인스타그램·블로그 운영 현황 관리 및 자동 검색</p></div>
         <div class="ph-r">
           <select class="ysel" id="sns-year" onchange="loadSNS()"></select>
-          <input type="text" id="sns-search" placeholder="매장명 검색..." style="padding:7px 12px;border:1.5px solid var(--ink-100);border-radius:var(--r-md);font-size:13px;width:180px" oninput="filterSNS()">
+          <input type="text" id="sns-search" placeholder="매장명 검색..." style="padding:7px 12px;border:1.5px solid var(--ink-100);border-radius:var(--r-md);font-size:13px;width:160px" oninput="filterSNS()">
+          <button class="btn btn-ghost btn-sm" onclick="startNaverAutoSearch()" id="sns-auto-btn" title="네이버 블로그 검색으로 전체 매장 SNS 현황 자동 파악">🔍 전체 자동 검색</button>
         </div>
+      </div>
+
+      <!-- 자동 검색 진행 상황 -->
+      <div id="sns-progress-wrap" style="display:none;background:var(--paper);border-radius:var(--r-md);padding:16px;margin-bottom:16px;box-shadow:var(--sh-sm)">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
+          <div style="font-size:13px;font-weight:600" id="sns-progress-label">네이버 블로그 검색 중...</div>
+          <div style="font-size:12px;color:var(--ink-300)" id="sns-progress-count">0 / 0</div>
+        </div>
+        <div style="height:8px;background:var(--ink-100);border-radius:20px;overflow:hidden">
+          <div id="sns-progress-bar" style="height:100%;width:0%;background:var(--accent-m);border-radius:20px;transition:.3s"></div>
+        </div>
+        <div id="sns-progress-result" style="margin-top:10px;font-size:12px;color:var(--ink-400);max-height:80px;overflow-y:auto"></div>
       </div>
 
       <!-- SNS 요약 KPI -->
@@ -1167,6 +1180,12 @@ td.center{text-align:center}
 
 <script>
 const N=n=>n==null?'—':Number(n).toLocaleString();
+// ── 전역 변수 선언 ──────────────────────────────
+let BD=[], rankingData=[], uploadPreviewData=[], uploadType='';
+let scriptSeller='', scriptAnalysisData=null, cScriptBrand=null, cScriptWeekly=null;
+let scriptSellerList=[], scriptGenCount=0;
+let snsData=[], snsEditSeller='';
+let cProdDaily=null, cProdWeekly=null;
 const PC=p=>p==null?'var(--ink-300)':p>=100?'var(--green)':p>=70?'var(--amber)':'var(--red)';
 const today=()=>new Date().toISOString().slice(0,10);
 const TY=()=>new Date().getFullYear();
@@ -1201,8 +1220,6 @@ function showPage(n){
 }
 
 // ── 매장 추천 스크립트 ──────────────────────────
-let scriptSeller='', scriptAnalysisData=null, cScriptBrand=null, cScriptWeekly=null;
-let scriptSellerList=[], scriptGenCount=0;
 
 async function initScriptPage(){
   const year=document.getElementById('script-year')?.value||new Date().getFullYear();
@@ -1352,6 +1369,201 @@ async function generateScript(){
   btn.textContent='다시 생성 (다른 각도)'; btn.disabled=false;
 }
 
+// ── SNS 활용 매장 ─────────────────────────────
+
+async function startNaverAutoSearch(){
+  const btn=document.getElementById('sns-auto-btn');
+  const wrap=document.getElementById('sns-progress-wrap');
+  const label=document.getElementById('sns-progress-label');
+  const countEl=document.getElementById('sns-progress-count');
+  const bar=document.getElementById('sns-progress-bar');
+  const resultEl=document.getElementById('sns-progress-result');
+  if(!snsData.length){toast('먼저 매장 목록을 불러오세요',false);return;}
+  btn.disabled=true; btn.textContent='검색 중...';
+  wrap.style.display='block'; resultEl.innerHTML='';
+  bar.style.background='var(--accent-m)';
+  const sellers=snsData.map(r=>r.seller_name);
+  const total=sellers.length; let done=0, allResults=[];
+  const chunkSize=10;
+  for(let i=0;i<sellers.length;i+=chunkSize){
+    const chunk=sellers.slice(i,i+chunkSize);
+    label.textContent=`네이버 블로그 검색 중... (${i+1}~${Math.min(i+chunkSize,total)}번째)`;
+    try{
+      const r=await api('/api/sns/naver-search',{method:'POST',body:{sellers:chunk}});
+      if(r&&r.results){
+        allResults=allResults.concat(r.results);
+        r.results.forEach(res=>{
+          const icon=res.ok?(res.blog_total>0?'✅':'⬜'):'❌';
+          const info=res.ok?`블로그 ${res.blog_total}건 / 최신: ${res.blog_latest||'—'} / 점수: ${res.blog_score}점`:res.error;
+          resultEl.innerHTML+=`<div style="padding:2px 0">${icon} <strong>${res.seller_name}</strong> — ${info}</div>`;
+          resultEl.scrollTop=resultEl.scrollHeight;
+        });
+      }
+    }catch(e){console.error(e);}
+    done=Math.min(i+chunkSize,total);
+    countEl.textContent=`${done} / ${total}`;
+    bar.style.width=`${Math.round(done/total*100)}%`;
+    if(i+chunkSize<sellers.length) await new Promise(r=>setTimeout(r,300));
+  }
+  if(allResults.length){
+    label.textContent='점수 저장 중...';
+    const saveR=await api('/api/sns/auto-score',{method:'POST',body:{results:allResults}});
+    if(saveR&&saveR.ok){
+      label.textContent=`✅ 완료! ${saveR.updated}개 매장 SNS 점수 업데이트됨`;
+      bar.style.background='#16A34A';
+      await loadSNS();
+    }
+  }
+  btn.disabled=false; btn.textContent='🔍 전체 자동 검색';
+  toast(`네이버 블로그 검색 완료 — ${total}개 매장 분석`);
+}
+
+async function loadSNS(){
+  const year=document.getElementById('sns-year')?.value||new Date().getFullYear();
+  const rows=await api(`/api/sns/list?year=${year}`);
+  if(!rows)return;
+  snsData=rows;
+  renderSNSKPI(rows);
+  renderSNSTable(rows);
+}
+
+function filterSNS(){
+  const q=(document.getElementById('sns-search')?.value||'').toLowerCase();
+  renderSNSTable(q?snsData.filter(r=>r.seller_name.toLowerCase().includes(q)):snsData);
+}
+
+function renderSNSKPI(rows){
+  const total=rows.length;
+  const hasIG=rows.filter(r=>r.instagram_id).length;
+  const hasBlog=rows.filter(r=>r.blog_url||r.blog_post_freq).length;
+  const highScore=rows.filter(r=>r.sns_score>=60).length;
+  document.getElementById('sns-kpi').innerHTML=[
+    {l:'전체 매장',v:`${total}개`,c:'var(--accent-m)'},
+    {l:'인스타 운영',v:`${hasIG}개 (${total?Math.round(hasIG/total*100):0}%)`,c:'#C026D3'},
+    {l:'블로그 활성',v:`${hasBlog}개 (${total?Math.round(hasBlog/total*100):0}%)`,c:'#16A34A'},
+    {l:'SNS 우수 (60점+)',v:`${highScore}개`,c:'#D97706'},
+  ].map(k=>`<div class="kpi"><div class="kpi-accent" style="background:${k.c}"></div>
+    <div class="kpi-lbl">${k.l}</div>
+    <div class="kpi-val" style="font-size:20px;color:${k.c}">${k.v}</div></div>`).join('');
+}
+
+function scoreBadge(s){
+  if(s>=80)return`<span style="background:#DCFCE7;color:#16A34A;padding:2px 8px;border-radius:20px;font-size:11px;font-weight:700">${s}점 ★우수</span>`;
+  if(s>=60)return`<span style="background:#FEF9C3;color:#CA8A04;padding:2px 8px;border-radius:20px;font-size:11px;font-weight:700">${s}점 ○활성</span>`;
+  if(s>=30)return`<span style="background:#F3F4F6;color:#6B7280;padding:2px 8px;border-radius:20px;font-size:11px;font-weight:700">${s}점 △보통</span>`;
+  if(s>0)  return`<span style="background:#FEE2E2;color:#DC2626;padding:2px 8px;border-radius:20px;font-size:11px;font-weight:700">${s}점 ▽미흡</span>`;
+  return`<span style="color:var(--ink-200);font-size:11px">미검색</span>`;
+}
+
+function igLink(r){
+  if(r.instagram_url)return`<a href="${r.instagram_url}" target="_blank" style="color:#C026D3;font-weight:600;text-decoration:none">@${r.instagram_id||'보기'}</a>`;
+  if(r.instagram_id) return`<a href="https://instagram.com/${r.instagram_id}" target="_blank" style="color:#C026D3;font-weight:600;text-decoration:none">@${r.instagram_id}</a>`;
+  return'<span style="color:var(--ink-200);font-size:11px">—</span>';
+}
+
+function renderSNSTable(rows){
+  document.getElementById('sns-tbody').innerHTML=rows.map((r,i)=>`<tr>
+    <td style="text-align:center;color:var(--ink-300)">${i+1}</td>
+    <td style="font-weight:600">${r.seller_name}</td>
+    <td style="text-align:center">${scoreBadge(r.sns_score||0)}</td>
+    <td>${igLink(r)}</td>
+    <td style="text-align:center;font-size:12px;color:var(--ink-500)">${r.instagram_followers||'—'}</td>
+    <td style="text-align:center;font-size:11px;color:var(--ink-400)">${r.instagram_post_freq||'—'}</td>
+    <td style="font-size:12px">${r.blog_url?`<a href="${r.blog_url}" target="_blank" style="color:#16A34A;text-decoration:none">${r.blog_name||'블로그'}</a>`:(r.blog_post_freq?`<span style="color:#16A34A">${r.blog_post_freq}</span>`:'<span style="color:var(--ink-200)">—</span>')}</td>
+    <td style="text-align:center">${r.uses_product_tag?'✅':'—'}</td>
+    <td style="text-align:center">${r.uses_hashtag?'✅':'—'}</td>
+    <td style="text-align:right;font-weight:700;color:var(--accent-m)">${N(r.year_sales||0)}원</td>
+    <td style="font-size:11px;color:var(--ink-300)">${r.last_checked||'—'}</td>
+    <td style="text-align:center">
+      <button class="btn btn-ghost btn-xs" onclick="openSNSModal('${r.seller_name.replace(/'/g,"\\'")}')">편집</button>
+    </td>
+  </tr>`).join('');
+}
+
+function openSNSModal(sellerName){
+  snsEditSeller=sellerName;
+  const r=snsData.find(x=>x.seller_name===sellerName)||{};
+  document.getElementById('sns-modal-title').textContent='SNS 정보 편집';
+  document.getElementById('sns-modal-seller').textContent=sellerName;
+  document.getElementById('sns-ig-id').value=r.instagram_id||'';
+  document.getElementById('sns-ig-url').value=r.instagram_url||'';
+  document.getElementById('sns-ig-followers').value=r.instagram_followers||'';
+  document.getElementById('sns-ig-freq').value=r.instagram_post_freq||'';
+  document.getElementById('sns-blog-url').value=r.blog_url||'';
+  document.getElementById('sns-blog-name').value=r.blog_name||'';
+  document.getElementById('sns-blog-freq').value=r.blog_post_freq||'';
+  document.getElementById('sns-product-tag').checked=!!r.uses_product_tag;
+  document.getElementById('sns-hashtag').checked=!!r.uses_hashtag;
+  document.getElementById('sns-hashtags').value=r.hashtags||'';
+  document.getElementById('sns-last-checked').value=r.last_checked||'';
+  document.getElementById('sns-memo').value=r.memo||'';
+  updateSNSScorePreview(r.sns_score||0);
+  renderSNSSearchLinks(sellerName);
+  document.getElementById('sns-modal').style.display='flex';
+}
+
+function closeSNSModal(){document.getElementById('sns-modal').style.display='none';}
+function setTodaySNS(){document.getElementById('sns-last-checked').value=new Date().toISOString().slice(0,10);}
+
+function updateSNSScorePreview(score){
+  document.getElementById('sns-score-preview').textContent=score;
+  document.getElementById('sns-score-bar').style.width=`${score}%`;
+  const bar=document.getElementById('sns-score-bar');
+  bar.style.background=score>=80?'#16A34A':score>=60?'#D97706':score>=30?'var(--accent-m)':'#DC2626';
+  const labels={80:'★ SNS 우수 매장',60:'○ 활성 매장',30:'△ 보통',0:'▽ 미흡'};
+  const lk=Object.keys(labels).reverse().find(k=>score>=parseInt(k));
+  document.getElementById('sns-score-label').textContent=labels[lk]||'미등록';
+}
+
+async function calcSNSScore(){
+  const d=getSNSFormData();
+  const r=await api('/api/sns/score-calc',{method:'POST',body:d});
+  if(r) updateSNSScorePreview(r.score);
+}
+
+function getSNSFormData(){
+  return{
+    seller_name:snsEditSeller,
+    instagram_id:document.getElementById('sns-ig-id').value.trim().replace('@',''),
+    instagram_url:document.getElementById('sns-ig-url').value.trim(),
+    instagram_followers:document.getElementById('sns-ig-followers').value,
+    instagram_post_freq:document.getElementById('sns-ig-freq').value,
+    blog_url:document.getElementById('sns-blog-url').value.trim(),
+    blog_name:document.getElementById('sns-blog-name').value.trim(),
+    blog_post_freq:document.getElementById('sns-blog-freq').value,
+    uses_product_tag:document.getElementById('sns-product-tag').checked,
+    uses_hashtag:document.getElementById('sns-hashtag').checked,
+    hashtags:document.getElementById('sns-hashtags').value.trim(),
+    sns_score:parseInt(document.getElementById('sns-score-preview').textContent)||0,
+    last_checked:document.getElementById('sns-last-checked').value,
+    memo:document.getElementById('sns-memo').value.trim(),
+  };
+}
+
+async function saveSNS(){
+  await calcSNSScore();
+  const d=getSNSFormData();
+  const r=await api('/api/sns/save',{method:'POST',body:d});
+  if(r&&r.ok){closeSNSModal();loadSNS();toast('SNS 정보가 저장되었습니다');}
+}
+
+function renderSNSSearchLinks(sellerName){
+  const q=encodeURIComponent(sellerName);
+  const igId=document.getElementById('sns-ig-id')?.value||'';
+  const links=[
+    {label:'📸 인스타 검색',url:`https://www.instagram.com/explore/search/keyword/?q=${q}`,color:'#C026D3'},
+    {label:'🔎 인스타 ID',url:`https://www.instagram.com/${igId.replace('@','')||encodeURIComponent(sellerName)}`,color:'#9333EA'},
+    {label:'📝 네이버 블로그',url:`https://search.naver.com/search.naver?where=blog&query=${q}`,color:'#16A34A'},
+    {label:'🌐 구글 검색',url:`https://www.google.com/search?q=${q}+인스타그램`,color:'#1A73E8'},
+    {label:'📺 유튜브',url:`https://www.youtube.com/results?search_query=${q}`,color:'#DC2626'},
+  ];
+  document.getElementById('sns-link-buttons').innerHTML=links.map(l=>
+    `<a href="${l.url}" target="_blank" style="display:inline-flex;align-items:center;gap:5px;padding:6px 12px;background:white;border:1.5px solid ${l.color};border-radius:20px;color:${l.color};font-size:12px;font-weight:600;text-decoration:none">${l.label}</a>`
+  ).join('')+`<button onclick="copySellerName('${sellerName.replace(/'/g,"\\'")}');event.stopPropagation()" style="padding:6px 12px;background:white;border:1.5px solid var(--ink-200);border-radius:20px;color:var(--ink-500);font-size:12px;font-weight:600;cursor:pointer">📋 이름 복사</button>`;
+}
+
+function copySellerName(name){navigator.clipboard?.writeText(name).then(()=>toast('복사됐어요'));}
+
 function exportScriptXlsx(){
   if(!scriptSeller) return;
   const year=document.getElementById('script-year')?.value||new Date().getFullYear();
@@ -1484,7 +1696,6 @@ function filterProductTable(){
   renderProductTable(filtered);
 }
 
-let cProdDaily=null, cProdWeekly=null;
 function closeProdSeller(){
   document.getElementById('prod-seller-panel').style.display='none';
   if(cProdDaily){cProdDaily.destroy();cProdDaily=null;}
@@ -1603,7 +1814,6 @@ async function loadDash(){
   cA=new Chart(document.getElementById('c-achieve'),{type:'doughnut',data:{labels:['달성 100%↑','진행중 70~99%','미달 ~69%'],datasets:[{data:[hi,mi,lo],backgroundColor:['#059669','#B45309','#B91C1C'],borderWidth:4,borderColor:'#FAFAFA'}]},options:{plugins:{legend:{position:'bottom',labels:{usePointStyle:true,pointStyle:'circle',boxWidth:7,padding:14,font:{size:12},color:'#4A4A6A'}}},cutout:'62%',responsive:true,maintainAspectRatio:true}});
 }
 
-let BD=[];
 async function loadBranches(){
   BD=await api(`/api/branches?region=${encodeURIComponent(document.getElementById('b-region').value)}&status=${encodeURIComponent(document.getElementById('b-status').value)}&q=${encodeURIComponent(document.getElementById('b-q').value)}`);
   if(!BD)return;
@@ -1728,7 +1938,6 @@ function toggleSidebar(){
 }
 
 let salesTab = 'monthly';
-let rankingData = [];
 
 function switchSalesTab(tab){
   salesTab = tab;
@@ -2091,7 +2300,6 @@ async function loadSalesData(){
 }
 
 // ── 업로드 ─────────────────────────────────────────
-let uploadType='',uploadPreviewData=[];
 
 function onDrag(e,id){e.preventDefault();document.getElementById(id).classList.add('drag');}
 function offDrag(id){document.getElementById(id).classList.remove('drag');}
