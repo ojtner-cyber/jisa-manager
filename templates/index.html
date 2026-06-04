@@ -387,6 +387,10 @@ td.center{text-align:center}
       <a onclick="showPage('products')" id="nav-products"><span class="ni">📦</span>제품별 관리</a>
       <a onclick="showPage('script')" id="nav-script"><span class="ni">💬</span>매장 분석</a>
       <a onclick="showPage('sns')" id="nav-sns"><span class="ni">📱</span>SNS 활용 매장</a>
+      <a onclick="showPage('visit')" id="nav-visit"><span class="ni">📅</span>매장 방문 일정</a>
+      <a onclick="showPage('ace')" id="nav-ace"><span class="ni">⚡</span>영업 에이스 포인트</a>
+      <a onclick="showPage('report')" id="nav-report"><span class="ni">📋</span>보고서</a>
+      <a onclick="showPage('stock')" id="nav-stock"><span class="ni">📦</span>재고 현황</a>
       <a onclick="showPage('users')" id="nav-users"><span class="ni">◎</span>권한 관리</a>
     </nav>
     <div class="sb-div"></div>
@@ -910,7 +914,133 @@ td.center{text-align:center}
       </div>
     </div>
 
-    <!-- ██ 엑셀 업로드 ██ -->    <!-- ██ 엑셀 업로드 ██ -->
+    <!-- ██ 매장 방문 일정 ██ -->
+    <div class="page" id="page-visit">
+      <div class="ph">
+        <div><h2>매장 방문 일정</h2><p>데이터 기반 자동 일정 생성 · 달력 뷰 · 체크포인트</p></div>
+        <div class="ph-r">
+          <select id="visit-year" class="ysel" onchange="loadVisit()"></select>
+          <select id="visit-month" class="fs" onchange="loadVisit()" style="width:90px">
+            <option value="">전체</option>
+          </select>
+          <button class="btn btn-dark btn-sm" onclick="generateVisit()">✨ 일정 자동 생성</button>
+          <button class="btn btn-ghost btn-sm" onclick="openVisitModal(null)">+ 수동 추가</button>
+        </div>
+      </div>
+      <div id="visit-calendar" style="margin-bottom:20px"></div>
+      <div class="tw"><table id="visit-table">
+        <thead><tr>
+          <th style="width:10%">날짜</th><th style="width:18%">매장명</th>
+          <th style="width:7%;text-align:center">우선순위</th>
+          <th style="width:7%;text-align:center">상태</th>
+          <th style="width:30%">방문 이유</th>
+          <th style="width:6%;text-align:center">구분</th>
+          <th style="width:10%;text-align:center">—</th>
+        </tr></thead>
+        <tbody id="visit-tbody"></tbody>
+      </table></div>
+    </div>
+
+    <!-- 방문 일정 모달 -->
+    <div id="visit-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.4);z-index:1000;align-items:center;justify-content:center">
+      <div style="background:var(--paper);border-radius:var(--r-lg);padding:24px;width:min(560px,95vw);max-height:90vh;overflow-y:auto;box-shadow:0 24px 60px rgba(0,0,0,.3)">
+        <div style="font-size:14px;font-weight:700;margin-bottom:16px" id="visit-modal-title">방문 일정</div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:12px">
+          <div><div class="flbl">방문 날짜</div><input class="fi" type="date" id="vm-date"></div>
+          <div><div class="flbl">매장명</div><input class="fi" id="vm-seller" list="vm-seller-list"><datalist id="vm-seller-list"></datalist></div>
+          <div><div class="flbl">우선순위</div>
+            <select class="fi" id="vm-priority"><option value="1">1순위 (핵심)</option><option value="2" selected>2순위 (일반)</option><option value="3">3순위 (보완)</option><option value="4">4순위 (저빈도)</option></select>
+          </div>
+          <div><div class="flbl">상태</div>
+            <select class="fi" id="vm-status"><option value="planned">예정</option><option value="completed">완료</option><option value="cancelled">취소</option></select>
+          </div>
+        </div>
+        <div style="margin-bottom:12px"><div class="flbl">방문 이유</div><input class="fi" id="vm-reason" placeholder="예: 타프토이즈 도입 제안 / 재고 확인"></div>
+        <div style="margin-bottom:12px"><div class="flbl">체크포인트</div><textarea class="fi" id="vm-check" rows="5" placeholder="□ 재고 확인&#10;□ 진열 점검&#10;□ 발주 논의"></textarea></div>
+        <div style="margin-bottom:20px"><div class="flbl">방문 결과 메모</div><textarea class="fi" id="vm-result" rows="3" placeholder="방문 후 작성"></textarea></div>
+        <input type="hidden" id="vm-id">
+        <div style="display:flex;gap:10px;justify-content:flex-end">
+          <button class="btn btn-ghost" onclick="closeVisitModal()">취소</button>
+          <button class="btn btn-dark" onclick="saveVisit()">저장</button>
+        </div>
+      </div>
+    </div>
+    <!-- 체크포인트 모달 -->
+    <div id="check-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.4);z-index:1000;align-items:center;justify-content:center">
+      <div style="background:var(--paper);border-radius:var(--r-lg);padding:24px;width:min(500px,95vw);max-height:85vh;overflow-y:auto;box-shadow:0 24px 60px rgba(0,0,0,.3)">
+        <div style="font-size:14px;font-weight:700;margin-bottom:4px" id="check-modal-seller"></div>
+        <div style="font-size:12px;color:var(--ink-300);margin-bottom:16px" id="check-modal-date"></div>
+        <div id="check-modal-points" style="font-size:13px;line-height:2;white-space:pre-line;background:var(--ink-50);padding:16px;border-radius:var(--r-md)"></div>
+        <div style="margin-top:16px"><div class="flbl">방문 결과 메모</div><textarea class="fi" id="check-result" rows="3"></textarea></div>
+        <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:14px">
+          <button class="btn btn-ghost" onclick="document.getElementById('check-modal').style.display='none'">닫기</button>
+          <button class="btn btn-dark" onclick="saveCheckResult()">완료 처리</button>
+        </div>
+        <input type="hidden" id="check-modal-id">
+      </div>
+    </div>
+
+    <!-- ██ 영업 에이스 포인트 ██ -->
+    <div class="page" id="page-ace">
+      <div class="ph"><div><h2>영업 에이스 포인트</h2><p>데이터가 말하는 지금 당장 해야 할 것들</p></div>
+        <div class="ph-r"><select class="ysel" id="ace-year" onchange="loadAce()"></select></div>
+      </div>
+      <div id="ace-content" style="display:grid;gap:16px"></div>
+    </div>
+
+    <!-- ██ 보고서 ██ -->
+    <div class="page" id="page-report">
+      <div class="ph"><div><h2>보고서</h2><p>주간업무보고 · 매장 방문 보고서 자동 생성</p></div></div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:20px">
+        <div class="cc">
+          <div class="cc-t">주간 업무 보고서</div>
+          <div style="margin-bottom:10px"><div class="flbl">보고 주간 시작일</div><input class="fi" type="date" id="report-week-start"></div>
+          <div style="margin-bottom:10px"><div class="flbl">이번 주 한 일 (자유롭게 적어주세요)</div>
+            <textarea class="fi" id="report-weekly-input" rows="6" placeholder="예: 베이비하우스 영통점 방문, 줄즈 에어2 20개 발주 받음. 링크맘 타프토이즈 첫 도입 성공..."></textarea></div>
+          <div style="margin-bottom:14px"><div class="flbl">다음 주 계획 (자유롭게)</div>
+            <textarea class="fi" id="report-weekly-next" rows="3" placeholder="예: 송도점 방문, 타프 신제품 라인업 제안 예정..."></textarea></div>
+          <div style="display:flex;gap:8px;margin-bottom:10px">
+            <button class="btn btn-dark btn-sm" onclick="generateWeeklyReport()">보고서 생성</button>
+            <button class="btn btn-ghost btn-sm" onclick="downloadReport('weekly')" id="dl-weekly" style="display:none">📥 엑셀 다운로드</button>
+          </div>
+          <div id="report-weekly-preview" style="display:none;background:var(--ink-50);border-radius:var(--r-md);padding:16px;font-size:12px;line-height:1.8;white-space:pre-wrap;font-family:var(--fd);max-height:400px;overflow-y:auto"></div>
+        </div>
+        <div class="cc">
+          <div class="cc-t">매장 방문 보고서</div>
+          <div style="margin-bottom:10px"><div class="flbl">방문 매장</div>
+            <input class="fi" id="report-visit-seller" list="report-seller-list" placeholder="매장명 입력...">
+            <datalist id="report-seller-list"></datalist></div>
+          <div style="margin-bottom:10px"><div class="flbl">방문일</div><input class="fi" type="date" id="report-visit-date"></div>
+          <div style="margin-bottom:10px"><div class="flbl">방문 내용 (자유롭게 막 적어주세요)</div>
+            <textarea class="fi" id="report-visit-input" rows="6" placeholder="예: 사장님 반응 좋음. 줄즈 에어2 재고 없어서 10개 발주. 타프 사바나 아치 처음 보여줬더니 관심 있어함..."></textarea></div>
+          <div style="margin-bottom:14px"><div class="flbl">브랜드별 특이사항 (부가부/스토케/요요 관련만)</div>
+            <textarea class="fi" id="report-brand-note" rows="2" placeholder="없으면 비워두세요"></textarea></div>
+          <div style="display:flex;gap:8px;margin-bottom:10px">
+            <button class="btn btn-dark btn-sm" onclick="generateVisitReport()">보고서 생성</button>
+            <button class="btn btn-ghost btn-sm" onclick="downloadReport('visit')" id="dl-visit" style="display:none">📥 엑셀 다운로드</button>
+          </div>
+          <div id="report-visit-preview" style="display:none;background:var(--ink-50);border-radius:var(--r-md);padding:16px;font-size:12px;line-height:1.8;white-space:pre-wrap;font-family:var(--fd);max-height:400px;overflow-y:auto"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ██ 재고 현황 ██ -->
+    <div class="page" id="page-stock">
+      <div class="ph">
+        <div><h2>재고 현황</h2><p>엑셀 업로드로 실시간 재고 파악 · 추천 영업에 자동 반영</p></div>
+        <div class="ph-r">
+          <button class="btn btn-ghost btn-sm" onclick="document.getElementById('stock-file-input').click()">📤 재고 엑셀 업로드</button>
+          <input type="file" id="stock-file-input" accept=".xlsx,.xls" style="display:none" onchange="uploadStock(this)">
+        </div>
+      </div>
+      <div id="stock-kpi" style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:20px"></div>
+      <div class="tw"><table>
+        <thead><tr><th>브랜드</th><th>제품명</th><th style="text-align:right">재고 수량</th><th>원본 그룹명</th></tr></thead>
+        <tbody id="stock-tbody"></tbody>
+      </table></div>
+    </div>
+
+    <!-- ██ 엑셀 업로드 ██ -->
     <div class="page" id="page-upload">
       <div class="ph">
         <div><h2>엑셀 업로드</h2><p>CSV 파일로 지사 · 판매부수 데이터를 일괄 입력하세요</p></div>
@@ -1085,7 +1215,7 @@ async function api(url,opts={}){
 }
 function initYears(){
   const y=TY(),yrs=Array.from({length:5},(_,i)=>y-i);
-  ['dash-year','sales-year','ex-year','prod-year','sd-year','script-year','sns-year'].forEach(id=>{
+  ['dash-year','sales-year','ex-year','prod-year','sd-year','script-year','sns-year','ace-year','visit-year'].forEach(id=>{
     const s=document.getElementById(id);
     if(s)s.innerHTML=yrs.map(yr=>`<option${yr===y?' selected':''}>${yr}</option>`).join('');
   });
@@ -1097,8 +1227,445 @@ function showPage(n){
   if(pg) pg.classList.add('active'); if(nav) nav.classList.add('active');
   ({dashboard:loadDash,branches:loadBranches,sales:loadSalesPage,
     users:loadUsers,salesdata:loadSalesData,products:loadProducts,
-    script:initScriptPage,sns:loadSNS}[n]||function(){})();
+    script:initScriptPage,sns:loadSNS,visit:loadVisit,ace:loadAce,
+    report:initReport,stock:loadStock}[n]||function(){})();
   if(n==='upload') cancelUpload();
+}
+
+// ── 매장 방문 일정 ────────────────────────────────
+let visitData=[], visitEditId=null;
+
+async function loadVisit(){
+  const year=document.getElementById('visit-year')?.value||new Date().getFullYear();
+  const month=document.getElementById('visit-month')?.value||'';
+  // 월 드롭다운 초기화
+  const ms=document.getElementById('visit-month');
+  if(ms.children.length===1){
+    for(let m=1;m<=12;m++) ms.innerHTML+=`<option value="${String(m).padStart(2,'0')}">${m}월</option>`;
+  }
+  const rows=await api(`/api/visit/schedule?year=${year}&month=${month}`);
+  if(!rows) return;
+  visitData=rows;
+  renderVisitCalendar(rows, year, month||String(new Date().getMonth()+1).padStart(2,'0'));
+  renderVisitTable(rows);
+  // 매장 목록 채우기
+  const dl=document.getElementById('vm-seller-list');
+  const sellers=[...new Set(rows.map(r=>r.seller_name))];
+  dl.innerHTML=sellers.map(s=>`<option value="${s}">`).join('');
+}
+
+async function generateVisit(){
+  const year=document.getElementById('visit-year')?.value||new Date().getFullYear();
+  const month=document.getElementById('visit-month')?.value||(new Date().getMonth()+1);
+  const btn=event.target; btn.disabled=true; btn.textContent='생성 중...';
+  const r=await api('/api/visit/generate',{method:'POST',body:{year:parseInt(year),month:parseInt(month)}});
+  btn.disabled=false; btn.textContent='✨ 일정 자동 생성';
+  if(r&&r.ok){ toast(`${r.inserted}개 일정 생성 완료`); loadVisit(); }
+}
+
+function renderVisitCalendar(rows, year, month){
+  const cal=document.getElementById('visit-calendar');
+  const y=parseInt(year), m=parseInt(month);
+  const firstDay=new Date(y,m-1,1).getDay();
+  const lastDate=new Date(y,m,0).getDate();
+  const byDate={};
+  rows.forEach(r=>{ const d=r.visit_date?.slice(8,10); if(d){(byDate[d]=byDate[d]||[]).push(r);} });
+
+  const DAYS=['일','월','화','수','목','금','토'];
+  let html=`<div style="background:var(--paper);border-radius:var(--r-lg);padding:16px;box-shadow:var(--sh-sm)">
+    <div style="font-size:14px;font-weight:700;margin-bottom:12px;text-align:center">${y}년 ${m}월 방문 일정</div>
+    <div style="display:grid;grid-template-columns:repeat(7,1fr);gap:4px">
+    ${DAYS.map((d,i)=>`<div style="text-align:center;font-size:11px;font-weight:700;color:${i===0?'#DC2626':i===6?'#2563EB':'var(--ink-400)'};padding:4px">${d}</div>`).join('')}`;
+
+  let day=1, cellIdx=0;
+  while(day<=lastDate){
+    if(cellIdx<firstDay){ html+=`<div></div>`; cellIdx++; continue; }
+    const dd=String(day).padStart(2,'0');
+    const visits=byDate[dd]||[];
+    const isToday=new Date().toISOString().slice(0,10)===`${y}-${String(m).padStart(2,'0')}-${dd}`;
+    html+=`<div style="min-height:70px;border:1px solid var(--ink-100);border-radius:6px;padding:4px;${isToday?'background:#EEF2FF;border-color:var(--accent-m)':''}">
+      <div style="font-size:11px;font-weight:${isToday?'800':'600'};color:${isToday?'var(--accent-m)':'var(--ink-500)'};margin-bottom:2px">${day}</div>
+      ${visits.slice(0,3).map(v=>{
+        const pColor=['','#DC2626','var(--accent-m)','#D97706','#9CA3AF'][v.priority]||'#9CA3AF';
+        const done=v.status==='completed';
+        return `<div onclick="openCheckModal(${v.id})" style="font-size:9px;padding:1px 4px;margin-bottom:1px;border-radius:3px;background:${done?'#DCFCE7':'#EEF2FF'};color:${done?'#16A34A':pColor};cursor:pointer;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;border-left:2px solid ${pColor}">${done?'✓':''} ${v.seller_name}</div>`;
+      }).join('')}
+      ${visits.length>3?`<div style="font-size:9px;color:var(--ink-300)">+${visits.length-3}개</div>`:''}
+    </div>`;
+    day++; cellIdx++;
+  }
+  html+=`</div></div>`;
+  cal.innerHTML=html;
+}
+
+function renderVisitTable(rows){
+  const PRIORITY_LABELS=['','🔴 핵심','🟠 일반','🟡 보완','⚪ 저빈도'];
+  const STATUS={planned:'예정',completed:'✅완료',cancelled:'취소'};
+  document.getElementById('visit-tbody').innerHTML=rows.map(r=>`<tr>
+    <td style="font-weight:600">${r.visit_date}</td>
+    <td>${r.seller_name}</td>
+    <td style="text-align:center;font-size:11px">${PRIORITY_LABELS[r.priority]||''}</td>
+    <td style="text-align:center;font-size:11px;color:${r.status==='completed'?'#16A34A':'var(--ink-400)'}">${STATUS[r.status]||r.status}</td>
+    <td style="font-size:12px;color:var(--ink-500)">${r.reason||''}</td>
+    <td style="text-align:center;font-size:10px;color:${r.is_manual?'#D97706':'var(--ink-300)'}">${r.is_manual?'수동':'자동'}</td>
+    <td style="text-align:center;white-space:nowrap">
+      <button class="btn btn-ghost btn-xs" onclick="openCheckModal(${r.id})">체크</button>
+      <button class="btn btn-ghost btn-xs" onclick="openVisitModal(${r.id})" style="margin-left:3px">편집</button>
+      <button class="btn btn-red-lt btn-xs" onclick="deleteVisit(${r.id})" style="margin-left:3px">삭제</button>
+    </td>
+  </tr>`).join('');
+}
+
+function openVisitModal(id){
+  visitEditId=id;
+  const r=id?visitData.find(x=>x.id===id):{};
+  document.getElementById('visit-modal-title').textContent=id?'방문 일정 편집':'방문 일정 추가';
+  document.getElementById('vm-id').value=id||'';
+  document.getElementById('vm-date').value=r?.visit_date||new Date().toISOString().slice(0,10);
+  document.getElementById('vm-seller').value=r?.seller_name||'';
+  document.getElementById('vm-priority').value=r?.priority||2;
+  document.getElementById('vm-status').value=r?.status||'planned';
+  document.getElementById('vm-reason').value=r?.reason||'';
+  document.getElementById('vm-check').value=r?.check_points||'□ 재고 현황 확인\n□ 진열 상태 점검\n□ 발주 논의\n□ 사장님 VOC 청취';
+  document.getElementById('vm-result').value=r?.result_memo||'';
+  document.getElementById('visit-modal').style.display='flex';
+}
+function closeVisitModal(){ document.getElementById('visit-modal').style.display='none'; }
+
+async function saveVisit(){
+  const d={
+    id: document.getElementById('vm-id').value||null,
+    visit_date: document.getElementById('vm-date').value,
+    seller_name: document.getElementById('vm-seller').value,
+    priority: parseInt(document.getElementById('vm-priority').value),
+    status: document.getElementById('vm-status').value,
+    reason: document.getElementById('vm-reason').value,
+    check_points: document.getElementById('vm-check').value,
+    result_memo: document.getElementById('vm-result').value,
+  };
+  const r=await api('/api/visit/save',{method:'POST',body:d});
+  if(r&&r.ok){ closeVisitModal(); loadVisit(); toast('저장됐습니다'); }
+}
+
+async function deleteVisit(id){
+  if(!confirm('이 일정을 삭제할까요?')) return;
+  const r=await api('/api/visit/delete',{method:'POST',body:{id}});
+  if(r&&r.ok){ loadVisit(); toast('삭제됐습니다'); }
+}
+
+function openCheckModal(id){
+  const r=visitData.find(x=>x.id===id); if(!r) return;
+  document.getElementById('check-modal-seller').textContent=r.seller_name;
+  document.getElementById('check-modal-date').textContent=`방문일: ${r.visit_date} / 이유: ${r.reason||'-'}`;
+  document.getElementById('check-modal-points').textContent=r.check_points||'체크포인트가 없습니다';
+  document.getElementById('check-result').value=r.result_memo||'';
+  document.getElementById('check-modal-id').value=id;
+  document.getElementById('check-modal').style.display='flex';
+}
+async function saveCheckResult(){
+  const id=document.getElementById('check-modal-id').value;
+  const memo=document.getElementById('check-result').value;
+  const r=visitData.find(x=>x.id==id);
+  if(!r) return;
+  const d={id,visit_date:r.visit_date,seller_name:r.seller_name,priority:r.priority,
+            status:'completed',reason:r.reason,check_points:r.check_points,result_memo:memo};
+  const res=await api('/api/visit/save',{method:'POST',body:d});
+  if(res&&res.ok){ document.getElementById('check-modal').style.display='none'; loadVisit(); toast('완료 처리됐습니다'); }
+}
+
+// ── 영업 에이스 포인트 ────────────────────────────
+async function loadAce(){
+  const year=document.getElementById('ace-year')?.value||new Date().getFullYear();
+  const [groups, sellers, stock]=await Promise.all([
+    api(`/api/products/groups`),
+    api(`/api/sales-by-store?year=${year}`),
+    api(`/api/stock/list`),
+  ]);
+  if(!groups||!sellers) return;
+
+  const totalSales=sellers.reduce((s,r)=>s+(r.total||0),0)||1;
+  const stockMap={}; (stock||[]).forEach(s=>{
+    const k=s.item_name_norm||s.item_name;
+    stockMap[k]=(stockMap[k]||0)+(s.quantity||0);
+  });
+
+  const cards=[];
+
+  // 1. 오늘 당장 — 타프토이즈 미취급 + 재고 있는 매장
+  const taftStockItems=Object.entries(stockMap).filter(([k,q])=>q>0&&k.includes('타프'));
+  if(taftStockItems.length>0){
+    const topSellers=sellers.filter(s=>s.total/totalSales>0.01).slice(0,5);
+    cards.push({
+      type:'urgent', icon:'🎯', title:'지금 당장 타프토이즈 밀어야 할 매장',
+      desc:`재고 ${taftStockItems.length}종 보유 중 — 상위 매장 집중 공략`,
+      items:topSellers.map(s=>`• ${s.seller_name} — 연매출 ${N(s.total)}원, 영향력 큰 매장`),
+      action:'이 매장들에 타프토이즈 번들 제안 → 재고 소진 + 신규 도입 동시 달성',
+      color:'#DC2626',bg:'#FEF2F2',
+    });
+  }
+
+  // 2. 80/20 법칙 — 상위 20% 매장
+  const top20pct=Math.ceil(sellers.length*0.2);
+  const topSellers=sellers.slice(0,top20pct);
+  const top20sales=topSellers.reduce((s,r)=>s+(r.total||0),0);
+  cards.push({
+    type:'focus', icon:'⚡', title:`상위 ${top20pct}개 매장이 전체 매출의 ${Math.round(top20sales/totalSales*100)}% 차지`,
+    desc:'이 매장들에 시간의 60%를 써야 합니다',
+    items:topSellers.slice(0,5).map((s,i)=>`${i+1}위. ${s.seller_name} — ${N(s.total)}원 (${(s.total/totalSales*100).toFixed(1)}%)`),
+    action:'방문 주기: 2주 1회 / 발주 선제 제안 / 신제품 우선 배정',
+    color:'var(--accent-m)',bg:'#EEF2FF',
+  });
+
+  // 3. 잠자는 거인 — 오랫동안 발주 없는 큰 매장
+  const longNoOrder=sellers.filter(s=>s.total>500000).slice(Math.floor(sellers.length*0.3));
+  if(longNoOrder.length>0){
+    cards.push({
+      type:'sleeping', icon:'💤', title:'잠자는 거인 — 과거 실적 있지만 최근 조용한 매장',
+      desc:'이 매장들은 한 번 깨우면 폭발적 성장 가능',
+      items:longNoOrder.slice(0,4).map(s=>`• ${s.seller_name} — 누적 ${N(s.total)}원, 재활성화 필요`),
+      action:'맞춤 방문 → 진열 점검 + 신제품 소개 → 발주 재개 유도',
+      color:'#D97706',bg:'#FFFBEB',
+    });
+  }
+
+  // 4. 브랜드 불균형 — 한 브랜드 집중 매장
+  const topGroup=groups[0]; const secGroup=groups[1];
+  if(topGroup&&secGroup){
+    cards.push({
+      type:'balance', icon:'⚖️', title:'브랜드 균형 전략',
+      desc:`현재 ${topGroup.item_group}(${topGroup.qty}개)가 압도적 — ${secGroup.item_group} 비중 높이면 안정성 향상`,
+      items:[
+        `• ${topGroup.item_group} 의존도 높은 매장 → ${secGroup.item_group} 크로스셀 제안`,
+        `• 카시트 구매 후 → 타프토이즈 장난감 번들 추천 (객단가 +20,000원)`,
+        `• 유모차 구매 후 → 보행기/쏘서 시리즈 3개월 후 재방문 제안`,
+      ],
+      action:'1개 제품 구매 → 2-3개 연계 제품 제안 = 고객당 매출 2배',
+      color:'#16A34A',bg:'#F0FDF4',
+    });
+  }
+
+  // 5. 시즌 타이밍
+  const month=new Date().getMonth()+1;
+  const seasons={3:'어린이날 선물 시즌',4:'어린이날 D-30',5:'어린이날 D-Day',
+                 6:'여름 워터매트',7:'여름 실내놀이',8:'가을 준비',
+                 9:'추석 선물',10:'연말 준비',11:'크리스마스',12:'연말+설',1:'설 선물',2:'봄 준비'};
+  cards.push({
+    type:'season', icon:'📅', title:`지금은 ${seasons[month]||'시즌'} — 선제 발주 타이밍`,
+    desc:'시즌 2~3주 전 발주가 핵심. 타이밍 놓치면 다음 시즌까지 기다려야 함',
+    items:month<=5?[
+      '• 줄즈 에어2 봄/여름 신색상 선주문',
+      '• 타프토이즈 워터매트 (6월 이전 발주 필수)',
+      '• 엔픽스 보행기 (어린이날 선물 수요)',
+    ]:month<=8?[
+      '• 타프토이즈 실내놀이 세트 (여름 실내)',
+      '• 레카로 카시트 (여름 휴가 이동 수요)',
+      '• 타프토이즈 워터매트 재고 소진 전략',
+    ]:[
+      '• 레카로 카시트 (추석/크리스마스 선물)',
+      '• 타프토이즈 실내놀이 (겨울 실내)',
+      '• 줄즈 크리스마스 에디션 선주문',
+    ],
+    action:'상위 10개 매장 시즌 발주 미팅 → 이번 주 안에 완료',
+    color:'#7C3AED',bg:'#FAF5FF',
+  });
+
+  document.getElementById('ace-content').innerHTML=cards.map(c=>`
+    <div style="background:${c.bg};border:1.5px solid ${c.color}20;border-radius:var(--r-lg);padding:20px">
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px">
+        <span style="font-size:22px">${c.icon}</span>
+        <div>
+          <div style="font-size:14px;font-weight:800;color:${c.color}">${c.title}</div>
+          <div style="font-size:12px;color:var(--ink-500);margin-top:2px">${c.desc}</div>
+        </div>
+      </div>
+      <div style="font-size:12px;line-height:1.9;color:var(--ink-700);margin-bottom:12px">${c.items.join('<br>')}</div>
+      <div style="background:${c.color};color:#fff;border-radius:var(--r-md);padding:8px 14px;font-size:12px;font-weight:700">
+        💡 실행: ${c.action}
+      </div>
+    </div>`).join('');
+}
+
+// ── 보고서 ────────────────────────────────────────
+let weeklyReportText='', visitReportText='';
+
+async function initReport(){
+  const sellers=await api('/api/sales-by-store?year='+new Date().getFullYear());
+  if(!sellers) return;
+  const dl=document.getElementById('report-seller-list');
+  dl.innerHTML=sellers.map(s=>`<option value="${s.seller_name}">`).join('');
+  document.getElementById('report-visit-date').value=new Date().toISOString().slice(0,10);
+  document.getElementById('report-week-start').value=new Date().toISOString().slice(0,10);
+}
+
+async function generateWeeklyReport(){
+  const input=document.getElementById('report-weekly-input').value.trim();
+  const next=document.getElementById('report-weekly-next').value.trim();
+  const weekStart=document.getElementById('report-week-start').value;
+  if(!input){toast('내용을 입력해주세요',false);return;}
+
+  // 자동 분류
+  const selfBrands=['줄즈','레카로','엔픽스','타프토이즈','원더폴드','카오스','ABC','abc','abc디자인'];
+  const rivalBrands=['그라코','에르고베이비','컴비','조이','페도','마클라렌','퀴니','부가부','스토케','요요'];
+  const lines=input.split(/[.!?\n]/).map(s=>s.trim()).filter(Boolean);
+  const selfLines=[], rivalLines=[], visitLines=[], orderLines=[];
+
+  lines.forEach(l=>{
+    const lo=l.toLowerCase();
+    if(selfBrands.some(b=>lo.includes(b.toLowerCase()))) selfLines.push(l);
+    else if(rivalBrands.some(b=>lo.includes(b.toLowerCase()))) rivalLines.push(l);
+    else if(/방문|방문하|들렀|들러/.test(l)) visitLines.push(l);
+    else if(/발주|주문|개.*받|건.*받/.test(l)) orderLines.push(l);
+  });
+
+  const wd=weekStart?new Date(weekStart):new Date();
+  const we=new Date(wd); we.setDate(we.getDate()+6);
+  const fmt=d=>`${d.getFullYear()}년 ${d.getMonth()+1}월 ${d.getDate()}일`;
+
+  weeklyReportText=`주간 업무 보고서
+────────────────────────────────────────
+보고 기간: ${fmt(wd)} ~ ${fmt(we)}
+작성일: ${new Date().toLocaleDateString('ko-KR')}
+────────────────────────────────────────
+
+【 1. 이번 주 주요 업무 】
+
+▶ 매장 방문 현황
+${visitLines.length?visitLines.map(l=>`  • ${l}`).join('\n'):'  • -'}
+
+▶ 발주/수주 현황
+${orderLines.length?orderLines.map(l=>`  • ${l}`).join('\n'):'  • -'}
+
+▶ 자사 브랜드 관련 주요 내용
+${selfLines.length?selfLines.map(l=>`  • ${l}`).join('\n'):'  • -'}
+
+▶ 타사/경쟁사 관련 내용
+${rivalLines.length?rivalLines.map(l=>`  • ${l}`).join('\n'):'  • -'}
+
+【 2. 다음 주 계획 】
+${next?next.split(/[.\n]/).filter(Boolean).map(l=>`  • ${l.trim()}`).join('\n'):'  • -'}
+
+────────────────────────────────────────
+※ 본 보고서는 입력 내용을 기반으로 자동 생성되었습니다.
+────────────────────────────────────────`;
+
+  document.getElementById('report-weekly-preview').textContent=weeklyReportText;
+  document.getElementById('report-weekly-preview').style.display='block';
+  document.getElementById('dl-weekly').style.display='';
+}
+
+async function generateVisitReport(){
+  const sellerName=document.getElementById('report-visit-seller').value.trim();
+  const visitDate=document.getElementById('report-visit-date').value;
+  const input=document.getElementById('report-visit-input').value.trim();
+  const brandNote=document.getElementById('report-brand-note').value.trim();
+  if(!sellerName||!input){toast('매장명과 내용을 입력해주세요',false);return;}
+
+  // 해당 매장 판매 데이터
+  const year=new Date().getFullYear();
+  const saleData=await api(`/api/script/analysis?seller=${encodeURIComponent(sellerName)}&year=${year}`);
+
+  // 자동 분류
+  const selfBrands=['줄즈','레카로','엔픽스','타프토이즈','원더폴드','카오스','ABC'];
+  const rivalBrands=['그라코','에르고베이비','컴비','조이','페도','마클라렌','퀴니','부가부','스토케','요요'];
+  const lines=input.split(/[.!?\n]/).map(s=>s.trim()).filter(Boolean);
+  const selfItems=[], rivalItems=[], orderItems=[], otherItems=[];
+  lines.forEach(l=>{
+    const lo=l.toLowerCase();
+    if(selfBrands.some(b=>lo.includes(b.toLowerCase()))) selfItems.push(l);
+    else if(rivalBrands.some(b=>lo.includes(b.toLowerCase()))) rivalItems.push(l);
+    else if(/발주|주문|개.*받/.test(l)) orderItems.push(l);
+    else otherItems.push(l);
+  });
+
+  const totalSales=saleData?.total||0;
+  const months=saleData?.weekly?.length||1;
+  const avgMonthly=Math.round(totalSales/Math.max(months/4,1));
+  const topBrand=saleData?.brand_summary?.[0]?.brand||'-';
+  const topBrandPct=saleData?.brand_summary?.[0]?.pct||0;
+
+  // 부가부/스토케/요요 관련 (있을 때만)
+  const specialBrands=['부가부','스토케','요요'];
+  const brandSpecial=brandNote||(lines.some(l=>specialBrands.some(b=>l.includes(b)))?
+    lines.filter(l=>specialBrands.some(b=>l.includes(b))).map(l=>`• ${l}`).join('\n'):'-');
+
+  visitReportText=`매장 방문 보고서
+════════════════════════════════════════
+【 기본 정보 】
+매장명     : ${sellerName}
+방문일     : ${visitDate}
+누적 매출  : ${N(totalSales)}원 (${year}년)
+월 평균 매출: ${N(avgMonthly)}원
+주력 브랜드 : ${topBrand} (${topBrandPct}%)
+────────────────────────────────────────
+
+【 자사 주요 내용 】
+${selfItems.length?selfItems.map(l=>`  • ${l}`).join('\n'):'  • -'}
+
+【 발주/수주 내역 】
+${orderItems.length?orderItems.map(l=>`  • ${l}`).join('\n'):'  • -'}
+
+【 타사/경쟁사 주요 내용 】
+${rivalItems.length?rivalItems.map(l=>`  • ${l}`).join('\n'):'  • -'}
+
+【 브랜드별 특이사항 (부가부/스토케/요요) 】
+  ${brandSpecial==='-'?'-':brandSpecial}
+
+【 기타 특이사항 】
+${otherItems.length?otherItems.map(l=>`  • ${l}`).join('\n'):'  • -'}
+
+────────────────────────────────────────
+작성일: ${new Date().toLocaleDateString('ko-KR')}
+════════════════════════════════════════`;
+
+  document.getElementById('report-visit-preview').textContent=visitReportText;
+  document.getElementById('report-visit-preview').style.display='block';
+  document.getElementById('dl-visit').style.display='';
+}
+
+async function downloadReport(type){
+  const text=type==='weekly'?weeklyReportText:visitReportText;
+  if(!text) return;
+  // 엑셀로 다운로드
+  const wb=XLSX.utils.book_new();
+  const rows=text.split('\n').map(l=>[l]);
+  const ws=XLSX.utils.aoa_to_sheet(rows);
+  ws['!cols']=[{wch:80}];
+  XLSX.utils.book_append_sheet(wb,ws,type==='weekly'?'주간업무보고':'매장방문보고서');
+  XLSX.writeFile(wb,`${type==='weekly'?'주간업무보고':'매장방문보고서'}_${new Date().toISOString().slice(0,10)}.xlsx`);
+}
+
+// ── 재고 현황 ──────────────────────────────────────
+async function uploadStock(input){
+  const file=input.files[0]; if(!file) return;
+  const fd=new FormData(); fd.append('file',file);
+  const r=await fetch('/api/stock/upload',{method:'POST',body:fd});
+  const d=await r.json();
+  if(d.ok){ toast(`재고 ${d.rows}개 품목 업로드 완료`); loadStock(); }
+  else toast('업로드 실패: '+d.msg, false);
+  input.value='';
+}
+
+async function loadStock(){
+  const rows=await api('/api/stock/list'); if(!rows) return;
+  // KPI
+  const total=rows.reduce((s,r)=>s+(r.quantity||0),0);
+  const brands=[...new Set(rows.map(r=>r.brand))];
+  const taft=rows.filter(r=>r.brand==='타프토이즈');
+  const taftTotal=taft.reduce((s,r)=>s+(r.quantity||0),0);
+  document.getElementById('stock-kpi').innerHTML=[
+    {l:'전체 품목',v:`${rows.length}종`,c:'var(--accent-m)'},
+    {l:'총 재고 수량',v:`${total.toLocaleString()}개`,c:'#0891B2'},
+    {l:'취급 브랜드',v:`${brands.length}개`,c:'#16A34A'},
+    {l:'타프토이즈',v:`${taft.length}종/${taftTotal}개`,c:'#7C3AED'},
+  ].map(k=>`<div class="kpi"><div class="kpi-accent" style="background:${k.c}"></div>
+    <div class="kpi-lbl">${k.l}</div><div class="kpi-val" style="font-size:18px;color:${k.c}">${k.v}</div></div>`).join('');
+  // 테이블
+  document.getElementById('stock-tbody').innerHTML=rows.map(r=>`<tr>
+    <td><span style="background:#EEF2FF;color:var(--accent-m);padding:2px 8px;border-radius:20px;font-size:11px;font-weight:700">${r.brand||'—'}</span></td>
+    <td style="font-weight:600">${r.item_name_norm||r.item_name}</td>
+    <td style="text-align:right;font-weight:700;color:${(r.quantity||0)>10?'#16A34A':(r.quantity||0)>3?'#D97706':'#DC2626'}">${(r.quantity||0).toLocaleString()}개</td>
+    <td style="color:var(--ink-300);font-size:12px">${r.item_group||'—'}</td>
+  </tr>`).join('');
 }
 
 // ── 매장 추천 스크립트 ──────────────────────────

@@ -113,6 +113,38 @@ def init_db():
     except Exception:
         pass
 
+    # 방문 일정 테이블
+    conn.execute("""CREATE TABLE IF NOT EXISTS visit_schedule (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        visit_date TEXT NOT NULL,
+        seller_name TEXT NOT NULL,
+        visit_type TEXT DEFAULT 'auto',
+        reason TEXT DEFAULT '',
+        priority INTEGER DEFAULT 2,
+        status TEXT DEFAULT 'planned',
+        check_points TEXT DEFAULT '',
+        result_memo TEXT DEFAULT '',
+        is_manual INTEGER DEFAULT 0,
+        created_at TEXT DEFAULT '',
+        updated_at TEXT DEFAULT ''
+    )""")
+    # 재고 현황 테이블
+    conn.execute("""CREATE TABLE IF NOT EXISTS stock_data (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        item_name TEXT NOT NULL,
+        item_group TEXT DEFAULT '',
+        quantity INTEGER DEFAULT 0,
+        upload_date TEXT DEFAULT '',
+        upload_batch TEXT DEFAULT ''
+    )""")
+    # 보고서 양식 테이블
+    conn.execute("""CREATE TABLE IF NOT EXISTS report_template (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        template_name TEXT NOT NULL,
+        template_type TEXT DEFAULT 'weekly',
+        columns TEXT DEFAULT '',
+        uploaded_at TEXT DEFAULT ''
+    )""")
     # SNS 정보 테이블 (블로그 중심)
     conn.execute("""CREATE TABLE IF NOT EXISTS sns_info (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -3734,27 +3766,38 @@ def api_sns_save_search():
     now = datetime.now().strftime('%Y-%m-%d %H:%M')
     for r in results:
         if not r.get('ok'): continue
-        conn.execute("""INSERT INTO sns_info
-            (seller_name, blog_total_posts, blog_latest_date, blog_recent_30d,
-             blog_has_product_post, blog_platform, blog_recent_titles, blog_keywords,
-             blog_score, blog_grade, last_searched, updated_at)
-            VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
-            ON CONFLICT(seller_name) DO UPDATE SET
-            blog_total_posts=excluded.blog_total_posts,
-            blog_latest_date=excluded.blog_latest_date,
-            blog_recent_30d=excluded.blog_recent_30d,
-            blog_has_product_post=excluded.blog_has_product_post,
-            blog_platform=excluded.blog_platform,
-            blog_recent_titles=excluded.blog_recent_titles,
-            blog_keywords=excluded.blog_keywords,
-            blog_score=excluded.blog_score,
-            blog_grade=excluded.blog_grade,
-            last_searched=excluded.last_searched,
-            updated_at=excluded.updated_at""",
-            (r['seller_name'], r['blog_total'], r['blog_latest'], r['blog_recent_30d'],
-             r['blog_has_product_post'], r['blog_platform'], r['blog_recent_titles'],
-             r['blog_keywords'], r['blog_score'], r['blog_grade'], now, now))
-        updated += 1
+        try:
+            conn.execute("""INSERT INTO sns_info
+                (seller_name, blog_total_posts, blog_latest_date, blog_recent_30d,
+                 blog_has_product_post, blog_platform, blog_recent_titles, blog_keywords,
+                 blog_score, blog_grade, last_searched, updated_at)
+                VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
+                ON CONFLICT(seller_name) DO UPDATE SET
+                blog_total_posts=excluded.blog_total_posts,
+                blog_latest_date=excluded.blog_latest_date,
+                blog_recent_30d=excluded.blog_recent_30d,
+                blog_has_product_post=excluded.blog_has_product_post,
+                blog_platform=excluded.blog_platform,
+                blog_recent_titles=excluded.blog_recent_titles,
+                blog_keywords=excluded.blog_keywords,
+                blog_score=excluded.blog_score,
+                blog_grade=excluded.blog_grade,
+                last_searched=excluded.last_searched,
+                updated_at=excluded.updated_at""",
+                (r['seller_name'],
+                 r.get('blog_total', r.get('blog_total_posts', 0)),  # 키 이름 호환
+                 r.get('blog_latest', r.get('blog_latest_date', '')),
+                 r.get('blog_recent_30d', 0),
+                 r.get('blog_has_product_post', 0),
+                 r.get('blog_platform', ''),
+                 r.get('blog_recent_titles', ''),
+                 r.get('blog_keywords', ''),
+                 r.get('blog_score', 0),
+                 r.get('blog_grade', ''),
+                 now, now))
+            updated += 1
+        except Exception as e:
+            app.logger.error(f"sns save error {r.get('seller_name')}: {e}")
     conn.commit(); conn.close()
     return jsonify({'ok': True, 'updated': updated})
 
@@ -3817,6 +3860,268 @@ def api_sns_save_memo():
     conn.commit(); conn.close()
     return jsonify({'ok': True})
 
+
+# ── 매장 방문 일정 API ───────────────────────────────
+@app.route("/api/visit/schedule")
+@login_required
+def api_visit_schedule():
+    year  = request.args.get("year",  str(datetime.now().year))
+    month = request.args.get("month", "")
+    conn  = get_db()
+    cond  = f"visit_date LIKE '{year}-{month.zfill(2)}%'" if month else f"visit_date LIKE '{year}%'"
+    rows  = [dict(r) for r in conn.execute(
+        f"SELECT * FROM visit_schedule WHERE {cond} ORDER BY visit_date, priority").fetchall()]
+    conn.close()
+    return jsonify(rows)
+
+@app.route("/api/visit/generate", methods=["POST"])
+@login_required
+def api_visit_generate():
+    """데이터 기반 방문 일정 자동 생성"""
+    from datetime import datetime as dt2, timedelta
+    import calendar as cal_mod
+
+    d     = request.json or {}
+    year  = int(d.get('year',  dt2.now().year))
+    month = int(d.get('month', dt2.now().month))
+
+    conn = get_db()
+
+    # 수동 입력 일정 보호 (is_manual=1 유지)
+    conn.execute("""DELETE FROM visit_schedule
+        WHERE visit_date LIKE ? AND is_manual=0""",
+        (f"{year}-{month:02d}%",))
+
+    # 매장별 데이터 분석
+    sellers_data = [dict(r) for r in conn.execute(f"""
+        SELECT real_seller,
+               SUM(total) total,
+               COUNT(*) cnt,
+               MAX(sale_date) last_sale,
+               COUNT(DISTINCT item_group) brand_cnt
+        FROM sales_data
+        WHERE real_seller!='' AND sale_date LIKE '{year}%'
+        GROUP BY real_seller ORDER BY total DESC""").fetchall()]
+
+    # 전체 합계
+    total_all = sum(s['total'] or 0 for s in sellers_data) or 1
+
+    # 재고 데이터 (있으면)
+    stock_items = {r[0]:r[1] for r in conn.execute(
+        "SELECT item_name, quantity FROM stock_data WHERE quantity>0").fetchall()}
+
+    # 기존 수동 일정 날짜 파악 (충돌 방지)
+    manual_dates = set(r[0] for r in conn.execute(
+        f"SELECT DISTINCT visit_date FROM visit_schedule "
+        f"WHERE visit_date LIKE '{year}-{month:02d}%' AND is_manual=1").fetchall())
+
+    schedules = []
+
+    for s in sellers_data:
+        seller  = s['real_seller']
+        total   = s['total'] or 0
+        pct     = total / total_all * 100
+        last    = s['last_sale'] or ''
+        brands  = s['brand_cnt'] or 0
+
+        # 등급 산정
+        if pct >= 10:    grade='A'; base_freq=14   # 2주 1회
+        elif pct >= 5:   grade='B'; base_freq=21   # 3주 1회
+        elif pct >= 2:   grade='C'; base_freq=28   # 4주 1회
+        elif pct >= 0.5: grade='D'; base_freq=42   # 6주 1회
+        else:            grade='E'; base_freq=60   # 2달 1회
+
+        # 최근 방문 여부 고려
+        days_since_last = 999
+        if last:
+            try:
+                days_since_last = (dt2.now() - dt2.strptime(last, '%Y-%m-%d')).days
+            except: pass
+
+        # 우선순위 결정
+        priority = 1 if grade=='A' else 2 if grade=='B' else 3 if grade=='C' else 4
+
+        # 타프토이즈 미취급 → 우선순위 상향
+        taft_sold = conn.execute("""
+            SELECT COUNT(DISTINCT item_name) FROM sales_data
+            WHERE real_seller=? AND item_group='TAFTOYS'""", (seller,)).fetchone()[0]
+        if taft_sold == 0: priority = max(1, priority-1)
+
+        # 방문 이유 생성
+        reasons = []
+        if grade in ('A','B'): reasons.append(f"{grade}등급 핵심 거래처 정기 방문")
+        if taft_sold == 0: reasons.append("타프토이즈 신규 도입 제안")
+        if brands <= 2: reasons.append("취급 브랜드 확대 논의")
+        if days_since_last > 45: reasons.append(f"장기 미방문 ({days_since_last}일)")
+        reason = ' / '.join(reasons[:2]) if reasons else "정기 방문"
+
+        # 체크포인트
+        check_points = []
+        check_points.append(f"재고 현황 확인 ({s.get('cnt',0)}건 판매 이력)")
+        if taft_sold == 0:
+            check_points.append("타프토이즈 라인업 제안 (재고 있는 인기 제품 중심)")
+        if brands <= 3:
+            check_points.append(f"취급 브랜드 {brands}개 → 확대 가능성 논의")
+        check_points.append("진열 상태 점검 및 POP 교체")
+        check_points.append("사장님 VOC 청취")
+
+        # 날짜 배정 (영업일 기준, 하루 3~4개 매장)
+        _, last_day = cal_mod.monthrange(year, month)
+        # 우선순위별로 달 초/중/말에 배치
+        if priority == 1:
+            target_day = min(7, last_day)
+        elif priority == 2:
+            target_day = min(14, last_day)
+        elif priority == 3:
+            target_day = min(21, last_day)
+        else:
+            target_day = min(28, last_day)
+
+        visit_date = f"{year}-{month:02d}-{target_day:02d}"
+        # 수동 일정과 겹치지 않게
+        if visit_date in manual_dates:
+            target_day = min(target_day+1, last_day)
+            visit_date = f"{year}-{month:02d}-{target_day:02d}"
+
+        schedules.append({
+            'visit_date':   visit_date,
+            'seller_name':  seller,
+            'visit_type':   'auto',
+            'reason':       reason,
+            'priority':     priority,
+            'status':       'planned',
+            'check_points': '\n'.join(f"□ {cp}" for cp in check_points),
+            'is_manual':    0,
+            'created_at':   dt2.now().strftime('%Y-%m-%d %H:%M'),
+            'updated_at':   dt2.now().strftime('%Y-%m-%d %H:%M'),
+        })
+
+    # 날짜 분산 (같은 날 최대 4개)
+    from collections import defaultdict
+    date_count = defaultdict(int)
+    # 수동 일정 날짜 카운트
+    for md in manual_dates:
+        date_count[md] += 1
+
+    _, last_day = cal_mod.monthrange(year, month)
+    for s in schedules:
+        d_str = s['visit_date']
+        day   = int(d_str.split('-')[2])
+        # 이미 4개 이상이면 다음날로
+        attempts = 0
+        while date_count[d_str] >= 4 and attempts < 20:
+            day = day + 1 if day < last_day else 1
+            d_str = f"{year}-{month:02d}-{day:02d}"
+            attempts += 1
+        s['visit_date'] = d_str
+        date_count[d_str] += 1
+
+    # DB 저장
+    inserted = 0
+    for s in schedules:
+        conn.execute("""INSERT INTO visit_schedule
+            (visit_date,seller_name,visit_type,reason,priority,status,check_points,is_manual,created_at,updated_at)
+            VALUES(?,?,?,?,?,?,?,?,?,?)""",
+            (s['visit_date'],s['seller_name'],s['visit_type'],s['reason'],
+             s['priority'],s['status'],s['check_points'],0,s['created_at'],s['updated_at']))
+        inserted += 1
+
+    conn.commit(); conn.close()
+    return jsonify({'ok': True, 'inserted': inserted, 'year': year, 'month': month})
+
+@app.route("/api/visit/save", methods=["POST"])
+@login_required
+def api_visit_save():
+    """방문 일정 수동 저장/수정"""
+    from datetime import datetime as dt2
+    d    = request.json or {}
+    conn = get_db()
+    now  = dt2.now().strftime('%Y-%m-%d %H:%M')
+    vid  = d.get('id')
+    if vid:  # 수정
+        conn.execute("""UPDATE visit_schedule SET
+            visit_date=?, seller_name=?, reason=?, priority=?, status=?,
+            check_points=?, result_memo=?, is_manual=1, updated_at=?
+            WHERE id=?""",
+            (d['visit_date'], d['seller_name'], d.get('reason',''), d.get('priority',2),
+             d.get('status','planned'), d.get('check_points',''),
+             d.get('result_memo',''), now, vid))
+    else:  # 신규
+        conn.execute("""INSERT INTO visit_schedule
+            (visit_date,seller_name,visit_type,reason,priority,status,check_points,result_memo,is_manual,created_at,updated_at)
+            VALUES(?,?,?,?,?,?,?,?,1,?,?)""",
+            (d['visit_date'], d['seller_name'], 'manual', d.get('reason',''),
+             d.get('priority',2), d.get('status','planned'),
+             d.get('check_points',''), d.get('result_memo',''), now, now))
+    conn.commit(); conn.close()
+    return jsonify({'ok': True})
+
+@app.route("/api/visit/delete", methods=["POST"])
+@login_required
+def api_visit_delete():
+    vid = (request.json or {}).get('id')
+    if not vid: return jsonify({'ok':False}), 400
+    conn = get_db(); conn.execute("DELETE FROM visit_schedule WHERE id=?", (vid,))
+    conn.commit(); conn.close()
+    return jsonify({'ok': True})
+
+# ── 재고 현황 API ────────────────────────────────────
+@app.route("/api/stock/upload", methods=["POST"])
+@login_required
+def api_stock_upload():
+    """재고 xlsx 업로드"""
+    from datetime import datetime as dt2
+    if 'file' not in request.files:
+        return jsonify({'ok':False,'msg':'파일 없음'}), 400
+    file = request.files['file']
+    data = file.read()
+    try:
+        wb  = openpyxl.load_workbook(io.BytesIO(data), data_only=True)
+        ws  = wb.active
+        rows_parsed = []
+        headers = []
+        for ri, row in enumerate(ws.iter_rows(values_only=True)):
+            if ri == 0:
+                headers = [str(c or '').strip() for c in row]
+                continue
+            if not any(row): continue
+            rdict = dict(zip(headers, row))
+            # 제품명, 수량 컬럼 자동 파악
+            item_name = (rdict.get('제품명') or rdict.get('품목명') or rdict.get('상품명') or
+                        rdict.get('item_name') or list(rdict.values())[0] or '')
+            quantity  = (rdict.get('수량') or rdict.get('재고수량') or rdict.get('재고') or
+                        rdict.get('quantity') or 0)
+            item_group = (rdict.get('품목그룹') or rdict.get('브랜드') or rdict.get('카테고리') or '')
+            try: quantity = int(float(str(quantity).replace(',','')))
+            except: quantity = 0
+            if item_name and quantity >= 0:
+                rows_parsed.append({'item_name': str(item_name).strip(),
+                                    'item_group': str(item_group).strip(),
+                                    'quantity': quantity})
+        batch = dt2.now().strftime('%Y%m%d%H%M%S')
+        conn  = get_db()
+        conn.execute("DELETE FROM stock_data")  # 최신으로 교체
+        for r in rows_parsed:
+            conn.execute("INSERT INTO stock_data (item_name,item_group,quantity,upload_date,upload_batch) VALUES(?,?,?,?,?)",
+                (r['item_name'], r['item_group'], r['quantity'],
+                 dt2.now().strftime('%Y-%m-%d'), batch))
+        conn.commit(); conn.close()
+        return jsonify({'ok': True, 'rows': len(rows_parsed), 'batch': batch})
+    except Exception as e:
+        return jsonify({'ok': False, 'msg': str(e)}), 500
+
+@app.route("/api/stock/list")
+@login_required
+def api_stock_list():
+    conn = get_db()
+    rows = [dict(r) for r in conn.execute(
+        "SELECT * FROM stock_data WHERE quantity>0 ORDER BY item_group, item_name").fetchall()]
+    conn.close()
+    # remap 적용
+    for r in rows:
+        r['brand'] = remap_group(r['item_group'], r['item_name'])
+        r['item_name_norm'] = normalize_item_name(r['item_name'])
+    return jsonify(rows)
 
 # Render/gunicorn 실행 시 자동 초기화
 init_db()
