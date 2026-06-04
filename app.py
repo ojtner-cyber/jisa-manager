@@ -3759,45 +3759,70 @@ def api_sns_search():
 @app.route("/api/sns/save-search", methods=["POST"])
 @login_required
 def api_sns_save_search():
-    """검색 결과 DB 저장"""
+    """검색 결과 DB 저장 — UPDATE 우선, 없으면 INSERT"""
     results = request.json.get('results', [])
     conn = get_db()
     updated = 0
     now = datetime.now().strftime('%Y-%m-%d %H:%M')
+
+    # 마이그레이션: 필요한 컬럼 없으면 추가
+    try:
+        existing_cols = [r[1] for r in conn.execute("PRAGMA table_info(sns_info)").fetchall()]
+        new_cols = {
+            'blog_platform': 'TEXT DEFAULT ""',
+            'blog_total_posts': 'INTEGER DEFAULT 0',
+            'blog_latest_date': 'TEXT DEFAULT ""',
+            'blog_recent_30d': 'INTEGER DEFAULT 0',
+            'blog_recent_titles': 'TEXT DEFAULT ""',
+            'blog_keywords': 'TEXT DEFAULT ""',
+            'blog_has_product_post': 'INTEGER DEFAULT 0',
+            'blog_grade': 'TEXT DEFAULT ""',
+            'blog_score': 'INTEGER DEFAULT 0',
+            'last_searched': 'TEXT DEFAULT ""',
+        }
+        for col, typ in new_cols.items():
+            if col not in existing_cols:
+                conn.execute(f"ALTER TABLE sns_info ADD COLUMN {col} {typ}")
+        conn.commit()
+    except Exception as e:
+        app.logger.error(f"sns migration error: {e}")
+
     for r in results:
         if not r.get('ok'): continue
+        seller = r.get('seller_name','')
+        if not seller: continue
         try:
-            conn.execute("""INSERT INTO sns_info
-                (seller_name, blog_total_posts, blog_latest_date, blog_recent_30d,
-                 blog_has_product_post, blog_platform, blog_recent_titles, blog_keywords,
-                 blog_score, blog_grade, last_searched, updated_at)
-                VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
-                ON CONFLICT(seller_name) DO UPDATE SET
-                blog_total_posts=excluded.blog_total_posts,
-                blog_latest_date=excluded.blog_latest_date,
-                blog_recent_30d=excluded.blog_recent_30d,
-                blog_has_product_post=excluded.blog_has_product_post,
-                blog_platform=excluded.blog_platform,
-                blog_recent_titles=excluded.blog_recent_titles,
-                blog_keywords=excluded.blog_keywords,
-                blog_score=excluded.blog_score,
-                blog_grade=excluded.blog_grade,
-                last_searched=excluded.last_searched,
-                updated_at=excluded.updated_at""",
-                (r['seller_name'],
-                 r.get('blog_total', r.get('blog_total_posts', 0)),  # 키 이름 호환
-                 r.get('blog_latest', r.get('blog_latest_date', '')),
-                 r.get('blog_recent_30d', 0),
-                 r.get('blog_has_product_post', 0),
-                 r.get('blog_platform', ''),
-                 r.get('blog_recent_titles', ''),
-                 r.get('blog_keywords', ''),
-                 r.get('blog_score', 0),
-                 r.get('blog_grade', ''),
-                 now, now))
+            blog_total  = r.get('blog_total', r.get('blog_total_posts', 0))
+            blog_latest = r.get('blog_latest', r.get('blog_latest_date', ''))
+            blog_r30    = r.get('blog_recent_30d', 0)
+            blog_prod   = r.get('blog_has_product_post', 0)
+            blog_plat   = r.get('blog_platform', '')
+            blog_titles = r.get('blog_recent_titles', '')
+            blog_kws    = r.get('blog_keywords', '')
+            blog_score  = r.get('blog_score', 0)
+            blog_grade  = r.get('blog_grade', '')
+
+            exists = conn.execute("SELECT id FROM sns_info WHERE seller_name=?", (seller,)).fetchone()
+            if exists:
+                conn.execute("""UPDATE sns_info SET
+                    blog_total_posts=?, blog_latest_date=?, blog_recent_30d=?,
+                    blog_has_product_post=?, blog_platform=?, blog_recent_titles=?,
+                    blog_keywords=?, blog_score=?, blog_grade=?,
+                    last_searched=?, updated_at=?
+                    WHERE seller_name=?""",
+                    (blog_total, blog_latest, blog_r30, blog_prod, blog_plat,
+                     blog_titles, blog_kws, blog_score, blog_grade, now, now, seller))
+            else:
+                conn.execute("""INSERT INTO sns_info
+                    (seller_name, blog_total_posts, blog_latest_date, blog_recent_30d,
+                     blog_has_product_post, blog_platform, blog_recent_titles, blog_keywords,
+                     blog_score, blog_grade, last_searched, updated_at)
+                    VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    (seller, blog_total, blog_latest, blog_r30, blog_prod,
+                     blog_plat, blog_titles, blog_kws, blog_score, blog_grade, now, now))
             updated += 1
         except Exception as e:
-            app.logger.error(f"sns save error {r.get('seller_name')}: {e}")
+            app.logger.error(f"sns save error {seller}: {e}")
     conn.commit(); conn.close()
     return jsonify({'ok': True, 'updated': updated})
 
@@ -3819,21 +3844,22 @@ def api_sns_list():
     for s in sellers:
         info = sns_map.get(s, {})
         result.append({
-            'seller_name':         s,
-            'blog_url':            info.get('blog_url',''),
-            'blog_name':           info.get('blog_name',''),
-            'blog_platform':       info.get('blog_platform',''),
-            'blog_total_posts':    info.get('blog_total_posts',0),
-            'blog_latest_date':    info.get('blog_latest_date',''),
-            'blog_recent_30d':     info.get('blog_recent_30d',0),
-            'blog_has_product_post': info.get('blog_has_product_post',0),
-            'blog_recent_titles':  info.get('blog_recent_titles',''),
-            'blog_keywords':       info.get('blog_keywords',''),
-            'blog_score':          info.get('blog_score',0),
-            'blog_grade':          info.get('blog_grade',''),
-            'last_searched':       info.get('last_searched',''),
-            'memo':                info.get('memo',''),
-            'year_sales':          sales_map.get(s,0),
+            'seller_name':           s,
+            'blog_url':              info.get('blog_url',''),
+            'blog_name':             info.get('blog_name',''),
+            'blog_platform':         info.get('blog_platform',''),
+            'blog_total_posts':      info.get('blog_total_posts', 0),
+            'blog_latest_date':      info.get('blog_latest_date',''),
+            'blog_recent_30d':       info.get('blog_recent_30d', 0),
+            'blog_has_product_post': info.get('blog_has_product_post', 0),
+            'blog_recent_titles':    info.get('blog_recent_titles',''),
+            'blog_keywords':         info.get('blog_keywords',''),
+            # blog_score: 새 컬럼 우선, 없으면 구 sns_score 사용
+            'blog_score':   info.get('blog_score', info.get('sns_score', 0)),
+            'blog_grade':   info.get('blog_grade',''),
+            'last_searched':info.get('last_searched', info.get('last_checked','')),
+            'memo':         info.get('memo',''),
+            'year_sales':   sales_map.get(s, 0),
         })
     result.sort(key=lambda x: -x['year_sales'])
     return jsonify(result)
@@ -3965,26 +3991,7 @@ def api_visit_generate():
         check_points.append("진열 상태 점검 및 POP 교체")
         check_points.append("사장님 VOC 청취")
 
-        # 날짜 배정 (영업일 기준, 하루 3~4개 매장)
-        _, last_day = cal_mod.monthrange(year, month)
-        # 우선순위별로 달 초/중/말에 배치
-        if priority == 1:
-            target_day = min(7, last_day)
-        elif priority == 2:
-            target_day = min(14, last_day)
-        elif priority == 3:
-            target_day = min(21, last_day)
-        else:
-            target_day = min(28, last_day)
-
-        visit_date = f"{year}-{month:02d}-{target_day:02d}"
-        # 수동 일정과 겹치지 않게
-        if visit_date in manual_dates:
-            target_day = min(target_day+1, last_day)
-            visit_date = f"{year}-{month:02d}-{target_day:02d}"
-
         schedules.append({
-            'visit_date':   visit_date,
             'seller_name':  seller,
             'visit_type':   'auto',
             'reason':       reason,
@@ -3992,29 +3999,81 @@ def api_visit_generate():
             'status':       'planned',
             'check_points': '\n'.join(f"□ {cp}" for cp in check_points),
             'is_manual':    0,
+            'region':       detect_region_from_name(seller),  # 지역 태그
             'created_at':   dt2.now().strftime('%Y-%m-%d %H:%M'),
             'updated_at':   dt2.now().strftime('%Y-%m-%d %H:%M'),
         })
 
-    # 날짜 분산 (같은 날 최대 4개)
-    from collections import defaultdict
-    date_count = defaultdict(int)
-    # 수동 일정 날짜 카운트
-    for md in manual_dates:
-        date_count[md] += 1
+    # ── 동선 최적화: 지역별 묶어서 날짜 배정 ──────────────
+    # 지역 우선순위 (서울/경기 → 인천 → 충청 → 부산/경상 → 전라 → 강원 → 제주)
+    REGION_ORDER = ['서울','경기','인천','경기북부','경기남부','수도권',
+                    '충청','대전','충남','충북',
+                    '부산','경상','대구','울산','경남','경북',
+                    '전라','광주','전남','전북',
+                    '강원',
+                    '제주',
+                    '']  # 지역 미상 → 마지막
 
+    def region_order_key(region):
+        r = (region or '').strip()
+        for i, rk in enumerate(REGION_ORDER):
+            if rk and rk in r: return i
+        return len(REGION_ORDER)
+
+    # 우선순위 → 지역 순서로 정렬
+    schedules.sort(key=lambda x: (x['priority'], region_order_key(x.get('region',''))))
+
+    # 영업일 목록 생성 (주말 제외, 하루 4개 매장)
+    from collections import defaultdict
+    import calendar as cal_mod
     _, last_day = cal_mod.monthrange(year, month)
-    for s in schedules:
-        d_str = s['visit_date']
-        day   = int(d_str.split('-')[2])
-        # 이미 4개 이상이면 다음날로
-        attempts = 0
-        while date_count[d_str] >= 4 and attempts < 20:
-            day = day + 1 if day < last_day else 1
-            d_str = f"{year}-{month:02d}-{day:02d}"
-            attempts += 1
-        s['visit_date'] = d_str
-        date_count[d_str] += 1
+    workdays = []
+    for d_num in range(1, last_day+1):
+        wd = dt2(year, month, d_num).weekday()
+        if wd < 5:  # 월~금
+            workdays.append(f"{year}-{month:02d}-{d_num:02d}")
+
+    # 수동 일정 날짜별 카운트
+    date_count = defaultdict(int)
+    for md in manual_dates: date_count[md] += 1
+
+    # 같은 지역 묶기 → 같은 날 배정
+    SLOTS_PER_DAY = 4
+    workday_idx = 0
+
+    # 지역별 그룹 생성
+    region_groups = defaultdict(list)
+    for sc in schedules:
+        rg = detect_region_from_name(sc['seller_name']) or '기타'
+        # 지역 대분류
+        if any(k in rg for k in ['서울','경기','인천']): rg_key='수도권'
+        elif any(k in rg for k in ['충청','대전','충남','충북']): rg_key='충청권'
+        elif any(k in rg for k in ['부산','경상','대구','울산','경남','경북']): rg_key='경상권'
+        elif any(k in rg for k in ['전라','광주','전남','전북']): rg_key='전라권'
+        elif '강원' in rg: rg_key='강원권'
+        elif '제주' in rg: rg_key='제주권'
+        else: rg_key='기타'
+        region_groups[rg_key].append(sc)
+
+    # 지역 방문 순서 (이동 동선)
+    ROUTE_ORDER = ['수도권','충청권','경상권','전라권','강원권','제주권','기타']
+
+    for region_key in ROUTE_ORDER:
+        group = region_groups.get(region_key, [])
+        if not group: continue
+        # 같은 지역은 연속된 날에 배정
+        for sc in group:
+            # 빈 슬롯 있는 영업일 찾기
+            while workday_idx < len(workdays) and date_count[workdays[workday_idx]] >= SLOTS_PER_DAY:
+                workday_idx += 1
+            if workday_idx >= len(workdays):
+                workday_idx = len(workdays) - 1  # 마지막 날에 몰아서
+            chosen_date = workdays[workday_idx]
+            sc['visit_date'] = chosen_date
+            date_count[chosen_date] += 1
+            # 이 슬롯이 꽉 차면 다음 날로
+            if date_count[chosen_date] >= SLOTS_PER_DAY:
+                workday_idx += 1
 
     # DB 저장
     inserted = 0
@@ -4066,10 +4125,223 @@ def api_visit_delete():
     return jsonify({'ok': True})
 
 # ── 재고 현황 API ────────────────────────────────────
+@app.route("/api/report/template/upload", methods=["POST"])
+@login_required
+def api_report_template_upload():
+    """보고서 양식 xlsx 업로드 — 구조 분석 후 저장"""
+    from datetime import datetime as dt2
+    if 'file' not in request.files:
+        return jsonify({'ok':False,'msg':'파일 없음'}), 400
+    file  = request.files['file']
+    ttype = request.form.get('type', 'weekly')  # weekly / visit
+    data  = file.read()
+    try:
+        wb = openpyxl.load_workbook(io.BytesIO(data), data_only=True)
+        ws = wb.active
+        # 양식 구조 추출 (모든 셀 내용)
+        structure = []
+        for row in ws.iter_rows(values_only=True):
+            row_vals = [str(c or '') for c in row]
+            if any(v.strip() for v in row_vals):
+                structure.append(row_vals)
+
+        conn = get_db()
+        import json as json_mod
+        conn.execute("""INSERT INTO report_template (template_name, template_type, columns, uploaded_at)
+            VALUES(?,?,?,?)
+            ON CONFLICT DO NOTHING""", ('', ttype, '', dt2.now().strftime('%Y-%m-%d %H:%M')))
+        # UPDATE 방식
+        conn.execute("""DELETE FROM report_template WHERE template_type=?""", (ttype,))
+        conn.execute("""INSERT INTO report_template (template_name, template_type, columns, uploaded_at)
+            VALUES(?,?,?,?)""",
+            (file.filename, ttype, json_mod.dumps(structure, ensure_ascii=False),
+             dt2.now().strftime('%Y-%m-%d %H:%M')))
+        conn.commit(); conn.close()
+
+        return jsonify({'ok': True, 'type': ttype, 'rows': len(structure),
+                        'preview': structure[:5]})  # 앞 5행 미리보기
+    except Exception as e:
+        return jsonify({'ok': False, 'msg': str(e)}), 500
+
+
+@app.route("/api/report/generate", methods=["POST"])
+@login_required
+def api_report_generate():
+    """보고서 양식에 맞게 내용 자동 생성"""
+    import json as json_mod, re
+    d      = request.json or {}
+    rtype  = d.get('type', 'weekly')
+    input_text = d.get('input_text', '')
+    seller = d.get('seller', '')
+    date   = d.get('date', '')
+    week_start = d.get('week_start', '')
+    next_plan  = d.get('next_plan', '')
+    brand_note = d.get('brand_note', '')
+
+    # 양식 불러오기
+    conn = get_db()
+    tmpl_row = conn.execute("SELECT columns FROM report_template WHERE template_type=?", (rtype,)).fetchone()
+
+    # 매장 데이터
+    seller_data = None
+    if seller:
+        year = datetime.now().year
+        rows = conn.execute("""SELECT SUM(total) total, COUNT(*) cnt,
+            COUNT(DISTINCT strftime('%m',sale_date)) months
+            FROM sales_data WHERE real_seller=? AND sale_date LIKE ?""",
+            (seller, f"{year}%")).fetchone()
+        if rows: seller_data = dict(rows)
+
+    conn.close()
+
+    # 자동 분류
+    SELF_BRANDS  = ['줄즈','레카로','엔픽스','타프토이즈','원더폴드','카오스','ABC','abc디자인','ENFIX']
+    RIVAL_BRANDS = ['그라코','에르고베이비','컴비','조이','페도','마클라렌','퀴니','부가부','스토케','요요']
+    SPECIAL_BRNDS= ['부가부','스토케','요요']
+
+    lines = [l.strip() for l in re.split(r'[.!?\n]+', input_text) if l.strip()]
+    self_items  = [l for l in lines if any(b.lower() in l.lower() for b in SELF_BRANDS)]
+    rival_items = [l for l in lines if any(b.lower() in l.lower() for b in RIVAL_BRANDS)]
+    order_items = [l for l in lines if re.search(r'발주|주문|개.*받|건.*받', l)]
+    visit_items = [l for l in lines if re.search(r'방문|들렀|들러|방문함', l)]
+    other_items = [l for l in lines if l not in self_items+rival_items+order_items+visit_items]
+
+    # 특이사항 (부가부/스토케/요요)
+    special_items = [l for l in lines if any(b in l for b in SPECIAL_BRNDS)]
+    if brand_note: special_items.append(brand_note)
+    special_str = '\n'.join(f"  • {l}" for l in special_items) if special_items else '  -'
+
+    total_sales = seller_data['total'] if seller_data else 0
+    months_cnt  = seller_data['months'] if seller_data else 1
+    avg_monthly = int(total_sales / max(months_cnt, 1)) if total_sales else 0
+
+    now = datetime.now()
+
+    if tmpl_row and tmpl_row[0]:
+        # 양식 있으면 구조 기반으로 채우기
+        structure = json_mod.loads(tmpl_row[0])
+        filled = []
+        for row in structure:
+            new_row = []
+            for cell in row:
+                c = cell
+                # 치환 패턴
+                c = c.replace('{{매장명}}', seller or '').replace('{{방문일}}', date or '')
+                c = c.replace('{{보고주간}}', week_start or '').replace('{{작성일}}', now.strftime('%Y-%m-%d'))
+                c = c.replace('{{누적매출}}', f"{total_sales:,}원" if total_sales else '-')
+                c = c.replace('{{월평균매출}}', f"{avg_monthly:,}원" if avg_monthly else '-')
+                c = c.replace('{{자사주요내용}}', '\n'.join(f"• {l}" for l in self_items) or '-')
+                c = c.replace('{{타사주요내용}}', '\n'.join(f"• {l}" for l in rival_items) or '-')
+                c = c.replace('{{발주내역}}', '\n'.join(f"• {l}" for l in order_items) or '-')
+                c = c.replace('{{방문내용}}', '\n'.join(f"• {l}" for l in visit_items) or '-')
+                c = c.replace('{{특이사항}}', special_str)
+                c = c.replace('{{다음주계획}}', next_plan or '-')
+                c = c.replace('{{기타}}', '\n'.join(f"• {l}" for l in other_items) or '-')
+                # 빈 칸(___) 채우기
+                if set(c.strip()) <= {'_'} and c.strip():
+                    c = '(작성 필요)'
+                new_row.append(c)
+            filled.append(new_row)
+        return jsonify({'ok': True, 'type': rtype, 'structure': filled, 'has_template': True})
+
+    else:
+        # 양식 없으면 텍스트 형식으로 생성
+        if rtype == 'weekly':
+            wd = datetime.strptime(week_start, '%Y-%m-%d') if week_start else now
+            we = wd + __import__('datetime').timedelta(days=6) if week_start else now
+            text = f"""주간 업무 보고서
+{'─'*50}
+보고 기간: {wd.strftime('%Y.%m.%d')} ~ {we.strftime('%Y.%m.%d')}
+작성일: {now.strftime('%Y.%m.%d')}
+{'─'*50}
+
+【1. 매장 방문 현황】
+{chr(10).join(f"  • {l}" for l in visit_items) or "  -"}
+
+【2. 발주/수주 현황】
+{chr(10).join(f"  • {l}" for l in order_items) or "  -"}
+
+【3. 자사 브랜드 주요 내용】
+{chr(10).join(f"  • {l}" for l in self_items) or "  -"}
+
+【4. 타사/경쟁사 동향】
+{chr(10).join(f"  • {l}" for l in rival_items) or "  -"}
+
+【5. 다음 주 계획】
+{chr(10).join(f"  • {l.strip()}" for l in (next_plan or '').split('\n') if l.strip()) or "  -"}
+{'─'*50}"""
+        else:
+            text = f"""매장 방문 보고서
+{'='*50}
+【기본 정보】
+매장명     : {seller}
+방문일     : {date}
+누적매출   : {total_sales:,}원 ({now.year}년)
+월평균매출 : {avg_monthly:,}원
+{'─'*50}
+
+【자사 주요 내용】
+{chr(10).join(f"  • {l}" for l in self_items) or "  -"}
+
+【발주/수주 내역】
+{chr(10).join(f"  • {l}" for l in order_items) or "  -"}
+
+【타사/경쟁사 주요 내용】
+{chr(10).join(f"  • {l}" for l in rival_items) or "  -"}
+
+【브랜드별 특이사항 (부가부/스토케/요요)】
+{special_str}
+
+【기타 특이사항】
+{chr(10).join(f"  • {l}" for l in other_items) or "  -"}
+{'='*50}
+작성일: {now.strftime('%Y.%m.%d')}"""
+
+        return jsonify({'ok': True, 'type': rtype, 'text': text, 'has_template': False})
+
+
+@app.route("/api/report/export", methods=["POST"])
+@login_required
+def api_report_export():
+    """보고서 엑셀 다운로드"""
+    import json as json_mod
+    d = request.json or {}
+    rtype = d.get('type', 'weekly')
+    structure = d.get('structure')  # 양식 기반
+    text = d.get('text')            # 텍스트 기반
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = '주간업무보고' if rtype=='weekly' else '매장방문보고서'
+
+    thin = Side(style='thin', color='CCCCCC')
+    bdr  = Border(left=thin,right=thin,top=thin,bottom=thin)
+
+    if structure:
+        for ri, row in enumerate(structure, 1):
+            for ci, val in enumerate(row, 1):
+                c = ws.cell(row=ri, column=ci, value=val)
+                c.alignment = Alignment(wrap_text=True, vertical='top')
+                if val and val != '(작성 필요)':
+                    c.border = bdr
+        for col in ws.columns:
+            ws.column_dimensions[get_column_letter(col[0].column)].width = 25
+    elif text:
+        for ri, line in enumerate(text.split('\n'), 1):
+            c = ws.cell(row=ri, column=1, value=line)
+            c.alignment = Alignment(wrap_text=True)
+        ws.column_dimensions['A'].width = 80
+
+    fname = f"{'주간업무보고' if rtype=='weekly' else '매장방문보고서'}_{datetime.now().strftime('%Y%m%d')}.xlsx"
+    buf = io.BytesIO(); wb.save(buf); buf.seek(0)
+    return send_file(buf, mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                     as_attachment=True, download_name=fname)
+
+
 @app.route("/api/stock/upload", methods=["POST"])
 @login_required
 def api_stock_upload():
-    """재고 xlsx 업로드"""
+    """재고 xlsx 업로드 — 컬럼 자동 감지"""
     from datetime import datetime as dt2
     if 'file' not in request.files:
         return jsonify({'ok':False,'msg':'파일 없음'}), 400
@@ -4080,34 +4352,69 @@ def api_stock_upload():
         ws  = wb.active
         rows_parsed = []
         headers = []
-        for ri, row in enumerate(ws.iter_rows(values_only=True)):
-            if ri == 0:
-                headers = [str(c or '').strip() for c in row]
-                continue
+        raw_rows = list(ws.iter_rows(values_only=True))
+
+        # 헤더 행 찾기 (첫 5행 중에서 가장 많은 비어있지 않은 값이 있는 행)
+        header_row_idx = 0
+        for i, row in enumerate(raw_rows[:5]):
+            non_empty = sum(1 for c in row if c is not None and str(c).strip())
+            if non_empty >= 2:
+                header_row_idx = i
+                break
+
+        headers = [str(c or '').strip() for c in raw_rows[header_row_idx]]
+        app.logger.info(f"재고 헤더: {headers}")
+
+        # 컬럼 인덱스 찾기 (다양한 이름 허용)
+        NAME_KEYS  = ['제품명','품목명','상품명','item_name','name','품명','제품','상품','아이템']
+        QTY_KEYS   = ['수량','재고수량','재고','quantity','qty','잔여수량','현재고','재고량']
+        GROUP_KEYS = ['품목그룹','그룹','브랜드','카테고리','item_group','group','분류']
+
+        def find_col(keys, hdrs):
+            for k in keys:
+                for i, h in enumerate(hdrs):
+                    if k.lower() in h.lower(): return i
+            return -1
+
+        name_idx  = find_col(NAME_KEYS,  headers)
+        qty_idx   = find_col(QTY_KEYS,   headers)
+        group_idx = find_col(GROUP_KEYS, headers)
+
+        # 못 찾으면 위치로 추정 (0=이름, 1=그룹, 마지막=수량)
+        if name_idx == -1:  name_idx = 0
+        if qty_idx == -1:   qty_idx  = len(headers)-1
+        if group_idx == -1: group_idx = 1 if len(headers) > 2 else -1
+
+        for row in raw_rows[header_row_idx+1:]:
             if not any(row): continue
-            rdict = dict(zip(headers, row))
-            # 제품명, 수량 컬럼 자동 파악
-            item_name = (rdict.get('제품명') or rdict.get('품목명') or rdict.get('상품명') or
-                        rdict.get('item_name') or list(rdict.values())[0] or '')
-            quantity  = (rdict.get('수량') or rdict.get('재고수량') or rdict.get('재고') or
-                        rdict.get('quantity') or 0)
-            item_group = (rdict.get('품목그룹') or rdict.get('브랜드') or rdict.get('카테고리') or '')
-            try: quantity = int(float(str(quantity).replace(',','')))
+            vals = list(row)
+            item_name  = str(vals[name_idx] or '').strip()  if name_idx < len(vals)  else ''
+            quantity   = vals[qty_idx]    if qty_idx < len(vals)  else 0
+            item_group = str(vals[group_idx] or '').strip() if group_idx >= 0 and group_idx < len(vals) else ''
+
+            if not item_name: continue
+            try: quantity = int(float(str(quantity or 0).replace(',','')))
             except: quantity = 0
-            if item_name and quantity >= 0:
-                rows_parsed.append({'item_name': str(item_name).strip(),
-                                    'item_group': str(item_group).strip(),
-                                    'quantity': quantity})
+
+            rows_parsed.append({'item_name': item_name, 'item_group': item_group, 'quantity': quantity})
+
         batch = dt2.now().strftime('%Y%m%d%H%M%S')
         conn  = get_db()
-        conn.execute("DELETE FROM stock_data")  # 최신으로 교체
+        conn.execute("DELETE FROM stock_data")
         for r in rows_parsed:
             conn.execute("INSERT INTO stock_data (item_name,item_group,quantity,upload_date,upload_batch) VALUES(?,?,?,?,?)",
-                (r['item_name'], r['item_group'], r['quantity'],
-                 dt2.now().strftime('%Y-%m-%d'), batch))
+                (r['item_name'], r['item_group'], r['quantity'], dt2.now().strftime('%Y-%m-%d'), batch))
         conn.commit(); conn.close()
-        return jsonify({'ok': True, 'rows': len(rows_parsed), 'batch': batch})
+
+        # 미리보기 (처음 3개)
+        preview = rows_parsed[:3]
+        return jsonify({'ok': True, 'rows': len(rows_parsed), 'batch': batch,
+                        'headers_detected': {'name': headers[name_idx] if name_idx < len(headers) else '',
+                                             'qty': headers[qty_idx] if qty_idx < len(headers) else '',
+                                             'group': headers[group_idx] if group_idx >= 0 and group_idx < len(headers) else ''},
+                        'preview': preview})
     except Exception as e:
+        import traceback; app.logger.error(traceback.format_exc())
         return jsonify({'ok': False, 'msg': str(e)}), 500
 
 @app.route("/api/stock/list")

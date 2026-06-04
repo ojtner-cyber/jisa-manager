@@ -990,8 +990,32 @@ td.center{text-align:center}
 
     <!-- ██ 보고서 ██ -->
     <div class="page" id="page-report">
-      <div class="ph"><div><h2>보고서</h2><p>주간업무보고 · 매장 방문 보고서 자동 생성</p></div></div>
+      <div class="ph"><div><h2>보고서</h2><p>양식 업로드 → 내용 입력 → 자동 생성 → 엑셀 다운로드</p></div></div>
+
+      <!-- 양식 업로드 -->
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:20px">
+        <div style="background:var(--paper);border-radius:var(--r-md);padding:14px;box-shadow:var(--sh-sm)">
+          <div style="font-size:12px;font-weight:700;margin-bottom:8px;color:var(--ink-700)">📄 주간업무보고 양식 업로드</div>
+          <div style="font-size:11px;color:var(--ink-300);margin-bottom:10px">xlsx 파일에 {{자사주요내용}}, {{타사주요내용}}, {{다음주계획}} 등의 태그를 넣으면 자동으로 채워집니다</div>
+          <div style="display:flex;gap:8px;align-items:center">
+            <button class="btn btn-ghost btn-sm" onclick="document.getElementById('weekly-tmpl-input').click()">양식 업로드</button>
+            <input type="file" id="weekly-tmpl-input" accept=".xlsx" style="display:none" onchange="uploadTemplate(this,'weekly')">
+            <span id="weekly-tmpl-status" style="font-size:11px;color:var(--ink-300)">미업로드</span>
+          </div>
+        </div>
+        <div style="background:var(--paper);border-radius:var(--r-md);padding:14px;box-shadow:var(--sh-sm)">
+          <div style="font-size:12px;font-weight:700;margin-bottom:8px;color:var(--ink-700)">📄 매장 방문 보고서 양식 업로드</div>
+          <div style="font-size:11px;color:var(--ink-300);margin-bottom:10px">{{매장명}}, {{방문일}}, {{누적매출}}, {{자사주요내용}}, {{특이사항}} 등 태그 사용</div>
+          <div style="display:flex;gap:8px;align-items:center">
+            <button class="btn btn-ghost btn-sm" onclick="document.getElementById('visit-tmpl-input').click()">양식 업로드</button>
+            <input type="file" id="visit-tmpl-input" accept=".xlsx" style="display:none" onchange="uploadTemplate(this,'visit')">
+            <span id="visit-tmpl-status" style="font-size:11px;color:var(--ink-300)">미업로드</span>
+          </div>
+        </div>
+      </div>
+
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:20px">
+        <!-- 주간업무보고 -->
         <div class="cc">
           <div class="cc-t">주간 업무 보고서</div>
           <div style="margin-bottom:10px"><div class="flbl">보고 주간 시작일</div><input class="fi" type="date" id="report-week-start"></div>
@@ -1000,11 +1024,12 @@ td.center{text-align:center}
           <div style="margin-bottom:14px"><div class="flbl">다음 주 계획 (자유롭게)</div>
             <textarea class="fi" id="report-weekly-next" rows="3" placeholder="예: 송도점 방문, 타프 신제품 라인업 제안 예정..."></textarea></div>
           <div style="display:flex;gap:8px;margin-bottom:10px">
-            <button class="btn btn-dark btn-sm" onclick="generateWeeklyReport()">보고서 생성</button>
-            <button class="btn btn-ghost btn-sm" onclick="downloadReport('weekly')" id="dl-weekly" style="display:none">📥 엑셀 다운로드</button>
+            <button class="btn btn-dark btn-sm" onclick="generateReport2('weekly')">보고서 생성</button>
+            <button class="btn btn-ghost btn-sm" onclick="exportReport('weekly')" id="dl-weekly" style="display:none">📥 엑셀 다운로드</button>
           </div>
           <div id="report-weekly-preview" style="display:none;background:var(--ink-50);border-radius:var(--r-md);padding:16px;font-size:12px;line-height:1.8;white-space:pre-wrap;font-family:var(--fd);max-height:400px;overflow-y:auto"></div>
         </div>
+        <!-- 매장 방문 보고서 -->
         <div class="cc">
           <div class="cc-t">매장 방문 보고서</div>
           <div style="margin-bottom:10px"><div class="flbl">방문 매장</div>
@@ -1016,11 +1041,20 @@ td.center{text-align:center}
           <div style="margin-bottom:14px"><div class="flbl">브랜드별 특이사항 (부가부/스토케/요요 관련만)</div>
             <textarea class="fi" id="report-brand-note" rows="2" placeholder="없으면 비워두세요"></textarea></div>
           <div style="display:flex;gap:8px;margin-bottom:10px">
-            <button class="btn btn-dark btn-sm" onclick="generateVisitReport()">보고서 생성</button>
-            <button class="btn btn-ghost btn-sm" onclick="downloadReport('visit')" id="dl-visit" style="display:none">📥 엑셀 다운로드</button>
+            <button class="btn btn-dark btn-sm" onclick="generateReport2('visit')">보고서 생성</button>
+            <button class="btn btn-ghost btn-sm" onclick="exportReport('visit')" id="dl-visit" style="display:none">📥 엑셀 다운로드</button>
           </div>
           <div id="report-visit-preview" style="display:none;background:var(--ink-50);border-radius:var(--r-md);padding:16px;font-size:12px;line-height:1.8;white-space:pre-wrap;font-family:var(--fd);max-height:400px;overflow-y:auto"></div>
         </div>
+      </div>
+
+      <!-- 양식 태그 안내 -->
+      <div style="margin-top:16px;background:#FEF9C3;border-radius:var(--r-md);padding:14px;font-size:11px;color:#92400E">
+        <strong>양식 태그 사용법</strong> — xlsx 셀에 아래 태그를 넣으면 자동으로 해당 데이터가 채워집니다:<br>
+        <code>{{매장명}}</code> <code>{{방문일}}</code> <code>{{누적매출}}</code> <code>{{월평균매출}}</code>
+        <code>{{자사주요내용}}</code> <code>{{타사주요내용}}</code> <code>{{발주내역}}</code>
+        <code>{{방문내용}}</code> <code>{{특이사항}}</code> <code>{{다음주계획}}</code>
+        <code>{{보고주간}}</code> <code>{{작성일}}</code>
       </div>
     </div>
 
@@ -1486,7 +1520,82 @@ async function loadAce(){
 }
 
 // ── 보고서 ────────────────────────────────────────
-let weeklyReportText='', visitReportText='';
+let weeklyReportData=null, visitReportData=null;
+
+async function uploadTemplate(input, type){
+  const file=input.files[0]; if(!file) return;
+  const fd=new FormData(); fd.append('file',file); fd.append('type',type);
+  const r=await fetch('/api/report/template/upload',{method:'POST',body:fd});
+  const d=await r.json();
+  const statusEl=document.getElementById(`${type==='weekly'?'weekly':'visit'}-tmpl-status`);
+  if(d.ok){
+    statusEl.textContent=`✅ ${file.name} (${d.rows}행)`;
+    statusEl.style.color='#16A34A';
+    toast(`${type==='weekly'?'주간업무보고':'매장방문'} 양식 업로드 완료`);
+    if(d.preview){
+      console.log('양식 미리보기:', d.preview.slice(0,3));
+    }
+  } else {
+    statusEl.textContent='❌ 업로드 실패';
+    toast('양식 업로드 실패: '+(d.msg||''), false);
+  }
+  input.value='';
+}
+
+async function generateReport2(type){
+  const isWeekly=type==='weekly';
+  const input=document.getElementById(isWeekly?'report-weekly-input':'report-visit-input').value.trim();
+  if(!input){toast('내용을 입력해주세요',false);return;}
+
+  const body={
+    type,
+    input_text: input,
+    seller: isWeekly?'':document.getElementById('report-visit-seller').value.trim(),
+    date: isWeekly?'':document.getElementById('report-visit-date').value,
+    week_start: isWeekly?document.getElementById('report-week-start').value:'',
+    next_plan: isWeekly?document.getElementById('report-weekly-next').value:'',
+    brand_note: isWeekly?'':document.getElementById('report-brand-note').value.trim(),
+  };
+
+  const r=await api('/api/report/generate',{method:'POST',body});
+  if(!r){toast('보고서 생성 실패',false);return;}
+
+  const previewEl=document.getElementById(isWeekly?'report-weekly-preview':'report-visit-preview');
+  const dlBtn=document.getElementById(isWeekly?'dl-weekly':'dl-visit');
+
+  if(isWeekly){ weeklyReportData=r; } else { visitReportData=r; }
+
+  if(r.has_template && r.structure){
+    // 양식 기반 — 표 형태로 렌더링
+    const tableHtml=`<table style="width:100%;border-collapse:collapse;font-size:11px">`
+      + r.structure.map(row=>`<tr>${row.map(cell=>`<td style="border:1px solid #e5e7eb;padding:6px 8px;vertical-align:top;white-space:pre-wrap">${cell||''}</td>`).join('')}</tr>`).join('')
+      + `</table>`;
+    previewEl.innerHTML=tableHtml;
+    previewEl.style.whiteSpace='normal';
+  } else if(r.text){
+    previewEl.textContent=r.text;
+    previewEl.style.whiteSpace='pre-wrap';
+  }
+  previewEl.style.display='block';
+  dlBtn.style.display='';
+}
+
+async function exportReport(type){
+  const data=type==='weekly'?weeklyReportData:visitReportData;
+  if(!data){toast('먼저 보고서를 생성해주세요',false);return;}
+  const r=await fetch('/api/report/export',{
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({type, structure:data.structure||null, text:data.text||null})
+  });
+  if(r.ok){
+    const blob=await r.blob();
+    const url=URL.createObjectURL(blob);
+    const a=document.createElement('a');
+    a.href=url; a.download=`${type==='weekly'?'주간업무보고':'매장방문보고서'}_${new Date().toISOString().slice(0,10)}.xlsx`;
+    a.click(); URL.revokeObjectURL(url);
+  }
+}
 
 async function initReport(){
   const sellers=await api('/api/sales-by-store?year='+new Date().getFullYear());
@@ -1497,151 +1606,24 @@ async function initReport(){
   document.getElementById('report-week-start').value=new Date().toISOString().slice(0,10);
 }
 
-async function generateWeeklyReport(){
-  const input=document.getElementById('report-weekly-input').value.trim();
-  const next=document.getElementById('report-weekly-next').value.trim();
-  const weekStart=document.getElementById('report-week-start').value;
-  if(!input){toast('내용을 입력해주세요',false);return;}
-
-  // 자동 분류
-  const selfBrands=['줄즈','레카로','엔픽스','타프토이즈','원더폴드','카오스','ABC','abc','abc디자인'];
-  const rivalBrands=['그라코','에르고베이비','컴비','조이','페도','마클라렌','퀴니','부가부','스토케','요요'];
-  const lines=input.split(/[.!?\n]/).map(s=>s.trim()).filter(Boolean);
-  const selfLines=[], rivalLines=[], visitLines=[], orderLines=[];
-
-  lines.forEach(l=>{
-    const lo=l.toLowerCase();
-    if(selfBrands.some(b=>lo.includes(b.toLowerCase()))) selfLines.push(l);
-    else if(rivalBrands.some(b=>lo.includes(b.toLowerCase()))) rivalLines.push(l);
-    else if(/방문|방문하|들렀|들러/.test(l)) visitLines.push(l);
-    else if(/발주|주문|개.*받|건.*받/.test(l)) orderLines.push(l);
-  });
-
-  const wd=weekStart?new Date(weekStart):new Date();
-  const we=new Date(wd); we.setDate(we.getDate()+6);
-  const fmt=d=>`${d.getFullYear()}년 ${d.getMonth()+1}월 ${d.getDate()}일`;
-
-  weeklyReportText=`주간 업무 보고서
-────────────────────────────────────────
-보고 기간: ${fmt(wd)} ~ ${fmt(we)}
-작성일: ${new Date().toLocaleDateString('ko-KR')}
-────────────────────────────────────────
-
-【 1. 이번 주 주요 업무 】
-
-▶ 매장 방문 현황
-${visitLines.length?visitLines.map(l=>`  • ${l}`).join('\n'):'  • -'}
-
-▶ 발주/수주 현황
-${orderLines.length?orderLines.map(l=>`  • ${l}`).join('\n'):'  • -'}
-
-▶ 자사 브랜드 관련 주요 내용
-${selfLines.length?selfLines.map(l=>`  • ${l}`).join('\n'):'  • -'}
-
-▶ 타사/경쟁사 관련 내용
-${rivalLines.length?rivalLines.map(l=>`  • ${l}`).join('\n'):'  • -'}
-
-【 2. 다음 주 계획 】
-${next?next.split(/[.\n]/).filter(Boolean).map(l=>`  • ${l.trim()}`).join('\n'):'  • -'}
-
-────────────────────────────────────────
-※ 본 보고서는 입력 내용을 기반으로 자동 생성되었습니다.
-────────────────────────────────────────`;
-
-  document.getElementById('report-weekly-preview').textContent=weeklyReportText;
-  document.getElementById('report-weekly-preview').style.display='block';
-  document.getElementById('dl-weekly').style.display='';
-}
-
-async function generateVisitReport(){
-  const sellerName=document.getElementById('report-visit-seller').value.trim();
-  const visitDate=document.getElementById('report-visit-date').value;
-  const input=document.getElementById('report-visit-input').value.trim();
-  const brandNote=document.getElementById('report-brand-note').value.trim();
-  if(!sellerName||!input){toast('매장명과 내용을 입력해주세요',false);return;}
-
-  // 해당 매장 판매 데이터
-  const year=new Date().getFullYear();
-  const saleData=await api(`/api/script/analysis?seller=${encodeURIComponent(sellerName)}&year=${year}`);
-
-  // 자동 분류
-  const selfBrands=['줄즈','레카로','엔픽스','타프토이즈','원더폴드','카오스','ABC'];
-  const rivalBrands=['그라코','에르고베이비','컴비','조이','페도','마클라렌','퀴니','부가부','스토케','요요'];
-  const lines=input.split(/[.!?\n]/).map(s=>s.trim()).filter(Boolean);
-  const selfItems=[], rivalItems=[], orderItems=[], otherItems=[];
-  lines.forEach(l=>{
-    const lo=l.toLowerCase();
-    if(selfBrands.some(b=>lo.includes(b.toLowerCase()))) selfItems.push(l);
-    else if(rivalBrands.some(b=>lo.includes(b.toLowerCase()))) rivalItems.push(l);
-    else if(/발주|주문|개.*받/.test(l)) orderItems.push(l);
-    else otherItems.push(l);
-  });
-
-  const totalSales=saleData?.total||0;
-  const months=saleData?.weekly?.length||1;
-  const avgMonthly=Math.round(totalSales/Math.max(months/4,1));
-  const topBrand=saleData?.brand_summary?.[0]?.brand||'-';
-  const topBrandPct=saleData?.brand_summary?.[0]?.pct||0;
-
-  // 부가부/스토케/요요 관련 (있을 때만)
-  const specialBrands=['부가부','스토케','요요'];
-  const brandSpecial=brandNote||(lines.some(l=>specialBrands.some(b=>l.includes(b)))?
-    lines.filter(l=>specialBrands.some(b=>l.includes(b))).map(l=>`• ${l}`).join('\n'):'-');
-
-  visitReportText=`매장 방문 보고서
-════════════════════════════════════════
-【 기본 정보 】
-매장명     : ${sellerName}
-방문일     : ${visitDate}
-누적 매출  : ${N(totalSales)}원 (${year}년)
-월 평균 매출: ${N(avgMonthly)}원
-주력 브랜드 : ${topBrand} (${topBrandPct}%)
-────────────────────────────────────────
-
-【 자사 주요 내용 】
-${selfItems.length?selfItems.map(l=>`  • ${l}`).join('\n'):'  • -'}
-
-【 발주/수주 내역 】
-${orderItems.length?orderItems.map(l=>`  • ${l}`).join('\n'):'  • -'}
-
-【 타사/경쟁사 주요 내용 】
-${rivalItems.length?rivalItems.map(l=>`  • ${l}`).join('\n'):'  • -'}
-
-【 브랜드별 특이사항 (부가부/스토케/요요) 】
-  ${brandSpecial==='-'?'-':brandSpecial}
-
-【 기타 특이사항 】
-${otherItems.length?otherItems.map(l=>`  • ${l}`).join('\n'):'  • -'}
-
-────────────────────────────────────────
-작성일: ${new Date().toLocaleDateString('ko-KR')}
-════════════════════════════════════════`;
-
-  document.getElementById('report-visit-preview').textContent=visitReportText;
-  document.getElementById('report-visit-preview').style.display='block';
-  document.getElementById('dl-visit').style.display='';
-}
-
-async function downloadReport(type){
-  const text=type==='weekly'?weeklyReportText:visitReportText;
-  if(!text) return;
-  // 엑셀로 다운로드
-  const wb=XLSX.utils.book_new();
-  const rows=text.split('\n').map(l=>[l]);
-  const ws=XLSX.utils.aoa_to_sheet(rows);
-  ws['!cols']=[{wch:80}];
-  XLSX.utils.book_append_sheet(wb,ws,type==='weekly'?'주간업무보고':'매장방문보고서');
-  XLSX.writeFile(wb,`${type==='weekly'?'주간업무보고':'매장방문보고서'}_${new Date().toISOString().slice(0,10)}.xlsx`);
-}
-
 // ── 재고 현황 ──────────────────────────────────────
 async function uploadStock(input){
   const file=input.files[0]; if(!file) return;
   const fd=new FormData(); fd.append('file',file);
-  const r=await fetch('/api/stock/upload',{method:'POST',body:fd});
-  const d=await r.json();
-  if(d.ok){ toast(`재고 ${d.rows}개 품목 업로드 완료`); loadStock(); }
-  else toast('업로드 실패: '+d.msg, false);
+  try{
+    const r=await fetch('/api/stock/upload',{method:'POST',body:fd});
+    const d=await r.json();
+    if(d.ok){
+      let msg=`재고 ${d.rows}개 품목 업로드 완료`;
+      if(d.headers_detected){
+        msg+=`\n인식된 컬럼 — 제품명: "${d.headers_detected.name}" / 수량: "${d.headers_detected.qty}"`;
+      }
+      toast(msg);
+      await loadStock();
+    } else {
+      toast('업로드 실패: '+(d.msg||'알 수 없는 오류'), false);
+    }
+  }catch(e){ toast('업로드 오류: '+e.message, false); }
   input.value='';
 }
 
