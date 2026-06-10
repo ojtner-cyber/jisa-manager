@@ -387,7 +387,6 @@ td.center{text-align:center}
       <a onclick="showPage('products')" id="nav-products"><span class="ni">📦</span>제품별 관리</a>
       <a onclick="showPage('script')" id="nav-script"><span class="ni">💬</span>매장 분석</a>
       <a onclick="showPage('sns')" id="nav-sns"><span class="ni">📱</span>SNS 활용 매장</a>
-      <a onclick="showPage('visit')" id="nav-visit"><span class="ni">📅</span>매장 방문 일정</a>
       <a onclick="showPage('ace')" id="nav-ace"><span class="ni">⚡</span>영업 에이스 포인트</a>
       <a onclick="showPage('report')" id="nav-report"><span class="ni">📋</span>보고서</a>
       <a onclick="showPage('stock')" id="nav-stock"><span class="ni">📦</span>재고 현황</a>
@@ -683,7 +682,8 @@ td.center{text-align:center}
         <div><h2>제품별 관리</h2><p>품목그룹별 · 제품별 판매 현황 분석</p></div>
         <div class="ph-r">
           <select class="ysel" id="prod-year" onchange="loadProducts()"></select>
-          <button class="btn btn-ghost btn-sm" onclick="exportDisplayXlsx()">📊 진열 현황 엑셀</button>
+          <button class="btn btn-ghost btn-sm" onclick="exportDisplayXlsx('display')">📊 진열 현황 엑셀</button>
+          <button class="btn btn-ghost btn-sm" onclick="exportDisplayXlsx('sales')">📋 판매 현황 엑셀</button>
         </div>
       </div>
 
@@ -883,16 +883,17 @@ td.center{text-align:center}
         <table id="sns-table">
           <thead><tr>
             <th style="width:3%;text-align:center">#</th>
-            <th style="width:16%">매장명</th>
-            <th style="width:7%;text-align:center">등급</th>
-            <th style="width:7%;text-align:center">점수</th>
-            <th style="width:8%;text-align:center">총 게시글</th>
-            <th style="width:9%;text-align:center">최신 글 날짜</th>
-            <th style="width:6%;text-align:center">30일 내</th>
-            <th style="width:10%;text-align:center">플랫폼</th>
-            <th style="width:6%;text-align:center">제품 언급</th>
-            <th style="width:18%">최근 포스팅 제목</th>
-            <th style="width:10%;text-align:right">연매출</th>
+            <th style="width:14%">매장명</th>
+            <th style="width:6%;text-align:center">등급</th>
+            <th style="width:6%;text-align:center">점수</th>
+            <th style="width:7%;text-align:center">총 게시글</th>
+            <th style="width:8%;text-align:center">최신 글 날짜</th>
+            <th style="width:5%;text-align:center">30일내</th>
+            <th style="width:8%;text-align:center">플랫폼</th>
+            <th style="width:5%;text-align:center">제품언급</th>
+            <th style="width:15%">최근 포스팅 제목</th>
+            <th style="width:10%;text-align:center">자사 제품 홍보</th>
+            <th style="width:9%;text-align:right">연매출</th>
           </tr></thead>
           <tbody id="sns-tbody"></tbody>
         </table>
@@ -1072,7 +1073,12 @@ td.center{text-align:center}
       </div>
       <div id="stock-kpi" style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:20px"></div>
       <div class="tw"><table>
-        <thead><tr><th>브랜드</th><th>제품명</th><th style="text-align:right">재고 수량</th><th>원본 그룹명</th></tr></thead>
+        <thead><tr>
+          <th>브랜드</th><th>모델명</th><th>컬러/옵션</th>
+          <th style="text-align:center">한정판</th>
+          <th style="text-align:right">재고 수량</th>
+          <th>업로드일</th>
+        </tr></thead>
         <tbody id="stock-tbody"></tbody>
       </table></div>
     </div>
@@ -1638,19 +1644,24 @@ async function loadStock(){
   const taft=rows.filter(r=>r.brand==='타프토이즈');
   const taftTotal=taft.reduce((s,r)=>s+(r.quantity||0),0);
   document.getElementById('stock-kpi').innerHTML=[
-    {l:'전체 품목',v:`${rows.length}종`,c:'var(--accent-m)'},
+    {l:'전체 품목(중복제거)',v:`${rows.length}종`,c:'var(--accent-m)'},
     {l:'총 재고 수량',v:`${total.toLocaleString()}개`,c:'#0891B2'},
     {l:'취급 브랜드',v:`${brands.length}개`,c:'#16A34A'},
     {l:'타프토이즈',v:`${taft.length}종/${taftTotal}개`,c:'#7C3AED'},
   ].map(k=>`<div class="kpi"><div class="kpi-accent" style="background:${k.c}"></div>
     <div class="kpi-lbl">${k.l}</div><div class="kpi-val" style="font-size:18px;color:${k.c}">${k.v}</div></div>`).join('');
   // 테이블
-  document.getElementById('stock-tbody').innerHTML=rows.map(r=>`<tr>
-    <td><span style="background:#EEF2FF;color:var(--accent-m);padding:2px 8px;border-radius:20px;font-size:11px;font-weight:700">${r.brand||'—'}</span></td>
-    <td style="font-weight:600">${r.item_name_norm||r.item_name}</td>
-    <td style="text-align:right;font-weight:700;color:${(r.quantity||0)>10?'#16A34A':(r.quantity||0)>3?'#D97706':'#DC2626'}">${(r.quantity||0).toLocaleString()}개</td>
-    <td style="color:var(--ink-300);font-size:12px">${r.item_group||'—'}</td>
-  </tr>`).join('');
+  document.getElementById('stock-tbody').innerHTML=rows.map(r=>{
+    const qColor=(r.quantity||0)>10?'#16A34A':(r.quantity||0)>3?'#D97706':'#DC2626';
+    return`<tr>
+      <td><span style="background:#EEF2FF;color:var(--accent-m);padding:2px 8px;border-radius:20px;font-size:11px;font-weight:700">${r.brand||'—'}</span></td>
+      <td style="font-weight:600">${r.item_name_norm||'—'}</td>
+      <td style="color:var(--ink-500);font-size:12px">${r.color||'—'}</td>
+      <td style="text-align:center">${r.is_limited?'<span style="background:#FEF9C3;color:#CA8A04;padding:1px 6px;border-radius:10px;font-size:10px">한정</span>':'—'}</td>
+      <td style="text-align:right;font-weight:700;color:${qColor}">${(r.quantity||0).toLocaleString()}개</td>
+      <td style="color:var(--ink-300);font-size:11px">${r.upload_date||'—'}</td>
+    </tr>`;
+  }).join('');
 }
 
 // ── 매장 추천 스크립트 ──────────────────────────
@@ -1920,25 +1931,83 @@ function freshnessLabel(dateStr, recent30){
 
 function renderSNSTable(rows){
   if(!rows.length){
-    document.getElementById('sns-tbody').innerHTML='<tr><td colspan="11" style="text-align:center;padding:40px;color:var(--ink-300)">데이터가 없습니다</td></tr>';
+    document.getElementById('sns-tbody').innerHTML='<tr><td colspan="12" style="text-align:center;padding:40px;color:var(--ink-300)">데이터가 없습니다</td></tr>';
     return;
   }
   document.getElementById('sns-tbody').innerHTML=rows.map((r,i)=>{
-    const titles=r.blog_recent_titles?r.blog_recent_titles.split(' | ').map(t=>`<div style="font-size:10px;color:var(--ink-500);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:160px">${t}</div>`).join(''):'<span style="color:var(--ink-200);font-size:11px">—</span>';
-    return`<tr style="cursor:pointer" onclick="openMemoPanel('${r.seller_name.replace(/'/g,"\'")}')">
+    const titlePreview=r.blog_recent_titles?r.blog_recent_titles.split(' | ')[0]?.slice(0,22)+'...':'—';
+    const hasDetail=r.blog_recent_titles||r.blog_keywords;
+    // 자사 제품 홍보
+    const promoCount=r.blog_promo_count||0;
+    let promoCell='<span style="color:var(--ink-200);font-size:11px">—</span>';
+    if(promoCount>0){
+      const latest=r.blog_promo_latest?r.blog_promo_latest.slice(0,10):'';
+      promoCell=`<span onclick="event.stopPropagation();openPromoModal('${r.seller_name.replace(/'/g,"\\'")}','${(r.blog_product_promo||'').replace(/'/g,"\\'")}',${promoCount})"
+        style="color:#D97706;font-weight:700;font-size:11px;cursor:pointer;text-decoration:underline">
+        ${promoCount}건${latest?'<br><span style=\\"color:var(--ink-300);font-size:10px\\">('+latest+')</span>':''}
+      </span>`;
+    }
+    return`<tr>
       <td style="text-align:center;color:var(--ink-300);font-size:12px">${i+1}</td>
-      <td style="font-weight:600;font-size:13px">${r.seller_name}${r.memo?'<span style="margin-left:4px;font-size:10px;color:var(--ink-300)">📝</span>':''}</td>
+      <td style="font-weight:600;font-size:12px;cursor:pointer" onclick="openMemoPanel('${r.seller_name.replace(/'/g,"\\'")}')">
+        ${r.seller_name}${r.memo?'<span style="font-size:9px;color:var(--ink-300)"> 📝</span>':''}
+      </td>
       <td style="text-align:center">${gradeBadge(r.blog_grade,r.blog_score)}</td>
       <td>${scoreBar(r.blog_score)}</td>
       <td style="text-align:center;font-weight:700;color:var(--ink-700)">${r.blog_total_posts?r.blog_total_posts.toLocaleString()+'건':'—'}</td>
       <td style="text-align:center">${freshnessLabel(r.blog_latest_date,r.blog_recent_30d)}</td>
       <td style="text-align:center;font-weight:700;color:${r.blog_recent_30d>=10?'#16A34A':r.blog_recent_30d>=3?'#D97706':'var(--ink-300)'}">${r.blog_recent_30d||'—'}</td>
       <td style="text-align:center;font-size:11px;color:var(--ink-500)">${r.blog_platform||'—'}</td>
-      <td style="text-align:center">${r.blog_has_product_post?'<span style="color:#7C3AED;font-weight:700;font-size:12px">✓있음</span>':'<span style="color:var(--ink-200);font-size:11px">—</span>'}</td>
-      <td>${titles}</td>
+      <td style="text-align:center">${r.blog_has_product_post?'<span style="color:#7C3AED;font-weight:700;font-size:11px">✓</span>':'<span style="color:var(--ink-200)">—</span>'}</td>
+      <td style="font-size:11px;max-width:140px">
+        ${hasDetail
+          ? `<span style="color:var(--accent-m);cursor:pointer;text-decoration:underline" onclick="openSNSTitleModal('${r.seller_name.replace(/'/g,"\\'")}','${(r.blog_recent_titles||'').replace(/'/g,"\\'")}','${r.blog_grade}',${r.blog_score},'${(r.blog_platform||'').replace(/'/g,"\\'")}','${(r.blog_keywords||'').replace(/'/g,"\\'")}')">
+            ${titlePreview}
+          </span>`
+          : '<span style="color:var(--ink-200)">—</span>'}
+      </td>
+      <td style="text-align:center">${promoCell}</td>
       <td style="text-align:right;font-weight:700;color:var(--accent-m);font-size:12px">${N(r.year_sales||0)}원</td>
     </tr>`;
   }).join('');
+}
+
+function openPromoModal(seller, promoJson, count){
+  let promoList=[];
+  try{ promoList=JSON.parse(promoJson||'[]'); }catch{}
+  let m=document.getElementById('promo-modal');
+  if(!m){
+    m=document.createElement('div');
+    m.id='promo-modal';
+    m.style.cssText='display:none;position:fixed;inset:0;background:rgba(0,0,0,.4);z-index:1000;align-items:center;justify-content:center';
+    m.innerHTML=`<div style="background:var(--paper);border-radius:var(--r-lg);padding:24px;width:min(540px,95vw);max-height:80vh;overflow-y:auto;box-shadow:0 24px 60px rgba(0,0,0,.3)">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
+        <div>
+          <div style="font-size:14px;font-weight:700" id="promo-modal-seller"></div>
+          <div style="font-size:12px;color:var(--ink-400);margin-top:2px">자사 제품 홍보 포스팅 분석</div>
+        </div>
+        <button onclick="document.getElementById('promo-modal').style.display='none'" style="background:none;border:none;cursor:pointer;font-size:18px;color:var(--ink-300)">✕</button>
+      </div>
+      <div id="promo-modal-body"></div>
+    </div>`;
+    document.body.appendChild(m);
+  }
+  document.getElementById('promo-modal-seller').textContent=`${seller} — 자사 제품 홍보 ${count}건`;
+  const body=document.getElementById('promo-modal-body');
+  if(!promoList.length){
+    body.innerHTML='<div style="text-align:center;padding:30px;color:var(--ink-300)">포스팅 상세 정보가 없습니다.<br>재분석 시 자동으로 수집됩니다.</div>';
+  } else {
+    body.innerHTML=promoList.map((p,i)=>`
+      <div style="border:1px solid var(--ink-100);border-radius:var(--r-md);padding:12px;margin-bottom:8px">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+          <span style="font-size:11px;color:var(--ink-300)">${p.date||'날짜 불명'}</span>
+          <div style="display:flex;gap:4px">${(p.brands||[]).map(b=>`<span style="background:#FEF9C3;color:#CA8A04;padding:1px 6px;border-radius:10px;font-size:10px;font-weight:700">${b}</span>`).join('')}</div>
+        </div>
+        <div style="font-size:13px;font-weight:600;color:var(--ink-800)">${p.title||'(제목 없음)'}</div>
+        ${p.link?`<div style="margin-top:6px"><a href="${p.link}" target="_blank" style="color:var(--accent-m);font-size:11px">포스팅 보기 →</a></div>`:''}
+      </div>`).join('');
+  }
+  m.style.display='flex';
 }
 
 function openMemoPanel(seller){
@@ -1971,10 +2040,11 @@ async function saveMemo(){
   if(r&&r.ok){closeMemoPanel();loadSNS();toast('저장됐습니다');}
 }
 
-function exportDisplayXlsx(){
+function exportDisplayXlsx(mode){
   const year=document.getElementById('prod-year')?.value||new Date().getFullYear();
-  window.location.href=`/api/export/xlsx/display?year=${year}&brand=레카로`;
-  toast('진열 현황 엑셀 다운로드 중...');
+  const m=mode||'display';
+  window.location.href=`/api/export/xlsx/display?year=${year}&mode=${m}&brand=레카로`;
+  toast(`${m==='display'?'진열':'판매'} 현황 엑셀 다운로드 중...`);
 }
 
 function exportScriptXlsx(){
