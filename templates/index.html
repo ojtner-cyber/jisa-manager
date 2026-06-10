@@ -681,7 +681,10 @@ td.center{text-align:center}
     <div class="page" id="page-products">
       <div class="ph">
         <div><h2>제품별 관리</h2><p>품목그룹별 · 제품별 판매 현황 분석</p></div>
-        <div class="ph-r"><select class="ysel" id="prod-year" onchange="loadProducts()"></select></div>
+        <div class="ph-r">
+          <select class="ysel" id="prod-year" onchange="loadProducts()"></select>
+          <button class="btn btn-ghost btn-sm" onclick="exportDisplayXlsx()">📊 진열 현황 엑셀</button>
+        </div>
       </div>
 
       <div class="fb" style="margin-bottom:16px">
@@ -1966,6 +1969,12 @@ async function saveMemo(){
   };
   const r=await api('/api/sns/save-memo',{method:'POST',body:d});
   if(r&&r.ok){closeMemoPanel();loadSNS();toast('저장됐습니다');}
+}
+
+function exportDisplayXlsx(){
+  const year=document.getElementById('prod-year')?.value||new Date().getFullYear();
+  window.location.href=`/api/export/xlsx/display?year=${year}&brand=레카로`;
+  toast('진열 현황 엑셀 다운로드 중...');
 }
 
 function exportScriptXlsx(){
