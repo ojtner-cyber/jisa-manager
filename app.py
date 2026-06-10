@@ -3692,9 +3692,16 @@ def api_sns_search():
 
     PRODUCT_KEYWORDS = ['엔픽스','줄즈','레카로','원더폴드','카오스','타프토이즈',
                         '유모차','카시트','보행기','웨건','하이체어','유아용품']
-    # 자사 브랜드 키워드 (제품 홍보 감지용)
-    OUR_BRANDS = ['엔픽스','줄즈','레카로','원더폴드','카오스','타프토이즈',
-                  'ENFIX','JOIE','Recaro','Wonderfold']
+    # 자사 브랜드 키워드 (수정3: 전체 자사 브랜드)
+    OUR_BRANDS = [
+        '엔픽스', 'ENFIX', 'enfix',
+        '줄즈', 'Joie', 'joie', 'JOIE',
+        '레카로', 'Recaro', 'RECARO',
+        '원더폴드', 'Wonderfold', 'WONDERFOLD',
+        '카오스', 'Kaos',
+        'ABC디자인', 'ABC Design', 'abc디자인',
+        '타프토이즈', 'Taf Toys', 'TAFTOYS',
+    ]
 
     results = []
     for seller in sellers[:50]:
@@ -3762,8 +3769,8 @@ def api_sns_search():
             from collections import Counter
             platform_str = ', '.join(f"{k}({v})" for k,v in Counter(platforms).most_common(3))
 
-            # 최근 제목 3개
-            titles = [strip_tags(i.get('title',''))[:30] for i in items[:3]]
+            # 최근 제목 5개 (수정2)
+            titles = [strip_tags(i.get('title',''))[:40] for i in items[:5]]
 
             # 키워드 추출 (제목에서)
             all_titles = ' '.join(strip_tags(i.get('title','')) for i in items[:10])
@@ -3802,7 +3809,7 @@ def api_sns_search():
 @app.route("/api/sns/save-search", methods=["POST"])
 @login_required
 def api_sns_save_search():
-    """검색 결과 DB 저장 — UPDATE 우선, 없으면 INSERT"""
+    """검색 결과 DB 저장 — UPSERT 방식, 단일 커밋으로 속도 개선"""
     results = request.json.get('results', [])
     conn = get_db()
     updated = 0
@@ -3812,19 +3819,13 @@ def api_sns_save_search():
     try:
         existing_cols = [r[1] for r in conn.execute("PRAGMA table_info(sns_info)").fetchall()]
         new_cols = {
-            'blog_platform': 'TEXT DEFAULT ""',
-            'blog_total_posts': 'INTEGER DEFAULT 0',
-            'blog_latest_date': 'TEXT DEFAULT ""',
-            'blog_recent_30d': 'INTEGER DEFAULT 0',
-            'blog_recent_titles': 'TEXT DEFAULT ""',
-            'blog_keywords': 'TEXT DEFAULT ""',
-            'blog_has_product_post': 'INTEGER DEFAULT 0',
-            'blog_grade': 'TEXT DEFAULT ""',
-            'blog_score': 'INTEGER DEFAULT 0',
-            'last_searched': 'TEXT DEFAULT ""',
-            'blog_product_promo': 'TEXT DEFAULT ""',      # 자사 제품 홍보 포스팅 목록 (JSON)
-            'blog_promo_count': 'INTEGER DEFAULT 0',       # 자사 제품 홍보 포스팅 수
-            'blog_promo_latest': 'TEXT DEFAULT ""',        # 최근 자사 홍보 날짜
+            'blog_platform': 'TEXT DEFAULT ""', 'blog_total_posts': 'INTEGER DEFAULT 0',
+            'blog_latest_date': 'TEXT DEFAULT ""', 'blog_recent_30d': 'INTEGER DEFAULT 0',
+            'blog_recent_titles': 'TEXT DEFAULT ""', 'blog_keywords': 'TEXT DEFAULT ""',
+            'blog_has_product_post': 'INTEGER DEFAULT 0', 'blog_grade': 'TEXT DEFAULT ""',
+            'blog_score': 'INTEGER DEFAULT 0', 'last_searched': 'TEXT DEFAULT ""',
+            'blog_product_promo': 'TEXT DEFAULT ""', 'blog_promo_count': 'INTEGER DEFAULT 0',
+            'blog_promo_latest': 'TEXT DEFAULT ""',
         }
         for col, typ in new_cols.items():
             if col not in existing_cols:
@@ -3833,49 +3834,51 @@ def api_sns_save_search():
     except Exception as e:
         app.logger.error(f"sns migration error: {e}")
 
+    # 기존 데이터 미리 로드 (SELECT 루프 방지 → 속도 개선)
+    existing = {r[0] for r in conn.execute("SELECT seller_name FROM sns_info").fetchall()}
+
+    conn.execute("BEGIN")  # 트랜잭션 시작
     for r in results:
         if not r.get('ok'): continue
         seller = r.get('seller_name','')
         if not seller: continue
         try:
-            blog_total  = r.get('blog_total', r.get('blog_total_posts', 0))
-            blog_latest = r.get('blog_latest', r.get('blog_latest_date', ''))
-            blog_r30    = r.get('blog_recent_30d', 0)
-            blog_prod   = r.get('blog_has_product_post', 0)
-            blog_plat   = r.get('blog_platform', '')
-            blog_titles = r.get('blog_recent_titles', '')
-            blog_kws    = r.get('blog_keywords', '')
-            blog_score  = r.get('blog_score', 0)
-            blog_grade  = r.get('blog_grade', '')
-
-            exists = conn.execute("SELECT id FROM sns_info WHERE seller_name=?", (seller,)).fetchone()
-            if exists:
+            vals = (
+                r.get('blog_total', r.get('blog_total_posts', 0)),
+                r.get('blog_latest', r.get('blog_latest_date', '')),
+                r.get('blog_recent_30d', 0),
+                r.get('blog_has_product_post', 0),
+                r.get('blog_platform', ''),
+                r.get('blog_recent_titles', ''),
+                r.get('blog_keywords', ''),
+                r.get('blog_score', 0),
+                r.get('blog_grade', ''),
+                r.get('blog_product_promo', ''),
+                r.get('blog_promo_count', 0),
+                r.get('blog_promo_latest', ''),
+                now, now,
+            )
+            if seller in existing:
                 conn.execute("""UPDATE sns_info SET
                     blog_total_posts=?, blog_latest_date=?, blog_recent_30d=?,
                     blog_has_product_post=?, blog_platform=?, blog_recent_titles=?,
                     blog_keywords=?, blog_score=?, blog_grade=?,
                     blog_product_promo=?, blog_promo_count=?, blog_promo_latest=?,
                     last_searched=?, updated_at=?
-                    WHERE seller_name=?""",
-                    (blog_total, blog_latest, blog_r30, blog_prod, blog_plat,
-                     blog_titles, blog_kws, blog_score, blog_grade,
-                     r.get('blog_product_promo',''), r.get('blog_promo_count',0), r.get('blog_promo_latest',''),
-                     now, now, seller))
+                    WHERE seller_name=?""", (*vals, seller))
             else:
                 conn.execute("""INSERT INTO sns_info
-                    (seller_name, blog_total_posts, blog_latest_date, blog_recent_30d,
-                     blog_has_product_post, blog_platform, blog_recent_titles, blog_keywords,
-                     blog_score, blog_grade, blog_product_promo, blog_promo_count, blog_promo_latest,
-                     last_searched, updated_at)
-                    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                    (seller, blog_total, blog_latest, blog_r30, blog_prod,
-                     blog_plat, blog_titles, blog_kws, blog_score, blog_grade,
-                     r.get('blog_product_promo',''), r.get('blog_promo_count',0), r.get('blog_promo_latest',''),
-                     now, now))
+                    (blog_total_posts, blog_latest_date, blog_recent_30d, blog_has_product_post,
+                     blog_platform, blog_recent_titles, blog_keywords, blog_score, blog_grade,
+                     blog_product_promo, blog_promo_count, blog_promo_latest, last_searched, updated_at,
+                     seller_name)
+                    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""", (*vals, seller))
+                existing.add(seller)
             updated += 1
         except Exception as e:
             app.logger.error(f"sns save error {seller}: {e}")
-    conn.commit(); conn.close()
+    conn.execute("COMMIT")
+    conn.close()
     return jsonify({'ok': True, 'updated': updated})
 
 
@@ -4512,25 +4515,24 @@ def api_stock_list():
 @app.route("/api/export/xlsx/display")
 @login_required
 def api_export_display():
-    """진열 현황 또는 판매 현황 엑셀 — 거래처코드 포함, 컬러별 교차표"""
+    """현재 선택한 품목그룹에 맞는 진열/판매 현황 엑셀 — 거래처코드 포함, 컬러별 교차표"""
     from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
     from openpyxl.utils import get_column_letter
-    import re
+    import re, json as _json
 
-    year     = request.args.get("year",  str(datetime.now().year))
-    mode     = request.args.get("mode",  "display")   # display=진열만, sales=진열외
+    year       = request.args.get("year",  str(datetime.now().year))
+    mode       = request.args.get("mode",  "display")   # display / sales
+    brand_sel  = request.args.get("brand", "")          # 선택된 브랜드명 (한글)
 
     conn = get_db()
 
-    # 거래처코드 매핑 로드
+    # ── 거래처코드 매핑 ──────────────────────────────
     code_rows = [dict(r) for r in conn.execute("SELECT * FROM seller_code").fetchall()]
-    # real_seller → {code, group_name, orig_name, display_name}
     seller_to_code = {r['real_seller']: r for r in code_rows if r['real_seller']}
-    # 코드 기준 순서 (group_name → display_name)
-    GROUP_ORDER_LIST = ['베이비파크','베이비하우스','링크맘','기타']
 
+    GROUP_ORDER_LIST = ['베이비파크','베이비하우스','링크맘','기타']
     def seller_group(seller):
-        info = seller_to_code.get(seller,{})
+        info = seller_to_code.get(seller, {})
         g = info.get('group_name','')
         if not g:
             if '베이비파크' in seller: g='베이비파크'
@@ -4539,212 +4541,221 @@ def api_export_display():
             else: g='기타'
         return g
 
-    # 전체 매장 (코드 기준 정렬)
     all_sellers_raw = [r[0] for r in conn.execute(
         "SELECT DISTINCT real_seller FROM sales_data WHERE real_seller!='' ORDER BY real_seller").fetchall()]
+    all_sellers = sorted(all_sellers_raw, key=lambda s: (
+        GROUP_ORDER_LIST.index(seller_group(s)) if seller_group(s) in GROUP_ORDER_LIST else 99, s))
 
-    def sort_key(s):
-        g = seller_group(s)
-        gi = GROUP_ORDER_LIST.index(g) if g in GROUP_ORDER_LIST else 99
-        return (gi, s)
+    # ── 브랜드에 맞는 탭(모델) 목록 동적 생성 ────────
+    if not brand_sel:
+        return jsonify({'ok': False, 'msg': '브랜드를 선택하세요'}), 400
 
-    all_sellers = sorted(all_sellers_raw, key=sort_key)
+    # 해당 브랜드의 모든 제품 조회
+    rows_all = conn.execute("""
+        SELECT item_group, item_name, SUM(quantity) qty
+        FROM sales_data
+        WHERE sale_date LIKE ? AND real_seller!=''
+        GROUP BY item_group, item_name
+        ORDER BY item_name
+    """, (f"{year}%",)).fetchall()
 
-    # 제품 탭 정의 (tab_key, label, sql_pattern, sql_exclude)
-    TAB_PRODUCTS = [
-        ('벨릭스',      '벨릭스',            '%벨릭스%',   None),
-        ('토론_캐노피', '토론1(캐노피형)',    '%토론1%캐노피%', None),
-        ('액시언',      '액시언1',           '%액시언1%',   None),
-        ('토론',        '토론1(캐노피없음)',  '%토론1%',     '%캐노피%'),
-        ('제논',        '제논1',             '%제논1%',     None),
-    ]
+    # 브랜드 필터 + 모델별 색상 수집
+    brand_items = {}   # normalize_name → {colors: [...], pattern: ..., group: ...}
+    for r in rows_all:
+        brand = remap_group(r[0], r[1])
+        if brand != brand_sel: continue
+        norm  = normalize_item_name(r[1])
+        color = re.sub(r'.*?_', '', r[1], count=1) if '_' in r[1] else '기본'
+        color = re.sub(r'\s*\([^)]*\)', '', color).strip()
+        # 레카로 토론1: 캐노피형 분리
+        if '캐노피' in r[1]:
+            norm_key = norm + '_캐노피형'
+        else:
+            norm_key = norm
+        if norm_key not in brand_items:
+            brand_items[norm_key] = {
+                'label': norm_key.replace('[' + brand_sel + ']','').strip(),
+                'norm': norm,
+                'is_canopy': '캐노피형' in norm_key,
+                'colors': [],
+                'color_set': set(),
+                'group': r[0],
+            }
+        if color and color not in brand_items[norm_key]['color_set']:
+            brand_items[norm_key]['colors'].append(color)
+            brand_items[norm_key]['color_set'].add(color)
 
-    wb = openpyxl.Workbook()
-    wb.remove(wb.active)
+    if not brand_items:
+        conn.close()
+        return jsonify({'ok': False, 'msg': f'{brand_sel} 데이터 없음'}), 404
 
-    # 스타일
-    HDR_FILL  = PatternFill("solid", fgColor="D9E1F2")
-    GRP_FILL  = PatternFill("solid", fgColor="F2F2F2")
-    HIT_FILL  = PatternFill("solid", fgColor="E2EFDA")
-    SUM_FILL  = PatternFill("solid", fgColor="BDD7EE")
-    WHT_FILL  = PatternFill("solid", fgColor="FFFFFF")
-    thin      = Side(style='thin', color='CCCCCC')
-    bdr       = Border(left=thin, right=thin, top=thin, bottom=thin)
-    center    = Alignment(horizontal='center', vertical='center', wrap_text=True)
-    left_a    = Alignment(horizontal='left',   vertical='center', wrap_text=True)
-    bold10    = lambda: Font(bold=True, size=10, name='맑은 고딕')
-    norm9     = lambda: Font(size=9, name='맑은 고딕')
+    # ── 스타일 ────────────────────────────────────
+    HDR_FILL = PatternFill("solid", fgColor="D9E1F2")
+    GRP_FILL = PatternFill("solid", fgColor="F2F2F2")
+    HIT_FILL = PatternFill("solid", fgColor="E2EFDA")
+    SUM_FILL = PatternFill("solid", fgColor="BDD7EE")
+    WHT_FILL = PatternFill("solid", fgColor="FFFFFF")
+    thin     = Side(style='thin', color='CCCCCC')
+    bdr      = Border(left=thin, right=thin, top=thin, bottom=thin)
+    center   = Alignment(horizontal='center', vertical='center', wrap_text=True)
+    left_a   = Alignment(horizontal='left',   vertical='center', wrap_text=True)
+    bold10   = lambda: Font(bold=True, size=10, name='맑은 고딕')
+    norm9    = lambda: Font(size=9, name='맑은 고딕')
 
     now_str  = datetime.now().strftime('%Y.%m.%d')
     mode_lbl = '진열 현황' if mode == 'display' else '판매 현황'
 
-    for tab_key, tab_label, pattern, exclude in TAB_PRODUCTS:
-        ws = wb.create_sheet(title=tab_label[:31])
+    wb = openpyxl.Workbook()
+    wb.remove(wb.active)
 
-        # 판매 데이터 조회 — item_name에서 색상 추출
-        if exclude:
+    for norm_key, tab_info in sorted(brand_items.items()):
+        tab_label  = tab_info['label'][:31]
+        norm_name  = tab_info['norm']
+        is_canopy  = tab_info['is_canopy']
+        colors     = tab_info['colors']
+        ws = wb.create_sheet(title=tab_label)
+
+        # 데이터 조회 — 해당 모델 + 캐노피 여/부
+        if is_canopy:
             rows_data = conn.execute("""
                 SELECT real_seller, item_name, SUM(quantity) qty
                 FROM sales_data
-                WHERE item_name LIKE ? AND item_name NOT LIKE ?
+                WHERE item_name LIKE ? AND item_name LIKE '%캐노피%'
                   AND sale_date LIKE ? AND real_seller!=''
                 GROUP BY real_seller, item_name
-                ORDER BY real_seller, item_name
-            """, (pattern, exclude, f"{year}%")).fetchall()
+            """, (f"%{norm_name.replace('[','').replace(']','').split(']')[-1].strip()}%", f"{year}%")).fetchall()
         else:
+            base = norm_name.replace('[','').replace(']','').split(']')[-1].strip() if ']' in norm_name else norm_name.strip('[]')
             rows_data = conn.execute("""
                 SELECT real_seller, item_name, SUM(quantity) qty
                 FROM sales_data
-                WHERE item_name LIKE ? AND sale_date LIKE ? AND real_seller!=''
+                WHERE item_name LIKE ? AND item_name NOT LIKE '%캐노피%'
+                  AND sale_date LIKE ? AND real_seller!=''
                 GROUP BY real_seller, item_name
-                ORDER BY real_seller, item_name
-            """, (pattern, f"{year}%")).fetchall()
+            """, (f"%{base}%", f"{year}%")).fetchall()
 
-        # 색상 목록 추출 (item_name의 첫 번째 _ 이후)
-        def extract_color(item_name):
-            m = re.search(r'_([^_\(]+)', item_name)
-            return m.group(1).strip() if m else '기본'
+        def extract_color(iname):
+            m = re.search(r'_([^_\(]+)', iname)
+            c = m.group(1).strip() if m else '기본'
+            return re.sub(r'\s*\([^)]*\)', '', c).strip()
 
-        colors_ordered = []
+        # 실제 데이터에서 색상 재추출 (순서 유지)
+        real_colors = []
         seen_c = set()
         for r in rows_data:
             c = extract_color(r[1])
             if c not in seen_c:
-                colors_ordered.append(c)
+                real_colors.append(c)
                 seen_c.add(c)
-        if not colors_ordered:
-            colors_ordered = ['(데이터없음)']
+        if not real_colors: real_colors = ['(데이터없음)']
 
-        # 데이터 맵 (real_seller, color) → qty
         data_map = {}
         for r in rows_data:
             c = extract_color(r[1])
-            key = (r[0], c)
-            data_map[key] = data_map.get(key, 0) + r[2]
+            k = (r[0], c)
+            data_map[k] = data_map.get(k, 0) + r[2]
 
-        n_color  = len(colors_ordered)
-        sum_col  = 5 + n_color   # 열 인덱스 (1-based): B=2 C=3 D=4 E=5 F~..=color, 합계
+        n_color = len(real_colors)
+        sum_col = 5 + n_color
 
-        # ── 행1: 타이틀 ──
-        last_col = get_column_letter(5 + n_color)
+        # 행1: 타이틀
+        last_col = get_column_letter(sum_col)
         ws.merge_cells(f"B1:{last_col}1")
-        c = ws.cell(row=1, column=2, value=f"거래처별 {tab_label} {mode_lbl}  ▶  {year}년  |  {now_str}")
-        c.font = Font(bold=True, size=12, name='맑은 고딕')
-        c.fill = WHT_FILL; c.alignment = center
-        ws.row_dimensions[1].height = 26
+        tc = ws.cell(row=1, column=2, value=f"거래처별 {tab_label} {mode_lbl}  ▶  {year}년  |  {now_str}")
+        tc.font = Font(bold=True, size=12, name='맑은 고딕')
+        tc.fill = WHT_FILL; tc.alignment = center
+        ws.row_dimensions[1].height = 26; ws.row_dimensions[2].height = 6
 
-        # ── 행2: 빈 행 ──
-        ws.row_dimensions[2].height = 6
-
-        # ── 행3: 헤더 (업체구분/거래처코드/거래처명/실적용거래처명/컬러들/합계) ──
-        FIXED_HDRS = ['업체구분', '거래처코드', '거래처명', '실적용거래처명']
-        for ci, h in enumerate(FIXED_HDRS, 2):
+        # 행3: 고정 헤더
+        for ci, h in enumerate(['업체구분','거래처코드','거래처명','실적용거래처명'], 2):
             c3 = ws.cell(row=3, column=ci, value=h)
             c3.font = bold10(); c3.fill = HDR_FILL; c3.alignment = center; c3.border = bdr
 
-        # 제품명 (색상 묶음) 병합 헤더
-        if n_color > 0:
-            if n_color > 1:
-                ws.merge_cells(f"F3:{get_column_letter(4+n_color)}3")
-            c3p = ws.cell(row=3, column=6, value=tab_label)
-            c3p.font = bold10(); c3p.fill = SUM_FILL; c3p.alignment = center; c3p.border = bdr
-        else:
-            # 색상 없는 탭 — 데이터 없음 표시
-            c3p = ws.cell(row=3, column=6, value=f"{tab_label} (데이터없음)")
-            c3p.font = bold10(); c3p.fill = GRP_FILL; c3p.alignment = center; c3p.border = bdr
+        # 행3: 제품명 병합
+        if n_color > 1:
+            ws.merge_cells(f"F3:{get_column_letter(4+n_color)}3")
+        c3p = ws.cell(row=3, column=6, value=tab_label)
+        c3p.font = bold10(); c3p.fill = SUM_FILL; c3p.alignment = center; c3p.border = bdr
 
         # 합계 헤더
         c3s = ws.cell(row=3, column=sum_col, value='합계')
         c3s.font = bold10(); c3s.fill = HDR_FILL; c3s.alignment = center; c3s.border = bdr
 
-        # ── 행4: 색상 헤더 ──
-        for ci2, color in enumerate(colors_ordered, 6):
+        # 행4: 색상 헤더
+        for ci2, color in enumerate(real_colors, 6):
             c4 = ws.cell(row=4, column=ci2, value=color)
             c4.font = Font(bold=True, size=9, name='맑은 고딕')
             c4.fill = GRP_FILL; c4.alignment = center; c4.border = bdr
         ws.row_dimensions[3].height = 22; ws.row_dimensions[4].height = 18
 
-        # ── 데이터 행 ──
+        # 데이터 행
         ri = 5
         prev_grp = None
-        color_totals = {c: 0 for c in colors_ordered}
-        grand_total  = 0
+        color_totals = {c: 0 for c in real_colors}
+        grand_total = 0
 
         for seller in all_sellers:
             grp  = seller_group(seller)
             info = seller_to_code.get(seller, {})
-            code = info.get('code', '')
+            code = info.get('code','')
             orig = info.get('orig_name', seller)
 
-            # 업체구분 (그룹 변경 시만 표시)
             c_grp = ws.cell(row=ri, column=2)
             if grp != prev_grp:
-                c_grp.value = grp
-                c_grp.font  = bold10()
-                prev_grp = grp
+                c_grp.value = grp; c_grp.font = bold10(); prev_grp = grp
             c_grp.fill = GRP_FILL; c_grp.alignment = center; c_grp.border = bdr
 
-            # 거래처코드
-            c_code = ws.cell(row=ri, column=3, value=code or '')
-            c_code.font = norm9(); c_code.alignment = center; c_code.border = bdr
+            ws.cell(row=ri, column=3, value=code or '').font = norm9()
+            ws.cell(row=ri, column=3).alignment = center; ws.cell(row=ri, column=3).border = bdr
+            ws.cell(row=ri, column=4, value=orig).font = norm9()
+            ws.cell(row=ri, column=4).alignment = left_a; ws.cell(row=ri, column=4).border = bdr
+            ws.cell(row=ri, column=5, value=seller).font = norm9()
+            ws.cell(row=ri, column=5).alignment = left_a; ws.cell(row=ri, column=5).border = bdr
 
-            # 거래처명 (원본)
-            c_orig = ws.cell(row=ri, column=4, value=orig)
-            c_orig.font = norm9(); c_orig.alignment = left_a; c_orig.border = bdr
-
-            # 실적용거래처명
-            c_real = ws.cell(row=ri, column=5, value=seller)
-            c_real.font = norm9(); c_real.alignment = left_a; c_real.border = bdr
-
-            # 색상별 수량
             row_total = 0
-            for ci3, color in enumerate(colors_ordered, 6):
+            for ci3, color in enumerate(real_colors, 6):
                 qty = data_map.get((seller, color), 0)
-                c5 = ws.cell(row=ri, column=ci3, value=qty if qty else None)
-                c5.font = norm9(); c5.alignment = center; c5.border = bdr
+                cv = ws.cell(row=ri, column=ci3, value=qty if qty else None)
+                cv.font = norm9(); cv.alignment = center; cv.border = bdr
                 if qty:
-                    c5.fill = HIT_FILL
-                    color_totals[color] = color_totals.get(color,0) + qty
+                    cv.fill = HIT_FILL
+                    color_totals[color] = color_totals.get(color, 0) + qty
                     row_total += qty
-            # 합계
-            c_s = ws.cell(row=ri, column=sum_col, value=row_total if row_total else None)
-            c_s.font = Font(bold=True, size=9, name='맑은 고딕')
-            c_s.alignment = center; c_s.border = bdr
-            if row_total:
-                c_s.fill = SUM_FILL
-                grand_total += row_total
 
+            cs = ws.cell(row=ri, column=sum_col, value=row_total if row_total else None)
+            cs.font = Font(bold=True, size=9, name='맑은 고딕')
+            cs.alignment = center; cs.border = bdr
+            if row_total:
+                cs.fill = SUM_FILL; grand_total += row_total
             ws.row_dimensions[ri].height = 15
             ri += 1
 
-        # ── 합계 행 ──
+        # 합계 행
         for ci4 in range(2, sum_col+1):
             ct = ws.cell(row=ri, column=ci4)
-            ct.fill = HDR_FILL; ct.border = bdr
-            ct.font = bold10(); ct.alignment = center
+            ct.fill = HDR_FILL; ct.border = bdr; ct.font = bold10(); ct.alignment = center
         ws.cell(row=ri, column=2).value = '총 합계'
-        for ci5, color in enumerate(colors_ordered, 6):
-            ws.cell(row=ri, column=ci5).value = color_totals.get(color,0) or None
+        for ci5, color in enumerate(real_colors, 6):
+            ws.cell(row=ri, column=ci5).value = color_totals.get(color, 0) or None
         ws.cell(row=ri, column=sum_col).value = grand_total or None
         ws.row_dimensions[ri].height = 20
 
-        # ── 열 너비 ──
+        # 열 너비
         ws.column_dimensions['A'].width = 2
         ws.column_dimensions['B'].width = 12
         ws.column_dimensions['C'].width = 14
         ws.column_dimensions['D'].width = 24
         ws.column_dimensions['E'].width = 26
         for ci6 in range(6, 6+n_color):
-            ws.column_dimensions[get_column_letter(ci6)].width = max(11, len(colors_ordered[ci6-6])+2)
+            ws.column_dimensions[get_column_letter(ci6)].width = max(12, len(real_colors[ci6-6])+2)
         ws.column_dimensions[get_column_letter(sum_col)].width = 8
-
-        # 틀 고정 (행3,4 고정)
         ws.freeze_panes = 'B5'
 
     conn.close()
     buf = io.BytesIO(); wb.save(buf); buf.seek(0)
-    mode_str = '진열현황' if mode == 'display' else '판매현황'
-    fname = f"거래처별_레카로_{mode_str}_{year}.xlsx"
+    mode_str  = '진열현황' if mode == 'display' else '판매현황'
+    brand_str = brand_sel.replace(' ','_')
+    fname = f"거래처별_{brand_str}_{mode_str}_{year}.xlsx"
     return send_file(buf,
         mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
         as_attachment=True, download_name=fname)

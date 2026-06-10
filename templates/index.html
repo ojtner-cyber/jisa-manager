@@ -1830,7 +1830,8 @@ async function startBlogSearch(){
   bar.style.background='var(--accent-m)'; bar.style.width='0%';
 
   const sellers=snsData.map(r=>r.seller_name);
-  const total=sellers.length; let done=0, allResults=[];
+  const total=sellers.length; let done=0;
+  let totalUpdated=0;
   const chunk=8;
 
   for(let i=0;i<sellers.length;i+=chunk){
@@ -1839,12 +1840,16 @@ async function startBlogSearch(){
     try{
       const r=await api('/api/sns/search',{method:'POST',body:{sellers:slice}});
       if(r&&r.results){
-        allResults=allResults.concat(r.results);
+        // 분석 즉시 저장 (청크 단위 → 저장 지연 없음)
+        const sv=await api('/api/sns/save-search',{method:'POST',body:{results:r.results}});
+        if(sv&&sv.ok) totalUpdated+=sv.updated;
+
         r.results.forEach(res=>{
           const icon=res.ok?(res.blog_total>0?'✅':'⬜'):'❌';
           const g=res.blog_grade||'-';
+          const promo=res.blog_promo_count>0?` 🏷자사홍보${res.blog_promo_count}건`:'';
           const info=res.ok
-            ?`[${g}등급] 총 ${res.blog_total}건 / 최신 ${res.blog_latest||'—'} / 30일내 ${res.blog_recent_30d}건 / 점수 ${res.blog_score}`
+            ?`[${g}] 총 ${res.blog_total}건 / 최신 ${res.blog_latest||'—'} / 30일${res.blog_recent_30d}건 / ${res.blog_score}점${promo}`
             :res.error;
           log.innerHTML+=`<div>${icon} <b>${res.seller_name}</b> — ${info}</div>`;
           log.scrollTop=log.scrollHeight;
@@ -1857,17 +1862,13 @@ async function startBlogSearch(){
     if(i+chunk<sellers.length) await new Promise(r=>setTimeout(r,200));
   }
 
-  if(allResults.length){
-    label.textContent='저장 중...';
-    const sv=await api('/api/sns/save-search',{method:'POST',body:{results:allResults}});
-    if(sv&&sv.ok){
-      bar.style.background='#16A34A';
-      label.textContent=`✅ 완료! ${sv.updated}개 매장 분석 완료`;
-      await loadSNS();
-    }
-  }
+  bar.style.background='#16A34A';
+  label.textContent=`✅ 완료! ${totalUpdated}개 매장 분석 완료`;
+  await loadSNS();
   btn.disabled=false; btn.textContent='🔍 전체 블로그 분석';
+  toast(`네이버 블로그 분석 완료 — ${total}개 매장`);
 }
+
 
 async function loadSNS(){
   const year=document.getElementById('sns-year')?.value||new Date().getFullYear();
@@ -1942,10 +1943,19 @@ function renderSNSTable(rows){
     let promoCell='<span style="color:var(--ink-200);font-size:11px">—</span>';
     if(promoCount>0){
       const latest=r.blog_promo_latest?r.blog_promo_latest.slice(0,10):'';
-      promoCell=`<span onclick="event.stopPropagation();openPromoModal('${r.seller_name.replace(/'/g,"\\'")}','${(r.blog_product_promo||'').replace(/'/g,"\\'")}',${promoCount})"
-        style="color:#D97706;font-weight:700;font-size:11px;cursor:pointer;text-decoration:underline">
-        ${promoCount}건${latest?'<br><span style=\\"color:var(--ink-300);font-size:10px\\">('+latest+')</span>':''}
-      </span>`;
+      // 언급된 브랜드 파악
+      let brandTags='';
+      try{
+        const promos=JSON.parse(r.blog_product_promo||'[]');
+        const allBrands=[...new Set(promos.flatMap(p=>p.brands||[]))].slice(0,3);
+        brandTags=allBrands.map(b=>`<span style="background:#FEF9C3;color:#92400E;padding:1px 4px;border-radius:3px;font-size:9px">${b}</span>`).join(' ');
+      }catch{}
+      promoCell=`<div onclick="event.stopPropagation();openPromoModal('${r.seller_name.replace(/'/g,"\\'")}','${(r.blog_product_promo||'').replace(/'/g,"\\'").replace(/"/g,'&quot;')}',${promoCount})"
+        style="cursor:pointer">
+        <span style="color:#D97706;font-weight:700;font-size:11px">${promoCount}건</span>
+        ${latest?`<div style="color:var(--ink-300);font-size:10px">${latest}</div>`:''}
+        <div>${brandTags}</div>
+      </div>`;
     }
     return`<tr>
       <td style="text-align:center;color:var(--ink-300);font-size:12px">${i+1}</td>
@@ -2043,8 +2053,14 @@ async function saveMemo(){
 function exportDisplayXlsx(mode){
   const year=document.getElementById('prod-year')?.value||new Date().getFullYear();
   const m=mode||'display';
-  window.location.href=`/api/export/xlsx/display?year=${year}&mode=${m}&brand=레카로`;
-  toast(`${m==='display'?'진열':'판매'} 현황 엑셀 다운로드 중...`);
+  // 현재 선택된 품목그룹(브랜드)
+  const groupSel=document.getElementById('prod-group');
+  const brand=groupSel?.options[groupSel.selectedIndex]?.text||groupSel?.value||'';
+  if(!brand||brand==='전체'||brand==='— 전체 —'){toast('품목그룹을 먼저 선택해주세요',false);return;}
+  // 브랜드명 정제 (예: "줄즈 (4종)" → "줄즈")
+  const brandClean=brand.replace(/\s*\(.*\)/,'').trim();
+  window.location.href=`/api/export/xlsx/display?year=${year}&mode=${m}&brand=${encodeURIComponent(brandClean)}`;
+  toast(`${m==='display'?'진열':'판매'} 현황 엑셀 (${brandClean}) 다운로드 중...`);
 }
 
 function exportScriptXlsx(){
