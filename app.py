@@ -685,7 +685,17 @@ SELLER_ALIAS = {
     '위드에이컴퍼니':          '베이비하우스 관악점',
 }
 def resolve_seller(name):
-    return SELLER_ALIAS.get(name, name)
+    """매장명 정규화 — 별칭 매핑 + 불필요한 텍스트 제거"""
+    import re as _re
+    if not name: return name
+    # 1. 별칭 매핑
+    if name in SELLER_ALIAS: return SELLER_ALIAS[name]
+    # 2. 매장명 뒤에 브랜드명/품목이 붙은 경우 제거
+    #    예: "베이비하우스 울산점  엔픽스. 타프토이즈,카오스" → "베이비하우스 울산점"
+    cleaned = _re.split(r'\s{2,}|\s*[,./]+\s*(?:엔픽스|줄즈|레카로|타프토이즈|카오스|원더폴드|ABC)', name)[0].strip()
+    # 3. 앞뒤 공백 제거
+    cleaned = cleaned.strip()
+    return cleaned if cleaned else name
 
 BRAND_ORDER = ['줄즈', '레카로', 'ABC디자인', '원더폴드', '카오스', '엔픽스', '타프토이즈']
 
@@ -3261,13 +3271,16 @@ def api_sellers():
 @app.route("/api/admin/normalize-sellers", methods=["POST"])
 @login_required
 def normalize_sellers():
-    """sales_data의 real_seller 언더바→공백 정규화 + 지역 자동 배정"""
+    """sales_data의 real_seller 언더바→공백 정규화 + 불필요한 텍스트 제거 + 지역 자동 배정"""
     conn = get_db()
     rows = conn.execute("SELECT DISTINCT real_seller FROM sales_data WHERE real_seller != ''").fetchall()
     updated = 0
     for r in rows:
         old = r[0]
+        # 언더바 → 공백
         new = old.replace('_', ' ')
+        # resolve_seller로 정규화 (브랜드명 텍스트 제거 등)
+        new = resolve_seller(new)
         if old != new:
             conn.execute("UPDATE sales_data SET real_seller=? WHERE real_seller=?", (new, old))
             updated += 1
@@ -4609,7 +4622,7 @@ def api_export_display():
     wb.remove(wb.active)
 
     for norm_key, tab_info in sorted(brand_items.items()):
-        tab_label  = tab_info['label'][:31]
+        tab_label  = tab_info['label'].replace('[','').replace(']','').strip()[:31]
         norm_name  = tab_info['norm']
         is_canopy  = tab_info['is_canopy']
         colors     = tab_info['colors']
