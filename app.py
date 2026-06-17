@@ -118,6 +118,28 @@ def init_db():
         real_seller TEXT DEFAULT ''
     )""")
 
+    # 행사 및 진열 신청 테이블
+    conn.execute("""CREATE TABLE IF NOT EXISTS display_event (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        event_name TEXT NOT NULL,
+        event_type TEXT DEFAULT 'display',
+        product_name TEXT DEFAULT '',
+        upload_order INTEGER DEFAULT 1,
+        upload_date TEXT DEFAULT '',
+        created_at TEXT DEFAULT ''
+    )""")
+    conn.execute("""CREATE TABLE IF NOT EXISTS display_score (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        seller_name TEXT NOT NULL,
+        event_id INTEGER NOT NULL,
+        score INTEGER DEFAULT 0,
+        quantity INTEGER DEFAULT 0,
+        is_manual INTEGER DEFAULT 0,
+        memo TEXT DEFAULT '',
+        updated_at TEXT DEFAULT '',
+        UNIQUE(seller_name, event_id)
+    )""")
+
     # 방문 일정 테이블
     conn.execute("""CREATE TABLE IF NOT EXISTS visit_schedule (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -827,10 +849,42 @@ def api_script_analysis():
 
     sold_taft=set(normalize_item_name(r['item_name']) for r in sold_items
                   if remap_group(r['item_group'],r['item_name'])=='타프토이즈')
-    unsold_taft=[{'name':normalize_item_name(k),'category':v['category'],
-                  'price':v['price'],'desc':v['desc']}
-                 for k,v in TAFTOYS_CATALOG.items()
-                 if normalize_item_name(k) not in sold_taft]
+
+    # 재고 데이터 로드 (10개 이상인 타프토이즈만 추천)
+    stock_rows = conn.execute(
+        "SELECT item_name, SUM(quantity) qty FROM stock_data WHERE quantity>0 GROUP BY item_name"
+    ).fetchall()
+    stock_map = {}
+    for sr in stock_rows:
+        norm_s = normalize_item_name(sr[0])
+        stock_map[norm_s] = stock_map.get(norm_s, 0) + sr[1]
+
+    # 전체 타프토이즈 인기 순위 (전체 판매 데이터 기반)
+    taft_popularity = {
+        normalize_item_name(r[0]): r[1]
+        for r in conn.execute("""
+            SELECT item_name, SUM(quantity) qty FROM sales_data
+            WHERE item_name LIKE '%타프토이즈%' OR item_group='TAFTOYS'
+            GROUP BY item_name ORDER BY qty DESC
+        """).fetchall()
+    }
+
+    unsold_taft = []
+    for k, v in TAFTOYS_CATALOG.items():
+        norm_k = normalize_item_name(k)
+        if norm_k in sold_taft: continue  # 이미 취급 중
+        # 재고 확인 — 10개 이상인 것만
+        stock_qty = stock_map.get(norm_k, 0)
+        if stock_map and stock_qty < 10: continue  # 재고 있을 때만 필터링
+        popularity = taft_popularity.get(norm_k, 0)
+        unsold_taft.append({
+            'name': norm_k, 'category': v['category'],
+            'price': v['price'], 'desc': v['desc'],
+            'stock': stock_qty, 'popularity': popularity,
+        })
+
+    # 인기순 정렬 (전체 판매량 기준)
+    unsold_taft.sort(key=lambda x: -x['popularity'])
 
     daily=[dict(r) for r in conn.execute("""
         SELECT sale_date,SUM(total) total,SUM(quantity) qty,COUNT(*) cnt
@@ -2819,27 +2873,22 @@ def export_xlsx_branches():
 def api_product_trend():
     """제품별 일별·주별 판매 추이"""
     item   = request.args.get("item",   "")
-    group  = request.args.get("group",  "")
+    group  = request.args.get("group",  "")  # 브랜드명 (줄즈, 레카로 등)
     year   = request.args.get("year",   str(datetime.now().year))
     month  = request.args.get("month",  "")
     conn   = get_db()
     date_cond = f"{year}-{month.zfill(2)}%" if month else f"{year}%"
 
-    # item_name 정규화 역매핑 — normalize된 이름으로 like 쿼리
+    # item은 정규화명이므로 모델명만 추출하여 LIKE 검색
+    import re as _re
+    model = _re.sub(r'^\[[^\]]+\]', '', item).strip() if item else ''
+
+    # 일별 추이 — item_name으로 필터
     conds  = ["sale_date LIKE ?", "sale_date != ''"]
     params = [date_cond]
-    if group: conds.append("item_group=?"); params.append(group)
-    # item은 정규화명이므로 LIKE로 포함 검색
-    if item:
-        # [브랜드] 부분 제거하고 모델명만 검색
-        clean = item.replace('[','').replace(']','')
-        import re
-        brand_m = re.match(r'^([^\]]+)\]', item[1:]) if item.startswith('[') else None
-        model   = re.sub(r'^\[[^\]]+\]', '', item).strip()
-        if model:
-            conds.append("item_name LIKE ?"); params.append(f"%{model}%")
+    if model:
+        conds.append("item_name LIKE ?"); params.append(f"%{model}%")
 
-    # 일별 추이
     daily = [dict(r) for r in conn.execute(f"""
         SELECT sale_date, SUM(quantity) qty, SUM(total) total, COUNT(*) cnt
         FROM sales_data WHERE {' AND '.join(conds)}
@@ -2862,7 +2911,7 @@ def api_product_trend():
         except: label = r[0]
         weekly.append({'wk': r[0], 'label': label, 'qty': r[2], 'total': r[3]})
 
-    # 매장별 판매 현황 (기존 by-seller와 동일)
+    # 매장별 판매 현황
     by_seller = [dict(r) for r in conn.execute(f"""
         SELECT real_seller seller_name, SUM(quantity) qty, SUM(total) total, COUNT(*) cnt
         FROM sales_data WHERE {' AND '.join(conds)} AND real_seller!=''
@@ -4773,6 +4822,217 @@ def api_export_display():
         mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
         as_attachment=True, download_name=fname)
 
+
+# ── 행사 및 진열 신청 API ──────────────────────────
+@app.route("/api/display/events")
+@login_required
+def api_display_events():
+    conn = get_db()
+    events = [dict(r) for r in conn.execute(
+        "SELECT * FROM display_event ORDER BY event_type, upload_order, id").fetchall()]
+    conn.close()
+    return jsonify(events)
+
+@app.route("/api/display/scores")
+@login_required
+def api_display_scores():
+    """매장별 행사/진열 점수 합계"""
+    year = request.args.get("year", str(datetime.now().year))
+    conn = get_db()
+    # 매장별 총 점수
+    scores = [dict(r) for r in conn.execute("""
+        SELECT ds.seller_name,
+               SUM(ds.score) total_score,
+               COUNT(DISTINCT ds.event_id) event_cnt,
+               GROUP_CONCAT(de.event_name || '(' || ds.score || 'pt)', ',') detail
+        FROM display_score ds
+        JOIN display_event de ON ds.event_id=de.id
+        GROUP BY ds.seller_name ORDER BY total_score DESC
+    """).fetchall()]
+    # 판매 데이터 연동
+    sales_map = {r[0]: r[1] for r in conn.execute(
+        f"SELECT real_seller, SUM(total) t FROM sales_data "
+        f"WHERE sale_date LIKE '{year}%' AND real_seller!='' GROUP BY real_seller"
+    ).fetchall()}
+    all_sellers = [r[0] for r in conn.execute(
+        f"SELECT DISTINCT real_seller FROM sales_data WHERE real_seller!='' AND sale_date LIKE '{year}%' ORDER BY real_seller"
+    ).fetchall()]
+    conn.close()
+    score_map = {r['seller_name']: r for r in scores}
+    result = []
+    for s in all_sellers:
+        info = score_map.get(s, {})
+        result.append({
+            'seller_name': s,
+            'total_score': info.get('total_score', 0),
+            'event_cnt':   info.get('event_cnt', 0),
+            'detail':      info.get('detail', ''),
+            'year_sales':  sales_map.get(s, 0),
+        })
+    result.sort(key=lambda x: -x['total_score'])
+    return jsonify(result)
+
+@app.route("/api/display/upload", methods=["POST"])
+@login_required
+def api_display_upload():
+    """진열/행사 엑셀 업로드 → 점수 자동 부여"""
+    from datetime import datetime as dt2
+    import re as _re
+
+    if 'file' not in request.files:
+        return jsonify({'ok': False, 'msg': '파일 없음'}), 400
+
+    event_name   = request.form.get('event_name', f"업로드_{dt2.now().strftime('%Y%m%d')}")
+    event_type   = request.form.get('event_type', 'display')   # display / event
+    product_name = request.form.get('product_name', '')
+    file = request.files['file']
+    data = file.read()
+
+    conn = get_db()
+
+    # 이번 event_type의 업로드 순서 계산
+    order = (conn.execute(
+        "SELECT MAX(upload_order) FROM display_event WHERE event_type=?", (event_type,)
+    ).fetchone()[0] or 0) + 1
+
+    # 점수 기준: 1번째=5점, 2번째=3점, 3번째+1점
+    score_map_order = {1: 5, 2: 3}
+    base_score = score_map_order.get(order, 1)
+
+    # 이벤트 등록
+    conn.execute("""INSERT INTO display_event (event_name, event_type, product_name, upload_order, upload_date, created_at)
+        VALUES(?,?,?,?,?,?)""",
+        (event_name, event_type, product_name, order,
+         dt2.now().strftime('%Y-%m-%d'), dt2.now().strftime('%Y-%m-%d %H:%M')))
+    event_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+
+    # 엑셀 파싱
+    try:
+        wb = openpyxl.load_workbook(io.BytesIO(data), data_only=True)
+        ws = wb.active
+        raw_rows = list(ws.iter_rows(values_only=True))
+
+        # 헤더 찾기
+        header_idx = 0
+        headers = []
+        for i, row in enumerate(raw_rows[:6]):
+            non_empty = sum(1 for c in row if c is not None and str(c).strip())
+            if non_empty >= 2:
+                header_idx = i
+                headers = [str(c or '').strip() for c in row]
+                break
+
+        # 매장명 컬럼 찾기
+        NAME_KEYS = ['실적용거래처명','거래처명','매장명','seller','name']
+        QTY_KEYS  = ['합계','수량','total','qty','합산']
+        def find_col(keys, hdrs):
+            for k in keys:
+                for i, h in enumerate(hdrs):
+                    if k.lower() in h.lower(): return i
+            return -1
+
+        name_idx = find_col(NAME_KEYS, headers)
+        qty_idx  = find_col(QTY_KEYS,  headers)
+        if name_idx == -1: name_idx = 3  # 실적용거래처명 위치 기본값
+        if qty_idx  == -1: qty_idx  = len(headers)-2
+
+        # real_seller 매핑
+        sc_map = {r[1]: r[1] for r in conn.execute("SELECT display_name, real_seller FROM seller_code WHERE real_seller!=''").fetchall()}
+        # display_name → real_seller (언더바 → 공백)
+        sc_map2 = {r[0].replace('_',' '): r[1] for r in conn.execute("SELECT display_name, real_seller FROM seller_code WHERE real_seller!=''").fetchall()}
+        all_real = {r[0]: r[0] for r in conn.execute("SELECT DISTINCT real_seller FROM sales_data WHERE real_seller!=''").fetchall()}
+
+        def find_real_seller(name_val):
+            if not name_val: return ''
+            s = str(name_val).strip()
+            if s in all_real: return s
+            s2 = s.replace('_', ' ')
+            if s2 in all_real: return s2
+            if s in sc_map: return sc_map[s]
+            if s in sc_map2: return sc_map2[s]
+            return s
+
+        inserted = 0
+        now_str = dt2.now().strftime('%Y-%m-%d %H:%M')
+        for row in raw_rows[header_idx+1:]:
+            if not any(row): continue
+            name_val = row[name_idx] if name_idx < len(row) else None
+            qty_val  = row[qty_idx]  if qty_idx  < len(row) else 0
+            try: qty = int(float(str(qty_val or 0).replace(',','')))
+            except: qty = 0
+            if not name_val or qty <= 0: continue
+
+            real_seller = find_real_seller(name_val)
+            if not real_seller: continue
+
+            # 이미 점수 있는 매장은 누적 (점수 더 주지 않음 — 나중에 올린 엑셀에서 처음 나타난 것만)
+            existing = conn.execute(
+                "SELECT id, score FROM display_score WHERE seller_name=? AND event_id=?",
+                (real_seller, event_id)).fetchone()
+            if not existing:
+                conn.execute("""INSERT INTO display_score
+                    (seller_name, event_id, score, quantity, is_manual, updated_at)
+                    VALUES(?,?,?,?,0,?)""",
+                    (real_seller, event_id, base_score, qty, now_str))
+                inserted += 1
+
+        conn.commit()
+    except Exception as e:
+        conn.close()
+        return jsonify({'ok': False, 'msg': str(e)}), 500
+
+    conn.close()
+    return jsonify({
+        'ok': True, 'event_id': event_id, 'event_name': event_name,
+        'upload_order': order, 'base_score': base_score, 'inserted': inserted
+    })
+
+@app.route("/api/display/score/update", methods=["POST"])
+@login_required
+def api_display_score_update():
+    """수동 점수 수정"""
+    d = request.json or {}
+    conn = get_db()
+    now = datetime.now().strftime('%Y-%m-%d %H:%M')
+    seller = d.get('seller_name','')
+    event_id = d.get('event_id')
+    score = int(d.get('score', 0))
+    memo  = d.get('memo','')
+    if not seller or not event_id:
+        conn.close(); return jsonify({'ok':False}), 400
+    existing = conn.execute("SELECT id FROM display_score WHERE seller_name=? AND event_id=?",
+        (seller, event_id)).fetchone()
+    if existing:
+        conn.execute("UPDATE display_score SET score=?,memo=?,is_manual=1,updated_at=? WHERE seller_name=? AND event_id=?",
+            (score, memo, now, seller, event_id))
+    else:
+        conn.execute("INSERT INTO display_score (seller_name,event_id,score,memo,is_manual,updated_at) VALUES(?,?,?,?,1,?)",
+            (seller, event_id, score, memo, now))
+    conn.commit(); conn.close()
+    return jsonify({'ok': True})
+
+@app.route("/api/display/event/update", methods=["POST"])
+@login_required
+def api_display_event_update():
+    """행사/진열 이벤트명·제품명 수동 수정"""
+    d = request.json or {}
+    conn = get_db()
+    conn.execute("UPDATE display_event SET event_name=?,product_name=? WHERE id=?",
+        (d.get('event_name',''), d.get('product_name',''), d.get('id')))
+    conn.commit(); conn.close()
+    return jsonify({'ok': True})
+
+@app.route("/api/display/event/delete", methods=["POST"])
+@login_required
+def api_display_event_delete():
+    """이벤트 삭제 (점수도 함께)"""
+    eid = (request.json or {}).get('id')
+    if not eid: return jsonify({'ok':False}), 400
+    conn = get_db()
+    conn.execute("DELETE FROM display_score WHERE event_id=?", (eid,))
+    conn.execute("DELETE FROM display_event WHERE id=?", (eid,))
+    conn.commit(); conn.close()
+    return jsonify({'ok': True})
 
 # Render/gunicorn 실행 시 자동 초기화
 init_db()

@@ -359,9 +359,9 @@ td.center{text-align:center}
       <a onclick="showPage('products')" id="nav-products"><span class="ni">📦</span>제품별 관리</a>
       <a onclick="showPage('script')" id="nav-script"><span class="ni">💬</span>매장 분석</a>
       <a onclick="showPage('sns')" id="nav-sns"><span class="ni">📱</span>SNS 활용 매장</a>
-      <a onclick="showPage('ace')" id="nav-ace"><span class="ni">⚡</span>영업 에이스 포인트</a>
-      <a onclick="showPage('report')" id="nav-report"><span class="ni">📋</span>보고서</a>
+      <a onclick="showPage('ace')" id="nav-ace"><span class="ni">⚡</span>영업 실행 포인트</a>
       <a onclick="showPage('stock')" id="nav-stock"><span class="ni">📦</span>재고 현황</a>
+      <a onclick="showPage('display')" id="nav-display"><span class="ni">🏷</span>행사 및 진열 신청</a>
       <a onclick="showPage('users')" id="nav-users"><span class="ni">◎</span>권한 관리</a>
     </nav>
     <div class="sb-div"></div>
@@ -963,11 +963,6 @@ td.center{text-align:center}
       </div>
       <div id="ace-content" style="display:grid;gap:16px"></div>
     </div>
-
-    <!-- ██ 보고서 ██ -->
-    <div class="page" id="page-report">
-      <div class="ph"><div><h2>보고서</h2><p>양식 업로드 → 내용 입력 → 자동 생성 → 엑셀 다운로드</p></div></div>
-
       <!-- 양식 업로드 -->
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:20px">
         <div style="background:var(--paper);border-radius:var(--r-md);padding:14px;box-shadow:var(--sh-sm)">
@@ -1053,6 +1048,85 @@ td.center{text-align:center}
         </tr></thead>
         <tbody id="stock-tbody"></tbody>
       </table></div>
+    </div>
+
+    <!-- ██ 행사 및 진열 신청 ██ -->
+    <div class="page" id="page-display">
+      <div class="ph">
+        <div><h2>행사 및 진열 신청</h2><p>엑셀 업로드 → 자동 점수 부여 · 누적 관리</p></div>
+        <div class="ph-r">
+          <select class="ysel" id="display-year" onchange="loadDisplay()"></select>
+          <!-- 진열 신청 업로드 -->
+          <div style="position:relative">
+            <button class="btn btn-primary btn-sm" onclick="document.getElementById('display-file-input').click()">📊 진열신청 업로드</button>
+            <input type="file" id="display-file-input" accept=".xlsx,.xls" style="display:none"
+              onchange="openUploadModal(this,'display')">
+          </div>
+          <!-- 행사 업로드 -->
+          <div style="position:relative">
+            <button class="btn btn-ghost btn-sm" onclick="document.getElementById('event-file-input').click()">🎪 행사신청 업로드</button>
+            <input type="file" id="event-file-input" accept=".xlsx,.xls" style="display:none"
+              onchange="openUploadModal(this,'event')">
+          </div>
+        </div>
+      </div>
+
+      <!-- 점수 기준 안내 -->
+      <div style="background:#EFF6FF;border:1px solid #BFDBFE;border-radius:var(--r-md);padding:12px 16px;margin-bottom:20px;font-size:12px;color:#1E40AF">
+        <strong>점수 기준:</strong> 첫 번째 업로드에서 신청한 매장 +5점 · 두 번째 +3점 · 세 번째 이후 +1점 (누적 보존)
+        &nbsp;|&nbsp; <strong>수동 수정</strong>도 가능합니다
+      </div>
+
+      <!-- KPI -->
+      <div id="display-kpi" style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:20px"></div>
+
+      <!-- 이벤트 목록 -->
+      <div id="display-events-wrap" style="margin-bottom:20px"></div>
+
+      <!-- 매장별 점수 테이블 -->
+      <div style="font-size:13px;font-weight:600;color:var(--t-700);margin-bottom:10px">매장별 누적 점수</div>
+      <div class="tw">
+        <table id="display-table">
+          <thead><tr>
+            <th style="width:4%">#</th>
+            <th style="width:20%">매장명</th>
+            <th style="width:8%;text-align:center">누적 점수</th>
+            <th style="width:8%;text-align:center">참여 횟수</th>
+            <th style="width:35%">상세 내역</th>
+            <th style="width:12%;text-align:right">연매출</th>
+            <th style="width:8%;text-align:center">수정</th>
+          </tr></thead>
+          <tbody id="display-tbody"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- 업로드 설정 모달 -->
+    <div id="display-upload-modal" style="display:none;position:fixed;inset:0;background:rgba(16,24,40,.4);z-index:1000;align-items:center;justify-content:center">
+      <div style="background:var(--paper);border-radius:var(--r-xl);padding:24px;width:min(440px,95vw);box-shadow:0 24px 60px rgba(0,0,0,.2)">
+        <div style="font-size:15px;font-weight:700;margin-bottom:16px" id="dum-title">업로드 설정</div>
+        <div style="margin-bottom:12px"><div class="flbl">이벤트/진열 이름</div>
+          <input class="fi" id="dum-name" placeholder="예: 줄즈 에어2 진열신청 1차"></div>
+        <div style="margin-bottom:16px"><div class="flbl">제품명 (수동 입력)</div>
+          <input class="fi" id="dum-product" placeholder="예: 줄즈 에어2 샌디타프"></div>
+        <div style="display:flex;gap:8px;justify-content:flex-end">
+          <button class="btn btn-ghost" onclick="closeUploadModal()">취소</button>
+          <button class="btn btn-primary" onclick="confirmUpload()">업로드</button>
+        </div>
+        <input type="hidden" id="dum-type">
+      </div>
+    </div>
+
+    <!-- 점수 수정 모달 -->
+    <div id="display-score-modal" style="display:none;position:fixed;inset:0;background:rgba(16,24,40,.4);z-index:1000;align-items:center;justify-content:center">
+      <div style="background:var(--paper);border-radius:var(--r-xl);padding:24px;width:min(400px,95vw);box-shadow:0 24px 60px rgba(0,0,0,.2)">
+        <div style="font-size:14px;font-weight:700;margin-bottom:16px" id="dsm-seller"></div>
+        <div id="dsm-fields" style="margin-bottom:16px"></div>
+        <div style="display:flex;gap:8px;justify-content:flex-end">
+          <button class="btn btn-ghost" onclick="document.getElementById('display-score-modal').style.display='none'">닫기</button>
+          <button class="btn btn-primary" onclick="saveDisplayScores()">저장</button>
+        </div>
+      </div>
     </div>
 
     <!-- ██ 엑셀 업로드 ██ -->
@@ -1230,7 +1304,7 @@ async function api(url,opts={}){
 }
 function initYears(){
   const y=TY(),yrs=Array.from({length:5},(_,i)=>y-i);
-  ['dash-year','sales-year','ex-year','prod-year','sd-year','script-year','sns-year','ace-year','visit-year'].forEach(id=>{
+  ['dash-year','sales-year','ex-year','prod-year','sd-year','script-year','sns-year','ace-year','visit-year','display-year'].forEach(id=>{
     const s=document.getElementById(id);
     if(s)s.innerHTML=yrs.map(yr=>`<option${yr===y?' selected':''}>${yr}</option>`).join('');
   });
@@ -1242,8 +1316,7 @@ function showPage(n){
   if(pg) pg.classList.add('active'); if(nav) nav.classList.add('active');
   ({dashboard:loadDash,branches:loadBranches,sales:loadSalesPage,
     users:loadUsers,salesdata:loadSalesData,products:loadProducts,
-    script:initScriptPage,sns:loadSNS,visit:loadVisit,ace:loadAce,
-    report:initReport,stock:loadStock}[n]||function(){})();
+    script:initScriptPage,sns:loadSNS,stock:loadStock,display:loadDisplay,ace:loadAce}[n]||function(){})();
   if(n==='upload') cancelUpload();
 }
 
@@ -1391,200 +1464,299 @@ async function saveCheckResult(){
 // ── 영업 에이스 포인트 ────────────────────────────
 async function loadAce(){
   const year=document.getElementById('ace-year')?.value||new Date().getFullYear();
-  const [groups, sellers, stock]=await Promise.all([
-    api(`/api/products/groups`),
+  const monthSel=document.getElementById('ace-month');
+  if(monthSel&&monthSel.children.length===1){
+    for(let m=1;m<=12;m++) monthSel.innerHTML+=`<option value="${String(m).padStart(2,'0')}">${m}월</option>`;
+  }
+  const monthVal=monthSel?.value||'';
+  const monthNum=monthVal?parseInt(monthVal):new Date().getMonth()+1;
+
+  const [groups,sellers,stock,displayScores]=await Promise.all([
+    api('/api/products/groups'),
     api(`/api/sales-by-store?year=${year}`),
-    api(`/api/stock/list`),
+    api('/api/stock/list'),
+    api(`/api/display/scores?year=${year}`),
   ]);
   if(!groups||!sellers) return;
 
-  const totalSales=sellers.reduce((s,r)=>s+(r.total||0),0)||1;
-  const stockMap={}; (stock||[]).forEach(s=>{
-    const k=s.item_name_norm||s.item_name;
+  const monthSellers=monthVal?await api(`/api/sales-by-store?year=${year}&month=${monthVal}`):sellers;
+  const activeSellers=monthSellers||sellers;
+  const totalSales=activeSellers.reduce((s,r)=>s+(r.total||0),0)||1;
+  const totalAll=sellers.reduce((s,r)=>s+(r.total||0),0)||1;
+
+  const stockMap={};
+  (stock||[]).forEach(s=>{
+    const k=(s.item_name_norm||s.item_name||'').replace(/\[.*?\]/g,'').trim();
     stockMap[k]=(stockMap[k]||0)+(s.quantity||0);
   });
 
+  // 진열 점수 높은 매장
+  const highScoreSellers=(displayScores||[]).filter(d=>d.total_score>=5).map(d=>d.seller_name);
+  const MONTHS_KR=['','1월','2월','3월','4월','5월','6월','7월','8월','9월','10월','11월','12월'];
+  const periodLabel=monthVal?`${year}년 ${MONTHS_KR[monthNum]}`:`${year}년 전체`;
+  const now=new Date();
+
+  function card(icon,title,desc,items,action,color,bg,tag=''){
+    return {icon,title,desc,items,action,color,bg,tag};
+  }
+
   const cards=[];
 
-  // 1. 오늘 당장 — 타프토이즈 미취급 + 재고 있는 매장
-  const taftStockItems=Object.entries(stockMap).filter(([k,q])=>q>0&&k.includes('타프'));
-  if(taftStockItems.length>0){
-    const topSellers=sellers.filter(s=>s.total/totalSales>0.01).slice(0,5);
-    cards.push({
-      type:'urgent', icon:'🎯', title:'지금 당장 타프토이즈 밀어야 할 매장',
-      desc:`재고 ${taftStockItems.length}종 보유 중 — 상위 매장 집중 공략`,
-      items:topSellers.map(s=>`• ${s.seller_name} — 연매출 ${N(s.total)}원, 영향력 큰 매장`),
-      action:'이 매장들에 타프토이즈 번들 제안 → 재고 소진 + 신규 도입 동시 달성',
-      color:'#DC2626',bg:'#FEF2F2',
-    });
-  }
+  // ── 1. 지금 당장 오늘 해야 할 것 ──────────────
+  const urgent=[];
+  const taftStock=Object.entries(stockMap).filter(([k,q])=>q>=10&&(k.includes('타프')||k.includes('사바나')||k.includes('어반가든')||k.includes('팝앤')));
+  if(taftStock.length) urgent.push(`타프토이즈 재고 ${taftStock.length}종 — 미취급 매장 방문 필수`);
+  const longNoSale=sellers.filter(s=>s.total/totalAll<0.005&&s.total>0).slice(0,3);
+  if(longNoSale.length) urgent.push(`장기 저매출 매장 ${longNoSale.length}곳 — 오늘 연락 한 통이 실적 차이`);
+  if(now.getDate()<=7) urgent.push('월초: 이번 달 첫 발주 제안 타이밍 — 먼저 연락하는 사람이 선점');
+  if(now.getDate()>=20) urgent.push('월말: 미달성 매장 긴급 방문 + 밀어내기 타이밍');
+  cards.push(card('🚨','지금 당장 — 오늘 해야 할 것',
+    '이걸 안 하면 내일 후회합니다',
+    urgent.length?urgent:['오늘 연락 안 한 매장 3곳에 문자 먼저'],
+    '전화 > 카톡 > 이메일 순서로 연락 — 응답률 3배 차이',
+    '#DC2626','#FEF2F2','🔥 TODAY'));
 
-  // 2. 80/20 법칙 — 상위 20% 매장
-  const top20pct=Math.ceil(sellers.length*0.2);
-  const topSellers=sellers.slice(0,top20pct);
+  // ── 2. 핵심 20% 매장 관리 ──────────────────────
+  const top20=Math.ceil(activeSellers.length*0.2);
+  const topSellers=activeSellers.slice(0,top20);
   const top20sales=topSellers.reduce((s,r)=>s+(r.total||0),0);
-  cards.push({
-    type:'focus', icon:'⚡', title:`상위 ${top20pct}개 매장이 전체 매출의 ${Math.round(top20sales/totalSales*100)}% 차지`,
-    desc:'이 매장들에 시간의 60%를 써야 합니다',
-    items:topSellers.slice(0,5).map((s,i)=>`${i+1}위. ${s.seller_name} — ${N(s.total)}원 (${(s.total/totalSales*100).toFixed(1)}%)`),
-    action:'방문 주기: 2주 1회 / 발주 선제 제안 / 신제품 우선 배정',
-    color:'var(--accent-m)',bg:'#EEF2FF',
-  });
+  cards.push(card('⚡',`[${periodLabel}] 상위 ${top20}개 매장 = 전체의 ${Math.round(top20sales/totalSales*100)}%`,
+    '파레토 법칙 — 이 매장들에 에너지의 60%를',
+    topSellers.slice(0,5).map((s,i)=>`${i+1}. <b>${s.seller_name}</b> — ${N(s.total)}원`),
+    '방문 주기 2주 / 발주 예측 제안 / 신제품 우선 공유 → 관계가 매출',
+    'var(--p)','var(--p-lt)','💰 CORE'));
 
-  // 3. 잠자는 거인 — 오랫동안 발주 없는 큰 매장
-  const longNoOrder=sellers.filter(s=>s.total>500000).slice(Math.floor(sellers.length*0.3));
-  if(longNoOrder.length>0){
-    cards.push({
-      type:'sleeping', icon:'💤', title:'잠자는 거인 — 과거 실적 있지만 최근 조용한 매장',
-      desc:'이 매장들은 한 번 깨우면 폭발적 성장 가능',
-      items:longNoOrder.slice(0,4).map(s=>`• ${s.seller_name} — 누적 ${N(s.total)}원, 재활성화 필요`),
-      action:'맞춤 방문 → 진열 점검 + 신제품 소개 → 발주 재개 유도',
-      color:'#D97706',bg:'#FFFBEB',
-    });
+  // ── 3. 전월 대비 성장/하락 ──────────────────────
+  if(monthVal&&parseInt(monthVal)>1){
+    const prevMonth=String(monthNum-1).padStart(2,'0');
+    const prevSellers=await api(`/api/sales-by-store?year=${year}&month=${prevMonth}`)||[];
+    const prevMap=Object.fromEntries(prevSellers.map(s=>[s.seller_name,s.total||0]));
+    const growers=activeSellers
+      .filter(s=>prevMap[s.seller_name]>0&&(s.total||0)>prevMap[s.seller_name]*1.2)
+      .map(s=>({...s,g:Math.round((s.total-prevMap[s.seller_name])/prevMap[s.seller_name]*100)}))
+      .sort((a,b)=>b.g-a.g).slice(0,4);
+    const fallers=activeSellers
+      .filter(s=>prevMap[s.seller_name]>0&&(s.total||0)<prevMap[s.seller_name]*0.8)
+      .slice(0,3);
+    if(growers.length)
+      cards.push(card('📈',`${MONTHS_KR[monthNum]} 폭발 성장 매장 — 지금이 추가 발주 타이밍`,
+        '성장하는 매장은 이유가 있습니다. 그 이유를 알면 다른 매장에도 적용 가능',
+        growers.map(s=>`▲ <b>${s.seller_name}</b> +${s.g}% — 비결 파악 후 전파`),
+        '이 매장에 "잘 되는 이유" 직접 물어보기 → 성공 공식 복제',
+        'var(--green)','var(--green-lt)','🚀 GROW'));
+    if(fallers.length)
+      cards.push(card('📉',`${MONTHS_KR[monthNum]} 하락 매장 — 방치하면 이탈`,
+        '하락 초기에 잡아야 합니다. 1주일이 1달보다 쉽습니다',
+        fallers.map(s=>`▼ <b>${s.seller_name}</b> — 즉각 방문 필요`),
+        '방문 시 "어떤 게 안 팔리세요?" 한 마디 → 원인의 80% 해결',
+        '#DC2626','#FEF2F2','⚠️ RISK'));
   }
 
-  // 4. 브랜드 불균형 — 한 브랜드 집중 매장
-  const topGroup=groups[0]; const secGroup=groups[1];
-  if(topGroup&&secGroup){
-    cards.push({
-      type:'balance', icon:'⚖️', title:'브랜드 균형 전략',
-      desc:`현재 ${topGroup.item_group}(${topGroup.qty}개)가 압도적 — ${secGroup.item_group} 비중 높이면 안정성 향상`,
-      items:[
-        `• ${topGroup.item_group} 의존도 높은 매장 → ${secGroup.item_group} 크로스셀 제안`,
-        `• 카시트 구매 후 → 타프토이즈 장난감 번들 추천 (객단가 +20,000원)`,
-        `• 유모차 구매 후 → 보행기/쏘서 시리즈 3개월 후 재방문 제안`,
+  // ── 4. 창의적 영업 아이디어 ────────────────────
+  const creative=[
+    {t:'카시트 구매자 = 3개월 후 보행기 고객', d:'카시트 판매 기록 보고 정확히 3개월 후 연락 — "아기 이제 앉기 시작하죠? 보행기 보여드릴게요"'},
+    {t:'SNS 잘하는 매장에 신제품 먼저 공급', d:'팔로워 많은 매장에 신제품 입고 사진 먼저 찍게 해주면 바이럴 효과 + 그 매장이 나를 VIP 취급'},
+    {t:'비 오는 날 = 실내놀이 제품 밀 타이밍', d:'날씨 앱 보고 비 예보 있으면 타프토이즈 실내놀이 제품 미리 카톡 — "이번 주말 비 온다는데..."'},
+    {t:'신생아 병원 근처 매장 = 3월/9월 집중 공략', d:'출생아 수 피크 시즌 2달 전에 재고 확보 제안 — 사장님이 먼저 생각 못한 것을 내가 먼저'},
+    {t:'행사 점수 높은 매장 = 우선 지원 대상', d:`진열 신청 빠른 ${highScoreSellers.length}개 매장 → 신제품 우선 배정 + 마케팅 지원 약속으로 관계 강화`},
+  ];
+  const todayIdea=creative[now.getDate()%creative.length];
+  cards.push(card('💡','오늘의 창의 영업 포인트',
+    '남들이 안 하는 것 하나가 실적을 만듭니다',
+    [`<b>${todayIdea.t}</b>`, todayIdea.d],
+    '생각에서 행동까지 24시간 안에 → 실행하지 않는 아이디어는 없는 것과 같다',
+    'var(--purple)','var(--purple-lt)','🎯 IDEA'));
+
+  // ── 5. 타프토이즈 재고 소진 전략 ───────────────
+  if(taftStock.length){
+    cards.push(card('🎯','타프토이즈 재고 소진 — 지금 안 팔면 다음 시즌',
+      `재고 ${taftStock.length}종 중 10개 이상 — 미취급 매장에 번들 제안`,
+      [
+        ...taftStock.slice(0,3).map(([k,q])=>`• ${k}: ${q}개 재고 → 상위 매장 우선 제안`),
+        '전략: 카시트/유모차 구매 고객에게 완구 번들 → 객단가 +30,000원',
       ],
-      action:'1개 제품 구매 → 2-3개 연계 제품 제안 = 고객당 매출 2배',
-      color:'#16A34A',bg:'#F0FDF4',
-    });
+      '재고 있는 제품 = 바로 납품 가능 = 빠른 결정 유도 포인트',
+      'var(--amber)','var(--amber-lt)','📦 STOCK'));
   }
 
-  // 5. 시즌 타이밍
-  const month=new Date().getMonth()+1;
-  const seasons={3:'어린이날 선물 시즌',4:'어린이날 D-30',5:'어린이날 D-Day',
-                 6:'여름 워터매트',7:'여름 실내놀이',8:'가을 준비',
-                 9:'추석 선물',10:'연말 준비',11:'크리스마스',12:'연말+설',1:'설 선물',2:'봄 준비'};
-  cards.push({
-    type:'season', icon:'📅', title:`지금은 ${seasons[month]||'시즌'} — 선제 발주 타이밍`,
-    desc:'시즌 2~3주 전 발주가 핵심. 타이밍 놓치면 다음 시즌까지 기다려야 함',
-    items:month<=5?[
-      '• 줄즈 에어2 봄/여름 신색상 선주문',
-      '• 타프토이즈 워터매트 (6월 이전 발주 필수)',
-      '• 엔픽스 보행기 (어린이날 선물 수요)',
-    ]:month<=8?[
-      '• 타프토이즈 실내놀이 세트 (여름 실내)',
-      '• 레카로 카시트 (여름 휴가 이동 수요)',
-      '• 타프토이즈 워터매트 재고 소진 전략',
-    ]:[
-      '• 레카로 카시트 (추석/크리스마스 선물)',
-      '• 타프토이즈 실내놀이 (겨울 실내)',
-      '• 줄즈 크리스마스 에디션 선주문',
-    ],
-    action:'상위 10개 매장 시즌 발주 미팅 → 이번 주 안에 완료',
-    color:'#7C3AED',bg:'#FAF5FF',
-  });
+  // ── 6. 시즌 타이밍 ────────────────────────────
+  const seasonData={
+    1:{s:'설 선물+봄 준비',items:['레카로 카시트 선물 제안','줄즈 봄 신색상 선주문','타프토이즈 실내놀이'],tip:'설 연휴 2주 전이 피크 — 지금 발주 안 하면 연휴에 품절'},
+    2:{s:'봄 시즌 선점',items:['줄즈 봄 신색상','엔픽스 보행기 봄 수요','타프토이즈 야외 놀이'],tip:'어린이날 D-90 — 지금 선주문하면 경쟁사보다 2주 앞서 진열'},
+    3:{s:'어린이날 D-60',items:['어린이날 선물 패키지 기획','레카로 카시트 선물 포장','타프토이즈 아치+모빌 세트'],tip:'선물 수요 최대 시즌 — 포장 서비스 제안하면 객단가 +20%'},
+    4:{s:'어린이날 D-30 🔥',items:['마지막 발주 기회','선물 포장 박스 준비','재고 안전 확보'],tip:'이번 주가 마지막 발주 타이밍 — 1주 늦으면 납품 못 받음'},
+    5:{s:'여름 준비 + 어린이날',items:['타프토이즈 워터매트 긴급 발주','줄즈 에어2 여름 색상','레카로 카시트 휴가 수요'],tip:'워터매트는 7월 전에 소진됨 — 지금 확보 안 하면 품절 확실'},
+    6:{s:'여름 성수기 🏖',items:['워터매트 마지막 기회 — 8월 단종','실내 놀이 (에어컨 실내)','레카로 카시트 캠핑 수요'],tip:'6월 말까지가 워터매트 골든타임 — 7월부터는 재고 없음'},
+    7:{s:'여름 피크 + 추석 준비',items:['추석 선물 레카로 카시트 선주문','원더폴드 웨건 가을 나들이','타프토이즈 비지북 독서달'],tip:'여름 피크이지만 추석 선주문이 지금부터 — 선점 전략'},
+    8:{s:'추석 + 가을 🍁',items:['추석 전 2주 집중 발주','원더폴드 웨건 나들이 수요','타프토이즈 큐브 선물용'],tip:'추석 선물 수요 피크 — 2주 전부터 재고 확보 필수'},
+    9:{s:'가을 성수기',items:['연말 선물 준비 시작','크리스마스 에디션 선주문','타프토이즈 실내놀이 확보'],tip:'10월부터 크리스마스 준비 — 11월에 생각하면 늦음'},
+    10:{s:'크리스마스 D-60 🎄',items:['크리스마스 패키지 기획','줄즈 크리스마스 에디션 선주문','타프토이즈 선물 세트 구성'],tip:'크리스마스 재고는 11월 말까지 마감 — 지금이 선점 타이밍'},
+    11:{s:'크리스마스 D-30 🎅',items:['마지막 크리스마스 발주','선물 포장 준비','설 선물 미리 기획'],tip:'12월 1일부터 크리스마스 선물 수요 폭발 — 재고 확보 완료해야'},
+    12:{s:'크리스마스 + 새해',items:['연말 재고 정리','1월 설 선물 선주문','새해 신제품 미리 예약'],tip:'새해 첫 발주는 1월 2일 — 새해 첫 거래처로 기억에 남기기'},
+  };
+  const sd=seasonData[monthNum]||seasonData[new Date().getMonth()+1];
+  cards.push(card('📅',`[${monthNum}월] ${sd.s} — 선제 발주 포인트`,
+    sd.tip,
+    sd.items.map(i=>`• ${i}`),
+    '1달 먼저 움직이는 것이 연간 실적을 결정합니다',
+    'var(--amber)','var(--amber-lt)','⏰ SEASON'));
 
   document.getElementById('ace-content').innerHTML=cards.map(c=>`
-    <div style="background:${c.bg};border:1.5px solid ${c.color}20;border-radius:var(--r-lg);padding:20px">
+    <div style="background:${c.bg};border:1.5px solid ${c.color}22;border-radius:var(--r-lg);padding:20px;position:relative;overflow:hidden">
+      ${c.tag?`<span style="position:absolute;top:12px;right:14px;font-size:10px;font-weight:700;color:${c.color};background:${c.color}18;padding:2px 8px;border-radius:20px;letter-spacing:.5px">${c.tag}</span>`:''}
       <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px">
         <span style="font-size:22px">${c.icon}</span>
-        <div>
-          <div style="font-size:14px;font-weight:800;color:${c.color}">${c.title}</div>
-          <div style="font-size:12px;color:var(--ink-500);margin-top:2px">${c.desc}</div>
+        <div style="flex:1;padding-right:60px">
+          <div style="font-size:14px;font-weight:700;color:${c.color}">${c.title}</div>
+          <div style="font-size:12px;color:var(--t-500);margin-top:2px">${c.desc}</div>
         </div>
       </div>
-      <div style="font-size:12px;line-height:1.9;color:var(--ink-700);margin-bottom:12px">${c.items.join('<br>')}</div>
-      <div style="background:${c.color};color:#fff;border-radius:var(--r-md);padding:8px 14px;font-size:12px;font-weight:700">
-        💡 실행: ${c.action}
+      <div style="font-size:12px;line-height:1.9;color:var(--t-700);margin-bottom:12px">${c.items.join('<br>')}</div>
+      <div style="background:${c.color};color:#fff;border-radius:var(--r-md);padding:8px 14px;font-size:12px;font-weight:600">
+        → ${c.action}
       </div>
     </div>`).join('');
 }
 
-// ── 보고서 ────────────────────────────────────────
-let weeklyReportData=null, visitReportData=null;
+// ── 행사 및 진열 신청 ────────────────────────────
+let displayPendingFile=null, displayPendingType='';
 
-async function uploadTemplate(input, type){
+function openUploadModal(input, type){
   const file=input.files[0]; if(!file) return;
-  const fd=new FormData(); fd.append('file',file); fd.append('type',type);
-  const r=await fetch('/api/report/template/upload',{method:'POST',body:fd});
-  const d=await r.json();
-  const statusEl=document.getElementById(`${type==='weekly'?'weekly':'visit'}-tmpl-status`);
-  if(d.ok){
-    statusEl.textContent=`✅ ${file.name} (${d.rows}행)`;
-    statusEl.style.color='#16A34A';
-    toast(`${type==='weekly'?'주간업무보고':'매장방문'} 양식 업로드 완료`);
-    if(d.preview){
-      console.log('양식 미리보기:', d.preview.slice(0,3));
-    }
-  } else {
-    statusEl.textContent='❌ 업로드 실패';
-    toast('양식 업로드 실패: '+(d.msg||''), false);
-  }
+  displayPendingFile=file; displayPendingType=type;
+  const typeLabel=type==='display'?'진열 신청':'행사 신청';
+  document.getElementById('dum-title').textContent=`${typeLabel} 엑셀 업로드`;
+  document.getElementById('dum-type').value=type;
+  document.getElementById('dum-name').value=`${typeLabel} ${new Date().toLocaleDateString('ko-KR')}`;
+  document.getElementById('dum-product').value='';
+  document.getElementById('display-upload-modal').style.display='flex';
   input.value='';
 }
+function closeUploadModal(){ document.getElementById('display-upload-modal').style.display='none'; }
 
-async function generateReport2(type){
-  const isWeekly=type==='weekly';
-  const input=document.getElementById(isWeekly?'report-weekly-input':'report-visit-input').value.trim();
-  if(!input){toast('내용을 입력해주세요',false);return;}
-
-  const body={
-    type,
-    input_text: input,
-    seller: isWeekly?'':document.getElementById('report-visit-seller').value.trim(),
-    date: isWeekly?'':document.getElementById('report-visit-date').value,
-    week_start: isWeekly?document.getElementById('report-week-start').value:'',
-    next_plan: isWeekly?document.getElementById('report-weekly-next').value:'',
-    brand_note: isWeekly?'':document.getElementById('report-brand-note').value.trim(),
-  };
-
-  const r=await api('/api/report/generate',{method:'POST',body});
-  if(!r){toast('보고서 생성 실패',false);return;}
-
-  const previewEl=document.getElementById(isWeekly?'report-weekly-preview':'report-visit-preview');
-  const dlBtn=document.getElementById(isWeekly?'dl-weekly':'dl-visit');
-
-  if(isWeekly){ weeklyReportData=r; } else { visitReportData=r; }
-
-  if(r.has_template && r.structure){
-    // 양식 기반 — 표 형태로 렌더링
-    const tableHtml=`<table style="width:100%;border-collapse:collapse;font-size:11px">`
-      + r.structure.map(row=>`<tr>${row.map(cell=>`<td style="border:1px solid #e5e7eb;padding:6px 8px;vertical-align:top;white-space:pre-wrap">${cell||''}</td>`).join('')}</tr>`).join('')
-      + `</table>`;
-    previewEl.innerHTML=tableHtml;
-    previewEl.style.whiteSpace='normal';
-  } else if(r.text){
-    previewEl.textContent=r.text;
-    previewEl.style.whiteSpace='pre-wrap';
-  }
-  previewEl.style.display='block';
-  dlBtn.style.display='';
+async function confirmUpload(){
+  if(!displayPendingFile) return;
+  const fd=new FormData();
+  fd.append('file', displayPendingFile);
+  fd.append('event_name',   document.getElementById('dum-name').value||'업로드');
+  fd.append('event_type',   document.getElementById('dum-type').value);
+  fd.append('product_name', document.getElementById('dum-product').value);
+  closeUploadModal();
+  const r=await fetch('/api/display/upload',{method:'POST',body:fd});
+  const d=await r.json();
+  if(d.ok){
+    toast(`✅ ${d.event_name} 업로드 완료 — ${d.inserted}개 매장 ${d.base_score}점 부여`);
+    loadDisplay();
+  } else toast('업로드 실패: '+(d.msg||''), false);
 }
 
-async function exportReport(type){
-  const data=type==='weekly'?weeklyReportData:visitReportData;
-  if(!data){toast('먼저 보고서를 생성해주세요',false);return;}
-  const r=await fetch('/api/report/export',{
-    method:'POST',
-    headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({type, structure:data.structure||null, text:data.text||null})
-  });
-  if(r.ok){
-    const blob=await r.blob();
-    const url=URL.createObjectURL(blob);
-    const a=document.createElement('a');
-    a.href=url; a.download=`${type==='weekly'?'주간업무보고':'매장방문보고서'}_${new Date().toISOString().slice(0,10)}.xlsx`;
-    a.click(); URL.revokeObjectURL(url);
-  }
+async function loadDisplay(){
+  const year=document.getElementById('display-year')?.value||new Date().getFullYear();
+  const [events, scores]=await Promise.all([
+    api('/api/display/events'),
+    api(`/api/display/scores?year=${year}`),
+  ]);
+  if(!events||!scores) return;
+  renderDisplayKPI(scores);
+  renderDisplayEvents(events);
+  renderDisplayTable(scores, events);
 }
 
-async function initReport(){
-  const sellers=await api('/api/sales-by-store?year='+new Date().getFullYear());
-  if(!sellers) return;
-  const dl=document.getElementById('report-seller-list');
-  dl.innerHTML=sellers.map(s=>`<option value="${s.seller_name}">`).join('');
-  document.getElementById('report-visit-date').value=new Date().toISOString().slice(0,10);
-  document.getElementById('report-week-start').value=new Date().toISOString().slice(0,10);
+function renderDisplayKPI(scores){
+  const total=scores.length;
+  const participated=scores.filter(s=>s.total_score>0).length;
+  const high=scores.filter(s=>s.total_score>=5).length;
+  const avgScore=total?Math.round(scores.reduce((s,r)=>s+(r.total_score||0),0)/total):0;
+  document.getElementById('display-kpi').innerHTML=[
+    {l:'전체 매장',v:`${total}개`,c:'var(--p)'},
+    {l:'참여 매장',v:`${participated}개 (${total?Math.round(participated/total*100):0}%)`,c:'var(--green)'},
+    {l:'5점 이상',v:`${high}개`,c:'var(--amber)'},
+    {l:'평균 점수',v:`${avgScore}점`,c:'var(--purple)'},
+  ].map(k=>`<div class="kpi"><div class="kpi-accent" style="background:${k.c}"></div>
+    <div class="kpi-lbl">${k.l}</div><div class="kpi-val" style="color:${k.c}">${k.v}</div></div>`).join('');
+}
+
+function renderDisplayEvents(events){
+  const wrap=document.getElementById('display-events-wrap');
+  if(!events.length){wrap.innerHTML='<div style="color:var(--t-300);font-size:13px">아직 업로드된 행사/진열이 없습니다</div>';return;}
+  const typeLabel={display:'📊 진열신청',event:'🎪 행사신청'};
+  const scoreLabel={1:'+5점',2:'+3점'};
+  wrap.innerHTML=`<div style="font-size:13px;font-weight:600;color:var(--t-700);margin-bottom:8px">업로드 이력</div>
+  <div style="display:flex;flex-wrap:wrap;gap:8px">
+  ${events.map(e=>`<div style="background:var(--paper);border:1px solid var(--border);border-radius:var(--r-md);padding:8px 14px;display:flex;align-items:center;gap:10px">
+    <span style="font-size:12px;color:var(--t-300)">${typeLabel[e.event_type]||e.event_type}</span>
+    <span style="font-weight:600;font-size:13px">${e.event_name}</span>
+    ${e.product_name?`<span style="background:var(--p-lt);color:var(--p);font-size:11px;padding:1px 7px;border-radius:10px">${e.product_name}</span>`:''}
+    <span style="background:var(--green-lt);color:var(--green);font-size:11px;font-weight:700;padding:2px 8px;border-radius:10px">${scoreLabel[e.upload_order]||'+1점'}</span>
+    <button onclick="editEvent(${e.id},'${e.event_name.replace(/'/g,"\\'")}','${(e.product_name||'').replace(/'/g,"\\'")}')" class="btn btn-ghost btn-xs">수정</button>
+    <button onclick="deleteEvent(${e.id})" class="btn btn-xs" style="background:var(--red-lt);color:var(--red)">삭제</button>
+  </div>`).join('')}
+  </div>`;
+}
+
+function renderDisplayTable(scores, events){
+  document.getElementById('display-tbody').innerHTML=scores.map((r,i)=>{
+    const score=r.total_score||0;
+    const scoreColor=score>=5?'var(--green)':score>=3?'var(--amber)':'var(--t-300)';
+    return`<tr>
+      <td style="text-align:center;color:var(--t-300)">${i+1}</td>
+      <td style="font-weight:600">${r.seller_name}</td>
+      <td style="text-align:center"><span style="font-size:16px;font-weight:700;color:${scoreColor}">${score}</span></td>
+      <td style="text-align:center;color:var(--t-500)">${r.event_cnt||0}회</td>
+      <td style="font-size:12px;color:var(--t-500)">${r.detail||'—'}</td>
+      <td style="text-align:right;font-weight:700;color:var(--p)">${N(r.year_sales||0)}원</td>
+      <td style="text-align:center">
+        <button class="btn btn-ghost btn-xs" onclick="openScoreModal('${r.seller_name.replace(/'/g,"\\'")}')">수정</button>
+      </td>
+    </tr>`;
+  }).join('');
+}
+
+let scoreModalSeller='', scoreModalEvents=[];
+async function openScoreModal(seller){
+  scoreModalSeller=seller;
+  const events=await api('/api/display/events');
+  const scores=await api(`/api/display/scores`);
+  scoreModalEvents=events||[];
+  document.getElementById('dsm-seller').textContent=seller+' — 점수 수동 수정';
+  const sellerScore=scores?.find(s=>s.seller_name===seller)||{};
+  // 이벤트별 현재 점수 조회
+  const evScores=await api(`/api/display/scores`);
+  document.getElementById('dsm-fields').innerHTML=(events||[]).map(e=>`
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px">
+      <div style="flex:1;font-size:13px">${e.event_name}</div>
+      <input type="number" id="ds-score-${e.id}" value="0" min="0" max="10"
+        style="width:60px;border:1px solid var(--border-md);border-radius:var(--r-sm);padding:4px 8px;text-align:center;font-size:13px">
+      <span style="font-size:11px;color:var(--t-300)">점</span>
+    </div>`).join('');
+  document.getElementById('display-score-modal').style.display='flex';
+}
+
+async function saveDisplayScores(){
+  const events=scoreModalEvents;
+  for(const e of events){
+    const input=document.getElementById(`ds-score-${e.id}`);
+    const score=parseInt(input?.value||0);
+    if(score>0){
+      await api('/api/display/score/update',{method:'POST',body:{seller_name:scoreModalSeller,event_id:e.id,score}});
+    }
+  }
+  document.getElementById('display-score-modal').style.display='none';
+  loadDisplay(); toast('점수 수정 완료');
+}
+
+async function editEvent(id, name, product){
+  const newName=prompt('이벤트 이름:', name);
+  if(!newName) return;
+  const newProduct=prompt('제품명:', product)||'';
+  await api('/api/display/event/update',{method:'POST',body:{id,event_name:newName,product_name:newProduct}});
+  loadDisplay(); toast('수정됐습니다');
+}
+
+async function deleteEvent(id){
+  if(!confirm('이 이벤트와 관련 점수를 모두 삭제할까요?')) return;
+  await api('/api/display/event/delete',{method:'POST',body:{id}});
+  loadDisplay(); toast('삭제됐습니다');
 }
 
 // ── 재고 현황 ──────────────────────────────────────
