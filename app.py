@@ -5092,22 +5092,17 @@ def api_display_upload():
         return jsonify({'ok': False, 'msg': f'엑셀 파싱 실패: {e}'}), 500
 
     # real_seller 매핑
-    sc_map = {}
-    for r in conn.execute("SELECT display_name, real_seller FROM seller_code WHERE real_seller!=''").fetchall():
-        sc_map[r[0].replace('_',' ')] = r[1]
-        sc_map[r[0]] = r[1]
-    all_real = {r[0] for r in conn.execute(
-        "SELECT DISTINCT real_seller FROM sales_data WHERE real_seller!=''").fetchall()}
-
-    def normalize_seller_name(raw):
+    # 실적용거래처명 컬럼을 그대로 사용 — 언더바만 공백으로 변환
+    def clean_seller_name(raw):
         if not raw: return ''
-        s = str(raw).strip().replace('_',' ')
-        if s in all_real: return s
-        if s in sc_map:   return sc_map[s]
-        # 공백 제거 후 검색
-        for real in all_real:
-            if real.replace(' ','') == s.replace(' ',''): return real
-        return s  # 매핑 못 하면 원본 사용
+        s = str(raw).strip()
+        # 언더바 → 공백
+        s = s.replace('_', ' ')
+        # 앞뒤 공백 제거
+        s = s.strip()
+        # 총합계/소계 등 제외
+        if s in ('합계', '총 합계', '총합계', '소계', ''): return ''
+        return s
 
     total_inserted = 0
     total_updated  = 0
@@ -5184,8 +5179,8 @@ def api_display_upload():
                 qty = 0
 
             has_display = 1 if qty > 0 else 0
-            seller = normalize_seller_name(raw_name)
-            code   = str(row[CODE_IDX]).strip() if CODE_IDX >= 0 and CODE_IDX < len(row) and row[CODE_IDX] else ''
+            seller = clean_seller_name(raw_name)
+            if not seller: continue
 
             # 누적 처리: 이미 has_display=1 기록이 있으면 점수 유지 (덮어쓰지 않음)
             existing = conn.execute("""SELECT id, has_display, score, is_manual FROM display_record
@@ -5214,6 +5209,7 @@ def api_display_upload():
                     skipped += 1
             else:
                 # 신규 등록
+                code = str(row[CODE_IDX]).strip() if CODE_IDX >= 0 and CODE_IDX < len(row) and row[CODE_IDX] else ''
                 conn.execute("""INSERT INTO display_record
                     (campaign_id, upload_id, seller_name, seller_code, product_name,
                      quantity, has_display, score, upload_date, updated_at)
@@ -5275,10 +5271,20 @@ def api_display_scores():
             GROUP BY dr.seller_name ORDER BY total_score DESC
         """).fetchall()]
 
-    # 판매 데이터
-    sales_map = {r[0]:r[1] for r in conn.execute(
-        f"SELECT real_seller, SUM(total) FROM sales_data "
-        f"WHERE sale_date LIKE '{year}%' AND real_seller!='' GROUP BY real_seller").fetchall()}
+    # 판매 데이터 — 연매출 조회용 (실적용거래처명 → real_seller 매핑 포함)
+    sales_map = {}
+    # 직접 매칭
+    for r in conn.execute(f"SELECT real_seller, SUM(total) FROM sales_data WHERE sale_date LIKE '{year}%' AND real_seller!='' GROUP BY real_seller").fetchall():
+        sales_map[r[0]] = r[1]
+    # 공백 제거 매칭 (링크맘 대구 성서점 vs 링크맘 대구성서점)
+    sales_map_nospace = {k.replace(' ',''): v for k, v in sales_map.items()}
+
+    def get_sales(seller_name):
+        v = sales_map.get(seller_name, 0)
+        if not v:
+            v = sales_map_nospace.get(seller_name.replace(' ',''), 0)
+        return v or 0
+
     all_sellers = [r[0] for r in conn.execute(
         f"SELECT DISTINCT real_seller FROM sales_data WHERE real_seller!='' AND sale_date LIKE '{year}%' ORDER BY real_seller"
     ).fetchall()]
@@ -5293,20 +5299,17 @@ def api_display_scores():
             seller_map[s]['products'].append(r)
             seller_map[s]['total_score'] += r['score'] or 0
 
-        # 판매 데이터에 있는 모든 매장 포함 (0점 포함), 업체구분 순서
-        all_in_campaign = set(seller_map.keys())
-        for s in all_sellers:
-            if s not in all_in_campaign:
-                seller_map[s] = {'products': [], 'total_score': 0}
+        # 진열 레코드에 있는 매장만 사용 (판매 데이터와 무관)
+        # 업체구분 순서로 정렬
 
-        result = [{'seller_name':s, **v, 'year_sales': sales_map.get(s,0)}
+        result = [{'seller_name':s, **v, 'year_sales': get_sales(s)}
                   for s,v in seller_map.items()]
-        # 업체구분 정렬 → 총점 내림차순
+        # 업체구분 정렬
         result.sort(key=lambda x: (seller_group_key(x['seller_name'])[0],
                                    x['seller_name']))
         return jsonify(result)
     else:
-        # 전체 합산: 판매 데이터 매장 + 진열 기록 있는 매장 모두 포함
+        # 전체 합산: 진열 기록 있는 매장 + 판매 데이터 매장 포함
         all_display_sellers = {r['seller_name'] for r in records}
         merged_sellers = sorted(
             set(all_sellers) | all_display_sellers,
@@ -5331,7 +5334,7 @@ def api_display_scores():
                 'total_score':  info.get('total_score', 0) or 0,
                 'display_cnt':  info.get('display_cnt', 0) or 0,
                 'detail_items': detail_items,
-                'year_sales':   sales_map.get(s, 0),
+                'year_sales':   get_sales(s),
             })
 
         # 동점 순위 계산 (dense rank — 동점 같은 순위, 다음 점수는 다음 순위)
