@@ -4836,19 +4836,38 @@ def api_display_events():
 @app.route("/api/display/scores")
 @login_required
 def api_display_scores():
-    """매장별 행사/진열 점수 합계"""
+    """매장별 행사/진열 점수 합계 — 제품별 분류 포함"""
     year = request.args.get("year", str(datetime.now().year))
     conn = get_db()
-    # 매장별 총 점수
+    # 매장별 점수 (제품명 포함)
     scores = [dict(r) for r in conn.execute("""
         SELECT ds.seller_name,
                SUM(ds.score) total_score,
                COUNT(DISTINCT ds.event_id) event_cnt,
-               GROUP_CONCAT(de.event_name || '(' || ds.score || 'pt)', ',') detail
+               GROUP_CONCAT(
+                   de.event_type || '|' || COALESCE(de.product_name,de.event_name) || '|' || de.event_name || '|' || ds.score,
+                   '||'
+               ) raw_detail
         FROM display_score ds
         JOIN display_event de ON ds.event_id=de.id
         GROUP BY ds.seller_name ORDER BY total_score DESC
     """).fetchall()]
+
+    # raw_detail 파싱 → 진열/행사 분리
+    def parse_detail(raw):
+        if not raw: return []
+        items = []
+        for part in raw.split('||'):
+            parts = part.split('|')
+            if len(parts) >= 4:
+                items.append({
+                    'type': parts[0],
+                    'product': parts[1],
+                    'event_name': parts[2],
+                    'score': int(parts[3]) if parts[3].isdigit() else 0,
+                })
+        return items
+
     # 판매 데이터 연동
     sales_map = {r[0]: r[1] for r in conn.execute(
         f"SELECT real_seller, SUM(total) t FROM sales_data "
@@ -4862,14 +4881,20 @@ def api_display_scores():
     result = []
     for s in all_sellers:
         info = score_map.get(s, {})
+        detail_items = parse_detail(info.get('raw_detail',''))
+        display_items = [d for d in detail_items if d['type']=='display']
+        event_items   = [d for d in detail_items if d['type']=='event']
         result.append({
-            'seller_name': s,
-            'total_score': info.get('total_score', 0),
-            'event_cnt':   info.get('event_cnt', 0),
-            'detail':      info.get('detail', ''),
-            'year_sales':  sales_map.get(s, 0),
+            'seller_name':   s,
+            'total_score':   info.get('total_score', 0),
+            'event_cnt':     info.get('event_cnt', 0),
+            'display_score': sum(d['score'] for d in display_items),
+            'event_score':   sum(d['score'] for d in event_items),
+            'display_items': display_items,
+            'event_items':   event_items,
+            'year_sales':    sales_map.get(s, 0),
         })
-    result.sort(key=lambda x: -x['total_score'])
+    result.sort(key=lambda x: (-x['total_score'], -x['year_sales']))
     return jsonify(result)
 
 @app.route("/api/display/upload", methods=["POST"])

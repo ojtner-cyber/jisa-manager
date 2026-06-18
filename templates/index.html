@@ -356,13 +356,13 @@ td.center{text-align:center}
       <a onclick="showPage('branches')" id="nav-branches"><span class="ni">⊞</span>판매처 관리</a>
       <a onclick="showPage('sales')" id="nav-sales"><span class="ni">↗</span>판매실적</a>
       <a onclick="showPage('salesdata')" id="nav-salesdata"><span class="ni">★</span>판매현황</a>
-      <a onclick="showPage('products')" id="nav-products"><span class="ni">📦</span>제품별 관리</a>
+      <a onclick="showPage('products')" id="nav-products"><span class="ni">⊞</span>제품별 관리</a>
       <a onclick="showPage('script')" id="nav-script"><span class="ni">💬</span>매장 분석</a>
-      <a onclick="showPage('sns')" id="nav-sns"><span class="ni">📱</span>SNS 활용 매장</a>
-      <a onclick="showPage('ace')" id="nav-ace"><span class="ni">⚡</span>영업 실행 포인트</a>
-      <a onclick="showPage('stock')" id="nav-stock"><span class="ni">📦</span>재고 현황</a>
-      <a onclick="showPage('display')" id="nav-display"><span class="ni">🏷</span>행사 및 진열 신청</a>
-      <a onclick="showPage('users')" id="nav-users"><span class="ni">◎</span>권한 관리</a>
+      <a onclick="showPage('sns')" id="nav-sns"><span class="ni">◆</span>SNS 활용 매장</a>
+      <a onclick="showPage('ace')" id="nav-ace"><span class="ni">▶</span>영업 실행 포인트</a>
+      <a onclick="showPage('stock')" id="nav-stock"><span class="ni">◻</span>재고 현황</a>
+      <a onclick="showPage('display')" id="nav-display"><span class="ni">✦</span>행사 및 진열 신청</a>
+      <a onclick="showPage('users')" id="nav-users"><span class="ni">◉</span>권한 관리</a>
     </nav>
     <div class="sb-div"></div>
     <div class="sb-lbl">내보내기</div>
@@ -963,72 +963,7 @@ td.center{text-align:center}
       </div>
       <div id="ace-content" style="display:grid;gap:16px"></div>
     </div>
-      <!-- 양식 업로드 -->
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:20px">
-        <div style="background:var(--paper);border-radius:var(--r-md);padding:14px;box-shadow:var(--sh-sm)">
-          <div style="font-size:12px;font-weight:700;margin-bottom:8px;color:var(--ink-700)">📄 주간업무보고 양식 업로드</div>
-          <div style="font-size:11px;color:var(--ink-300);margin-bottom:10px">xlsx 파일에 {{자사주요내용}}, {{타사주요내용}}, {{다음주계획}} 등의 태그를 넣으면 자동으로 채워집니다</div>
-          <div style="display:flex;gap:8px;align-items:center">
-            <button class="btn btn-ghost btn-sm" onclick="document.getElementById('weekly-tmpl-input').click()">양식 업로드</button>
-            <input type="file" id="weekly-tmpl-input" accept=".xlsx" style="display:none" onchange="uploadTemplate(this,'weekly')">
-            <span id="weekly-tmpl-status" style="font-size:11px;color:var(--ink-300)">미업로드</span>
-          </div>
-        </div>
-        <div style="background:var(--paper);border-radius:var(--r-md);padding:14px;box-shadow:var(--sh-sm)">
-          <div style="font-size:12px;font-weight:700;margin-bottom:8px;color:var(--ink-700)">📄 매장 방문 보고서 양식 업로드</div>
-          <div style="font-size:11px;color:var(--ink-300);margin-bottom:10px">{{매장명}}, {{방문일}}, {{누적매출}}, {{자사주요내용}}, {{특이사항}} 등 태그 사용</div>
-          <div style="display:flex;gap:8px;align-items:center">
-            <button class="btn btn-ghost btn-sm" onclick="document.getElementById('visit-tmpl-input').click()">양식 업로드</button>
-            <input type="file" id="visit-tmpl-input" accept=".xlsx" style="display:none" onchange="uploadTemplate(this,'visit')">
-            <span id="visit-tmpl-status" style="font-size:11px;color:var(--ink-300)">미업로드</span>
-          </div>
-        </div>
-      </div>
-
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:20px">
-        <!-- 주간업무보고 -->
-        <div class="cc">
-          <div class="cc-t">주간 업무 보고서</div>
-          <div style="margin-bottom:10px"><div class="flbl">보고 주간 시작일</div><input class="fi" type="date" id="report-week-start"></div>
-          <div style="margin-bottom:10px"><div class="flbl">이번 주 한 일 (자유롭게 적어주세요)</div>
-            <textarea class="fi" id="report-weekly-input" rows="6" placeholder="예: 베이비하우스 영통점 방문, 줄즈 에어2 20개 발주 받음. 링크맘 타프토이즈 첫 도입 성공..."></textarea></div>
-          <div style="margin-bottom:14px"><div class="flbl">다음 주 계획 (자유롭게)</div>
-            <textarea class="fi" id="report-weekly-next" rows="3" placeholder="예: 송도점 방문, 타프 신제품 라인업 제안 예정..."></textarea></div>
-          <div style="display:flex;gap:8px;margin-bottom:10px">
-            <button class="btn btn-dark btn-sm" onclick="generateReport2('weekly')">보고서 생성</button>
-            <button class="btn btn-ghost btn-sm" onclick="exportReport('weekly')" id="dl-weekly" style="display:none">📥 엑셀 다운로드</button>
-          </div>
-          <div id="report-weekly-preview" style="display:none;background:var(--ink-50);border-radius:var(--r-md);padding:16px;font-size:12px;line-height:1.8;white-space:pre-wrap;font-family:var(--fd);max-height:400px;overflow-y:auto"></div>
-        </div>
-        <!-- 매장 방문 보고서 -->
-        <div class="cc">
-          <div class="cc-t">매장 방문 보고서</div>
-          <div style="margin-bottom:10px"><div class="flbl">방문 매장</div>
-            <input class="fi" id="report-visit-seller" list="report-seller-list" placeholder="매장명 입력...">
-            <datalist id="report-seller-list"></datalist></div>
-          <div style="margin-bottom:10px"><div class="flbl">방문일</div><input class="fi" type="date" id="report-visit-date"></div>
-          <div style="margin-bottom:10px"><div class="flbl">방문 내용 (자유롭게 막 적어주세요)</div>
-            <textarea class="fi" id="report-visit-input" rows="6" placeholder="예: 사장님 반응 좋음. 줄즈 에어2 재고 없어서 10개 발주. 타프 사바나 아치 처음 보여줬더니 관심 있어함..."></textarea></div>
-          <div style="margin-bottom:14px"><div class="flbl">브랜드별 특이사항 (부가부/스토케/요요 관련만)</div>
-            <textarea class="fi" id="report-brand-note" rows="2" placeholder="없으면 비워두세요"></textarea></div>
-          <div style="display:flex;gap:8px;margin-bottom:10px">
-            <button class="btn btn-dark btn-sm" onclick="generateReport2('visit')">보고서 생성</button>
-            <button class="btn btn-ghost btn-sm" onclick="exportReport('visit')" id="dl-visit" style="display:none">📥 엑셀 다운로드</button>
-          </div>
-          <div id="report-visit-preview" style="display:none;background:var(--ink-50);border-radius:var(--r-md);padding:16px;font-size:12px;line-height:1.8;white-space:pre-wrap;font-family:var(--fd);max-height:400px;overflow-y:auto"></div>
-        </div>
-      </div>
-
-      <!-- 양식 태그 안내 -->
-      <div style="margin-top:16px;background:#FEF9C3;border-radius:var(--r-md);padding:14px;font-size:11px;color:#92400E">
-        <strong>양식 태그 사용법</strong> — xlsx 셀에 아래 태그를 넣으면 자동으로 해당 데이터가 채워집니다:<br>
-        <code>{{매장명}}</code> <code>{{방문일}}</code> <code>{{누적매출}}</code> <code>{{월평균매출}}</code>
-        <code>{{자사주요내용}}</code> <code>{{타사주요내용}}</code> <code>{{발주내역}}</code>
-        <code>{{방문내용}}</code> <code>{{특이사항}}</code> <code>{{다음주계획}}</code>
-        <code>{{보고주간}}</code> <code>{{작성일}}</code>
-      </div>
-    </div>
-
+  
     <!-- ██ 재고 현황 ██ -->
     <div class="page" id="page-stock">
       <div class="ph">
@@ -1089,12 +1024,13 @@ td.center{text-align:center}
         <table id="display-table">
           <thead><tr>
             <th style="width:4%">#</th>
-            <th style="width:20%">매장명</th>
+            <th style="width:18%">매장명</th>
             <th style="width:8%;text-align:center">누적 점수</th>
-            <th style="width:8%;text-align:center">참여 횟수</th>
-            <th style="width:35%">상세 내역</th>
-            <th style="width:12%;text-align:right">연매출</th>
-            <th style="width:8%;text-align:center">수정</th>
+            <th style="width:7%;text-align:center">참여횟수</th>
+            <th style="width:7%;text-align:center">진열점수</th>
+            <th style="width:7%;text-align:center">행사점수</th>
+            <th style="width:34%">상세 내역 (제품별)</th>
+            <th style="width:10%;text-align:right">연매출</th>
           </tr></thead>
           <tbody id="display-tbody"></tbody>
         </table>
@@ -1496,8 +1432,8 @@ async function loadAce(){
   const periodLabel=monthVal?`${year}년 ${MONTHS_KR[monthNum]}`:`${year}년 전체`;
   const now=new Date();
 
-  function card(icon,title,desc,items,action,color,bg,tag=''){
-    return {icon,title,desc,items,action,color,bg,tag};
+  function card(icon,title,desc,items,action,color,bg,tag='',guide=''){
+    return {icon,title,desc,items,action,color,bg,tag,guide};
   }
 
   const cards=[];
@@ -1514,7 +1450,13 @@ async function loadAce(){
     '이걸 안 하면 내일 후회합니다',
     urgent.length?urgent:['오늘 연락 안 한 매장 3곳에 문자 먼저'],
     '전화 > 카톡 > 이메일 순서로 연락 — 응답률 3배 차이',
-    '#DC2626','#FEF2F2','🔥 TODAY'));
+    '#DC2626','#FEF2F2','🔥 TODAY',
+    `【실행 순서】
+1. 지금 바로 미연락 매장 리스트 꺼내기
+2. 상위 3개 매장에 전화 — "오늘 방문 가능한데요?" 한 마디로 시작
+3. 안 받으면 카톡으로 "안녕하세요, [이름]입니다. 이번에 새로 들어온 제품 보여드리고 싶어서요 🙏"
+4. 타프토이즈 재고 있다면 — "재고 한정이라 우선 연락드려요" 긴박감 부여
+5. 오늘 안에 최소 3개 매장 접촉 완료`));
 
   // ── 2. 핵심 20% 매장 관리 ──────────────────────
   const top20=Math.ceil(activeSellers.length*0.2);
@@ -1524,7 +1466,13 @@ async function loadAce(){
     '파레토 법칙 — 이 매장들에 에너지의 60%를',
     topSellers.slice(0,5).map((s,i)=>`${i+1}. <b>${s.seller_name}</b> — ${N(s.total)}원`),
     '방문 주기 2주 / 발주 예측 제안 / 신제품 우선 공유 → 관계가 매출',
-    'var(--p)','var(--p-lt)','💰 CORE'));
+    'var(--p)','var(--p-lt)','💰 CORE',
+    `【핵심 매장 관리 전략】
+1. 방문 주기: 매 2주마다 → 달력에 고정 일정으로 잡아두기
+2. 발주 선제 제안: "지난달 이 제품 잘 나갔는데 이번 달 미리 발주해두시면 어떨까요?"
+3. 신제품 우선 배정: "저희 신제품은 협력 매장에 우선 공급해드려요" → 특별 대우 인식
+4. 매장주 개인 관심사 기억: 생일, 자녀 나이, 취미 → 관계가 매출을 만든다
+5. 경쟁사 동향 파악: "혹시 다른 브랜드 제안 받은 거 있으세요?" 자연스럽게 물어보기`));
 
   // ── 3. 전월 대비 성장/하락 ──────────────────────
   if(monthVal&&parseInt(monthVal)>1){
@@ -1541,81 +1489,161 @@ async function loadAce(){
     if(growers.length)
       cards.push(card('📈',`${MONTHS_KR[monthNum]} 폭발 성장 매장 — 지금이 추가 발주 타이밍`,
         '성장하는 매장은 이유가 있습니다. 그 이유를 알면 다른 매장에도 적용 가능',
-        growers.map(s=>`▲ <b>${s.seller_name}</b> +${s.g}% — 비결 파악 후 전파`),
+        growers.map(s=>`▲ <b>${s.seller_name}</b> +${s.g}%`),
         '이 매장에 "잘 되는 이유" 직접 물어보기 → 성공 공식 복제',
-        'var(--green)','var(--green-lt)','🚀 GROW'));
+        'var(--green)','var(--green-lt)','🚀 GROW',
+        `【성장 매장 활용 전략】
+1. 즉시 연락: "이번 달 판매가 늘어서 추가 물량 필요하신지 확인드려요"
+2. 성공 요인 파악: 진열 위치? SNS 홍보? 직원 추천? → 다른 매장에 전파
+3. 추가 발주 유도: "지금 발주하시면 배송 3일 이내 가능해요"
+4. 인증 사례 만들기: "다음 월 거래처 미팅에서 성공 사례로 소개해도 될까요?"
+5. 성장 매장 = 다른 매장 설득의 레퍼런스 → "옆 동네 매장도 이렇게 됐어요"`));
     if(fallers.length)
       cards.push(card('📉',`${MONTHS_KR[monthNum]} 하락 매장 — 방치하면 이탈`,
         '하락 초기에 잡아야 합니다. 1주일이 1달보다 쉽습니다',
         fallers.map(s=>`▼ <b>${s.seller_name}</b> — 즉각 방문 필요`),
         '방문 시 "어떤 게 안 팔리세요?" 한 마디 → 원인의 80% 해결',
-        '#DC2626','#FEF2F2','⚠️ RISK'));
+        '#DC2626','#FEF2F2','⚠️ RISK',
+        `【하락 매장 긴급 대응 가이드】
+1. 이번 주 안에 방문 예약 잡기 — 전화로 먼저 "잠깐 들러도 될까요?"
+2. 방문 시 첫 마디: "요즘 어떠세요?" 판매 현황 자연스럽게 여쭤보기
+3. 원인 파악 체크리스트:
+   □ 진열 위치가 눈에 띄는가?
+   □ 재고가 충분한가?
+   □ 경쟁 브랜드가 새로 들어왔는가?
+   □ 매장 트래픽 자체가 줄었는가?
+4. 즉석 해결책: 진열 재배치 + POP 교체 → 즉시 효과
+5. 인센티브 제안: "이번 달 목표 달성하시면 추가 혜택 드릴게요"`));
   }
 
   // ── 4. 창의적 영업 아이디어 ────────────────────
   const creative=[
-    {t:'카시트 구매자 = 3개월 후 보행기 고객', d:'카시트 판매 기록 보고 정확히 3개월 후 연락 — "아기 이제 앉기 시작하죠? 보행기 보여드릴게요"'},
-    {t:'SNS 잘하는 매장에 신제품 먼저 공급', d:'팔로워 많은 매장에 신제품 입고 사진 먼저 찍게 해주면 바이럴 효과 + 그 매장이 나를 VIP 취급'},
-    {t:'비 오는 날 = 실내놀이 제품 밀 타이밍', d:'날씨 앱 보고 비 예보 있으면 타프토이즈 실내놀이 제품 미리 카톡 — "이번 주말 비 온다는데..."'},
-    {t:'신생아 병원 근처 매장 = 3월/9월 집중 공략', d:'출생아 수 피크 시즌 2달 전에 재고 확보 제안 — 사장님이 먼저 생각 못한 것을 내가 먼저'},
-    {t:'행사 점수 높은 매장 = 우선 지원 대상', d:`진열 신청 빠른 ${highScoreSellers.length}개 매장 → 신제품 우선 배정 + 마케팅 지원 약속으로 관계 강화`},
+    {t:'카시트 구매자 = 3개월 후 보행기 고객', d:'카시트 판매 기록 보고 정확히 3개월 후 연락 — "아기 이제 앉기 시작하죠? 보행기 보여드릴게요"',
+     guide:`실행 방법:
+1. 매달 1일: 3개월 전 카시트 판매 매장 목록 뽑기
+2. 해당 매장에 "3개월 된 아기 부모님들 보행기 찾는 분 많지 않으세요?" 카톡
+3. 타이밍이 맞으면 전환율 60%+ — 가장 쉬운 추가 매출
+4. 보행기 → 쏘서 → 점퍼루 → 하이체어 라인업 전체로 확장`},
+    {t:'비 오는 날 = 실내놀이 제품 카톡 타이밍', d:'날씨 앱 보고 비 예보 있으면 타프토이즈 실내놀이 제품 미리 카톡',
+     guide:`실행 방법:
+1. 매일 아침 날씨 확인 → 주말 비 예보 있으면 금요일 오전에 카톡
+2. 문구: "이번 주말 비 온다는데, 실내놀이 찾는 분들 많을 것 같아요 🌧"
+3. 타프토이즈 워터매트/액티비티짐 재고 확인 후 발송
+4. 연간 비 오는 날 60일 이상 → 이 전략만으로 추가 매출 20% 가능`},
+    {t:'신생아 병원 근처 매장 = 3/9월 집중 공략', d:'출생아 수 피크 시즌 2달 전에 재고 확보 제안',
+     guide:`실행 방법:
+1. 1월/7월: 3/9월 출산 피크 대비 발주 미리 제안
+2. "병원 근처 매장이시니 3월에 신생아용품 찾는 분 많으실 것 같아요"
+3. 줄즈 에어2 + 레카로 카시트 번들 패키지 제안
+4. 우리가 먼저 생각해줬다는 인식 → 신뢰도 폭발`},
+    {t:'행사 점수 높은 매장 = VIP로 만들기', d:`진열 신청 빠른 매장 ${highScoreSellers.length}개 → 신제품 우선 배정 + 특별 지원`,
+     guide:`실행 방법:
+1. 행사 점수 5점 이상 매장 리스트 뽑기
+2. "이번에 정말 빨리 신청해주셔서 감사해요. 신제품 먼저 드릴게요" 연락
+3. VIP 매장 인식 심기 → 이후 모든 행사 1등으로 신청
+4. 다른 매장에는 "빨리 신청한 매장에 물량 먼저 갔어요" 언급 → 경쟁 심리 자극`},
+    {t:'주문 없는 매장에 "샘플 먼저" 전략', d:'신규 제안 매장에 부담 없이 샘플/테스트 물량 먼저',
+     guide:`실행 방법:
+1. 6개월 이상 발주 없는 매장: "부담 없이 2-3개만 넣어보시면 어떨까요?"
+2. 소량 입고 → 반응 확인 → 추가 발주로 자연스럽게 연결
+3. "안 팔리면 반품 드려요" 확신을 주면 거절 이유가 없어짐
+4. 타프토이즈처럼 인지도 낮은 제품에 특히 효과적`},
   ];
   const todayIdea=creative[now.getDate()%creative.length];
   cards.push(card('💡','오늘의 창의 영업 포인트',
     '남들이 안 하는 것 하나가 실적을 만듭니다',
     [`<b>${todayIdea.t}</b>`, todayIdea.d],
-    '생각에서 행동까지 24시간 안에 → 실행하지 않는 아이디어는 없는 것과 같다',
-    'var(--purple)','var(--purple-lt)','🎯 IDEA'));
+    '생각에서 행동까지 24시간 안에',
+    'var(--purple)','var(--purple-lt)','🎯 IDEA',
+    todayIdea.guide||''));
 
   // ── 5. 타프토이즈 재고 소진 전략 ───────────────
   if(taftStock.length){
     cards.push(card('🎯','타프토이즈 재고 소진 — 지금 안 팔면 다음 시즌',
-      `재고 ${taftStock.length}종 중 10개 이상 — 미취급 매장에 번들 제안`,
+      `재고 ${taftStock.length}종 중 10개 이상 보유`,
       [
-        ...taftStock.slice(0,3).map(([k,q])=>`• ${k}: ${q}개 재고 → 상위 매장 우선 제안`),
+        ...taftStock.slice(0,3).map(([k,q])=>`• ${k}: ${q}개 재고`),
         '전략: 카시트/유모차 구매 고객에게 완구 번들 → 객단가 +30,000원',
       ],
-      '재고 있는 제품 = 바로 납품 가능 = 빠른 결정 유도 포인트',
-      'var(--amber)','var(--amber-lt)','📦 STOCK'));
+      '미취급 매장 방문 + 번들 제안 = 이번 달 가장 쉬운 추가 매출',
+      'var(--amber)','var(--amber-lt)','📦 STOCK',
+      `【타프토이즈 도입 제안 스크립트】
+사장님: "완구는 마진이 낮지 않나요?"
+나: "오히려 카시트보다 완구 마진이 높아요. 그리고 재방문 효과가 있어요."
+
+사장님: "이미 다른 완구 있어요"
+나: "타프토이즈는 유아 발달 완구라 일반 완구와 달라요. 카시트 구매 고객이 바로 찾는 제품이에요"
+
+사장님: "잘 팔릴지 모르겠어요"
+나: "일단 3개만 넣어보세요. 안 팔리면 제가 책임질게요" (작은 약속이 큰 신뢰)`));
   }
 
   // ── 6. 시즌 타이밍 ────────────────────────────
   const seasonData={
-    1:{s:'설 선물+봄 준비',items:['레카로 카시트 선물 제안','줄즈 봄 신색상 선주문','타프토이즈 실내놀이'],tip:'설 연휴 2주 전이 피크 — 지금 발주 안 하면 연휴에 품절'},
-    2:{s:'봄 시즌 선점',items:['줄즈 봄 신색상','엔픽스 보행기 봄 수요','타프토이즈 야외 놀이'],tip:'어린이날 D-90 — 지금 선주문하면 경쟁사보다 2주 앞서 진열'},
-    3:{s:'어린이날 D-60',items:['어린이날 선물 패키지 기획','레카로 카시트 선물 포장','타프토이즈 아치+모빌 세트'],tip:'선물 수요 최대 시즌 — 포장 서비스 제안하면 객단가 +20%'},
-    4:{s:'어린이날 D-30 🔥',items:['마지막 발주 기회','선물 포장 박스 준비','재고 안전 확보'],tip:'이번 주가 마지막 발주 타이밍 — 1주 늦으면 납품 못 받음'},
-    5:{s:'여름 준비 + 어린이날',items:['타프토이즈 워터매트 긴급 발주','줄즈 에어2 여름 색상','레카로 카시트 휴가 수요'],tip:'워터매트는 7월 전에 소진됨 — 지금 확보 안 하면 품절 확실'},
-    6:{s:'여름 성수기 🏖',items:['워터매트 마지막 기회 — 8월 단종','실내 놀이 (에어컨 실내)','레카로 카시트 캠핑 수요'],tip:'6월 말까지가 워터매트 골든타임 — 7월부터는 재고 없음'},
-    7:{s:'여름 피크 + 추석 준비',items:['추석 선물 레카로 카시트 선주문','원더폴드 웨건 가을 나들이','타프토이즈 비지북 독서달'],tip:'여름 피크이지만 추석 선주문이 지금부터 — 선점 전략'},
-    8:{s:'추석 + 가을 🍁',items:['추석 전 2주 집중 발주','원더폴드 웨건 나들이 수요','타프토이즈 큐브 선물용'],tip:'추석 선물 수요 피크 — 2주 전부터 재고 확보 필수'},
-    9:{s:'가을 성수기',items:['연말 선물 준비 시작','크리스마스 에디션 선주문','타프토이즈 실내놀이 확보'],tip:'10월부터 크리스마스 준비 — 11월에 생각하면 늦음'},
-    10:{s:'크리스마스 D-60 🎄',items:['크리스마스 패키지 기획','줄즈 크리스마스 에디션 선주문','타프토이즈 선물 세트 구성'],tip:'크리스마스 재고는 11월 말까지 마감 — 지금이 선점 타이밍'},
-    11:{s:'크리스마스 D-30 🎅',items:['마지막 크리스마스 발주','선물 포장 준비','설 선물 미리 기획'],tip:'12월 1일부터 크리스마스 선물 수요 폭발 — 재고 확보 완료해야'},
-    12:{s:'크리스마스 + 새해',items:['연말 재고 정리','1월 설 선물 선주문','새해 신제품 미리 예약'],tip:'새해 첫 발주는 1월 2일 — 새해 첫 거래처로 기억에 남기기'},
+    1:{s:'설 선물+봄 준비',items:['레카로 카시트 선물 제안','줄즈 봄 신색상 선주문','타프토이즈 실내놀이'],tip:'설 연휴 2주 전이 피크',
+       guide:'설 선물: 레카로 카시트 + 타프토이즈 완구 번들 = 완벽한 신생아 선물\n발주 마감: 설 2주 전까지'},
+    2:{s:'봄 시즌 선점',items:['줄즈 봄 신색상','엔픽스 보행기 봄 수요','타프토이즈 야외 놀이'],tip:'어린이날 D-90',
+       guide:'지금 선주문하면 경쟁사보다 2주 앞서 진열 가능\n어린이날 준비는 3월부터'},
+    3:{s:'어린이날 D-60',items:['어린이날 선물 패키지 기획','레카로 카시트 선물 포장','타프토이즈 아치+모빌 세트'],tip:'선물 수요 최대 시즌',
+       guide:'지금이 발주 적기\n포장 서비스 제안하면 객단가 +20%\n레카로 + 타프 번들 = 베스트 선물'},
+    4:{s:'어린이날 D-30 🔥',items:['마지막 발주 기회','선물 포장 박스 준비','재고 안전 확보'],tip:'이번 주가 마지막 발주',
+       guide:'이번 주 발주 안 하면 어린이날 전 납품 불가\n지금 바로 상위 10개 매장 긴급 연락'},
+    5:{s:'여름 준비 + 어린이날',items:['타프토이즈 워터매트 긴급 발주','줄즈 에어2 여름 색상','레카로 카시트 휴가 수요'],tip:'워터매트 7월 전 소진',
+       guide:'워터매트 연간 최고 판매 시즌\n6월 말까지 재고 확보 필수\n야외 놀이 시즌 = 줄즈 에어2 수요 폭발'},
+    6:{s:'여름 성수기 🏖',items:['워터매트 마지막 기회','실내 놀이 (에어컨 실내)','레카로 카시트 캠핑 수요'],tip:'6월 말까지 골든타임',
+       guide:'여름 피크\n비 오는 날 실내 놀이 제품 밀기\n워터매트는 7월부터 재고 없음 → 지금 확보'},
+    7:{s:'여름 피크 + 추석 준비',items:['추석 선물 레카로 카시트 선주문','원더폴드 웨건 가을 나들이','타프토이즈 비지북 독서달'],tip:'추석 선주문 시작',
+       guide:'7월부터 추석 선주문 시작\n여름 피크이지만 가을 준비 병행\n독서달(9월) = 비지북/마이홈비지북 수요 폭발'},
+    8:{s:'추석 + 가을 🍁',items:['추석 전 2주 집중 발주','원더폴드 웨건 나들이 수요','타프토이즈 큐브 선물용'],tip:'추석 선물 수요 피크',
+       guide:'추석 2주 전부터 선물 수요 폭발\n원더폴드 웨건 = 가을 나들이 최고 제품\n레카로 카시트 선물 세트 구성'},
+    9:{s:'가을 성수기',items:['연말 선물 준비 시작','크리스마스 에디션 선주문','타프토이즈 실내놀이 확보'],tip:'10월부터 크리스마스',
+       guide:'9월 = 크리스마스 준비 시작\n11월에 생각하면 늦음\n지금 선주문 = 경쟁 우위'},
+    10:{s:'크리스마스 D-60 🎄',items:['크리스마스 패키지 기획','줄즈 크리스마스 에디션 선주문','타프토이즈 선물 세트 구성'],tip:'크리스마스 재고 11월 말 마감',
+        guide:'크리스마스 패키지 = 레카로 + 타프 번들\n11월 말까지 발주 완료해야 납품 보장\n선물 포장 서비스 준비'},
+    11:{s:'크리스마스 D-30 🎅',items:['마지막 크리스마스 발주','선물 포장 준비','설 선물 미리 기획'],tip:'12월 1일부터 수요 폭발',
+        guide:'지금이 마지막 발주 기회\n12월 1일부터 선물 수요 폭발\n새해 설 선물도 미리 준비'},
+    12:{s:'크리스마스 + 새해',items:['연말 재고 정리','1월 설 선물 선주문','새해 신제품 미리 예약'],tip:'새해 첫 발주가 한해 관계를 결정',
+        guide:'12월 = 연말 재고 정리 + 내년 계획\n1월 2일 첫 발주 연락 = 한해 파트너십 시작\n신제품 미리 예약하면 우선 배정 약속 가능'},
   };
   const sd=seasonData[monthNum]||seasonData[new Date().getMonth()+1];
   cards.push(card('📅',`[${monthNum}월] ${sd.s} — 선제 발주 포인트`,
     sd.tip,
     sd.items.map(i=>`• ${i}`),
     '1달 먼저 움직이는 것이 연간 실적을 결정합니다',
-    'var(--amber)','var(--amber-lt)','⏰ SEASON'));
+    'var(--amber)','var(--amber-lt)','⏰ SEASON',
+    sd.guide||''));
 
-  document.getElementById('ace-content').innerHTML=cards.map(c=>`
-    <div style="background:${c.bg};border:1.5px solid ${c.color}22;border-radius:var(--r-lg);padding:20px;position:relative;overflow:hidden">
-      ${c.tag?`<span style="position:absolute;top:12px;right:14px;font-size:10px;font-weight:700;color:${c.color};background:${c.color}18;padding:2px 8px;border-radius:20px;letter-spacing:.5px">${c.tag}</span>`:''}
-      <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px">
-        <span style="font-size:22px">${c.icon}</span>
-        <div style="flex:1;padding-right:60px">
-          <div style="font-size:14px;font-weight:700;color:${c.color}">${c.title}</div>
-          <div style="font-size:12px;color:var(--t-500);margin-top:2px">${c.desc}</div>
+  document.getElementById('ace-content').innerHTML=cards.map((c,ci)=>`
+    <div style="background:${c.bg};border:1.5px solid ${c.color}22;border-radius:var(--r-lg);overflow:hidden">
+      <div style="padding:20px;position:relative;cursor:pointer" onclick="toggleAceCard(${ci})">
+        ${c.tag?`<span style="position:absolute;top:12px;right:14px;font-size:10px;font-weight:700;color:${c.color};background:${c.color}18;padding:2px 8px;border-radius:20px;letter-spacing:.5px">${c.tag}</span>`:''}
+        <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px">
+          <span style="font-size:22px">${c.icon}</span>
+          <div style="flex:1;padding-right:80px">
+            <div style="font-size:14px;font-weight:700;color:${c.color}">${c.title}</div>
+            <div style="font-size:12px;color:var(--t-500);margin-top:2px">${c.desc}</div>
+          </div>
+          <span id="ace-toggle-${ci}" style="font-size:11px;color:${c.color};margin-right:8px">▼ 세부 보기</span>
+        </div>
+        <div style="font-size:12px;line-height:1.9;color:var(--t-700);margin-bottom:12px">${c.items.join('<br>')}</div>
+        <div style="background:${c.color};color:#fff;border-radius:var(--r-md);padding:8px 14px;font-size:12px;font-weight:600">
+          → ${c.action}
         </div>
       </div>
-      <div style="font-size:12px;line-height:1.9;color:var(--t-700);margin-bottom:12px">${c.items.join('<br>')}</div>
-      <div style="background:${c.color};color:#fff;border-radius:var(--r-md);padding:8px 14px;font-size:12px;font-weight:600">
-        → ${c.action}
+      <div id="ace-detail-${ci}" style="display:none;border-top:1px solid ${c.color}22;padding:16px 20px;background:${c.color}06">
+        <div style="font-size:12px;font-weight:700;color:${c.color};margin-bottom:8px">📋 실행 가이드</div>
+        <div style="font-size:12px;color:var(--t-700);line-height:2;white-space:pre-wrap">${(c.guide||c.action||'')}</div>
       </div>
     </div>`).join('');
+}
+
+function toggleAceCard(ci){
+  const d=document.getElementById(`ace-detail-${ci}`);
+  const t=document.getElementById(`ace-toggle-${ci}`);
+  if(!d||!t) return;
+  const open=d.style.display!=='none';
+  d.style.display=open?'none':'block';
+  t.textContent=open?'▼ 세부 보기':'▲ 접기';
 }
 
 // ── 행사 및 진열 신청 ────────────────────────────
@@ -1651,66 +1679,66 @@ async function confirmUpload(){
 }
 
 async function loadDisplay(){
-  const year=document.getElementById('display-year')?.value||new Date().getFullYear();
-  const [events, scores]=await Promise.all([
+  const yrSel=document.getElementById('display-year');
+  if(yrSel&&!yrSel.value){
+    const cur=new Date().getFullYear();
+    if(!yrSel.options.length||!Array.from(yrSel.options).find(o=>parseInt(o.value)==cur)){
+      yrSel.innerHTML='';
+      for(let y=cur;y>=cur-3;y--) yrSel.innerHTML+=`<option value="${y}">${y}년</option>`;
+    }
+  }
+  const year=yrSel?.value||new Date().getFullYear();
+  const [events,scores]=await Promise.all([
     api('/api/display/events'),
     api(`/api/display/scores?year=${year}`),
   ]);
   if(!events||!scores) return;
   renderDisplayKPI(scores);
   renderDisplayEvents(events);
-  renderDisplayTable(scores, events);
+  renderDisplayTable(scores,events);
 }
 
 function renderDisplayKPI(scores){
   const total=scores.length;
-  const participated=scores.filter(s=>s.total_score>0).length;
-  const high=scores.filter(s=>s.total_score>=5).length;
-  const avgScore=total?Math.round(scores.reduce((s,r)=>s+(r.total_score||0),0)/total):0;
+  const participated=scores.filter(s=>(s.total_score||0)>0).length;
+  const displayPart=scores.filter(s=>(s.display_score||0)>0).length;
+  const eventPart=scores.filter(s=>(s.event_score||0)>0).length;
   document.getElementById('display-kpi').innerHTML=[
     {l:'전체 매장',v:`${total}개`,c:'var(--p)'},
-    {l:'참여 매장',v:`${participated}개 (${total?Math.round(participated/total*100):0}%)`,c:'var(--green)'},
-    {l:'5점 이상',v:`${high}개`,c:'var(--amber)'},
-    {l:'평균 점수',v:`${avgScore}점`,c:'var(--purple)'},
+    {l:'참여 매장',v:`${participated}개`,c:'var(--green)'},
+    {l:'진열신청',v:`${displayPart}개`,c:'var(--amber)'},
+    {l:'행사신청',v:`${eventPart}개`,c:'var(--purple)'},
   ].map(k=>`<div class="kpi"><div class="kpi-accent" style="background:${k.c}"></div>
     <div class="kpi-lbl">${k.l}</div><div class="kpi-val" style="color:${k.c}">${k.v}</div></div>`).join('');
 }
 
-function renderDisplayEvents(events){
-  const wrap=document.getElementById('display-events-wrap');
-  if(!events.length){wrap.innerHTML='<div style="color:var(--t-300);font-size:13px">아직 업로드된 행사/진열이 없습니다</div>';return;}
-  const typeLabel={display:'📊 진열신청',event:'🎪 행사신청'};
-  const scoreLabel={1:'+5점',2:'+3점'};
-  wrap.innerHTML=`<div style="font-size:13px;font-weight:600;color:var(--t-700);margin-bottom:8px">업로드 이력</div>
-  <div style="display:flex;flex-wrap:wrap;gap:8px">
-  ${events.map(e=>`<div style="background:var(--paper);border:1px solid var(--border);border-radius:var(--r-md);padding:8px 14px;display:flex;align-items:center;gap:10px">
-    <span style="font-size:12px;color:var(--t-300)">${typeLabel[e.event_type]||e.event_type}</span>
-    <span style="font-weight:600;font-size:13px">${e.event_name}</span>
-    ${e.product_name?`<span style="background:var(--p-lt);color:var(--p);font-size:11px;padding:1px 7px;border-radius:10px">${e.product_name}</span>`:''}
-    <span style="background:var(--green-lt);color:var(--green);font-size:11px;font-weight:700;padding:2px 8px;border-radius:10px">${scoreLabel[e.upload_order]||'+1점'}</span>
-    <button onclick="editEvent(${e.id},'${e.event_name.replace(/'/g,"\\'")}','${(e.product_name||'').replace(/'/g,"\\'")}')" class="btn btn-ghost btn-xs">수정</button>
-    <button onclick="deleteEvent(${e.id})" class="btn btn-xs" style="background:var(--red-lt);color:var(--red)">삭제</button>
-  </div>`).join('')}
-  </div>`;
-}
-
-function renderDisplayTable(scores, events){
+function renderDisplayTable(scores,events){
+  if(!scores.length){
+    document.getElementById('display-tbody').innerHTML=`<tr><td colspan="8" style="text-align:center;padding:32px;color:var(--t-300)">데이터가 없습니다. 엑셀을 업로드해주세요.</td></tr>`;
+    return;
+  }
   document.getElementById('display-tbody').innerHTML=scores.map((r,i)=>{
     const score=r.total_score||0;
-    const scoreColor=score>=5?'var(--green)':score>=3?'var(--amber)':'var(--t-300)';
+    const sc=score>=5?'var(--green)':score>=3?'var(--amber)':'var(--t-300)';
+    const displayDetail=(r.display_items||[]).map(d=>
+      `<span style="background:var(--p-lt);color:var(--p);padding:1px 6px;border-radius:10px;font-size:10px;margin-right:3px">${d.product||d.event_name} +${d.score}pt</span>`
+    ).join('');
+    const eventDetail=(r.event_items||[]).map(d=>
+      `<span style="background:var(--purple-lt);color:var(--purple);padding:1px 6px;border-radius:10px;font-size:10px;margin-right:3px">${d.product||d.event_name} +${d.score}pt</span>`
+    ).join('');
     return`<tr>
-      <td style="text-align:center;color:var(--t-300)">${i+1}</td>
+      <td style="text-align:center;color:var(--t-300);font-size:12px">${i+1}</td>
       <td style="font-weight:600">${r.seller_name}</td>
-      <td style="text-align:center"><span style="font-size:16px;font-weight:700;color:${scoreColor}">${score}</span></td>
-      <td style="text-align:center;color:var(--t-500)">${r.event_cnt||0}회</td>
-      <td style="font-size:12px;color:var(--t-500)">${r.detail||'—'}</td>
-      <td style="text-align:right;font-weight:700;color:var(--p)">${N(r.year_sales||0)}원</td>
-      <td style="text-align:center">
-        <button class="btn btn-ghost btn-xs" onclick="openScoreModal('${r.seller_name.replace(/'/g,"\\'")}')">수정</button>
-      </td>
+      <td style="text-align:center"><span style="font-size:15px;font-weight:800;color:${sc}">${score}pt</span></td>
+      <td style="text-align:center;font-size:12px">${r.event_cnt||0}회</td>
+      <td style="text-align:center;font-weight:700;color:var(--p)">${r.display_score||0}</td>
+      <td style="text-align:center;font-weight:700;color:var(--purple)">${r.event_score||0}</td>
+      <td style="font-size:11px;line-height:2;white-space:normal">${displayDetail||''}${eventDetail||(!displayDetail?'—':'')}</td>
+      <td style="text-align:right;font-weight:700;color:var(--p);font-size:12px">${N(r.year_sales||0)}원</td>
     </tr>`;
   }).join('');
 }
+
 
 let scoreModalSeller='', scoreModalEvents=[];
 async function openScoreModal(seller){
@@ -1797,9 +1825,11 @@ async function loadStock(){
   // 테이블
   document.getElementById('stock-tbody').innerHTML=rows.map(r=>{
     const qColor=(r.quantity||0)>10?'#16A34A':(r.quantity||0)>3?'#D97706':'#DC2626';
+    // [ABC디자인] 등 브랜드 태그 제거
+    const modelName=(r.item_name_norm||'—').replace(/^\[[^\]]+\]\s*/,'');
     return`<tr>
       <td><span style="background:#EEF2FF;color:var(--accent-m);padding:2px 8px;border-radius:20px;font-size:11px;font-weight:700">${r.brand||'—'}</span></td>
-      <td style="font-weight:600">${r.item_name_norm||'—'}</td>
+      <td style="font-weight:600">${modelName}</td>
       <td style="color:var(--ink-500);font-size:12px">${r.color||'—'}</td>
       <td style="text-align:center">${r.is_limited?'<span style="background:#FEF9C3;color:#CA8A04;padding:1px 6px;border-radius:10px;font-size:10px">한정</span>':'—'}</td>
       <td style="text-align:right;font-weight:700;color:${qColor}">${(r.quantity||0).toLocaleString()}개</td>
