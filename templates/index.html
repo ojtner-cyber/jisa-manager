@@ -499,10 +499,11 @@ td.center{text-align:center}
         <div class="tw">
           <table style="table-layout:fixed">
             <thead><tr>
-              <th style="width:35%;text-align:left">매장명</th>
-              <th style="width:21%;text-align:right;padding-right:14px">판매 건수</th>
-              <th style="width:21%;text-align:right;padding-right:14px">판매 수량</th>
-              <th style="width:23%;text-align:right;padding-right:14px">판매 금액</th>
+              <th style="width:33%;text-align:left">매장명</th>
+              <th style="width:19%;text-align:right;padding-right:14px">판매 건수</th>
+              <th style="width:19%;text-align:right;padding-right:14px">판매 수량</th>
+              <th style="width:21%;text-align:right;padding-right:14px">판매 금액</th>
+              <th style="width:8%;text-align:center">관리</th>
             </tr></thead>
             <tbody id="sales-tbody"></tbody>
           </table>
@@ -1111,7 +1112,8 @@ td.center{text-align:center}
       <div style="background:var(--accent-lt);border:1px solid rgba(79,70,229,.2);border-radius:var(--r-md);padding:14px 18px;margin-bottom:24px;font-size:13px;color:var(--accent);line-height:1.7">
         💡 <strong>사용 방법:</strong> 양식 다운로드 → 데이터 입력 → 파일 업로드 → 미리보기 확인 → 저장
         <span style="margin-left:16px">|</span>
-        <button class="btn btn-ghost btn-sm" style="margin-left:10px" onclick="normalizeSellers()">매장명 언더바 통합</button>
+        <button class="btn btn-ghost btn-sm" style="margin-left:10px" onclick="normalizeSellers()">매장명 자동 통합</button>
+        <button class="btn btn-ghost btn-sm" style="margin-left:6px" onclick="openMergeModal()">수동 통합</button>
       </div>
 
       <!-- xlsx 판매현황 업로드 (신규) -->
@@ -2894,13 +2896,18 @@ async function renderMonthly(year, month, seller){
     tbody.innerHTML=rows.map((r,i)=>{
       const nm=r.seller_name||'—';
       const safe=nm.replace(/'/g,"\\'");
-      return `<tr style="cursor:pointer" onclick="openMonthDetail('${safe}','${year}','${month}')" title="클릭하면 품목 세부">
-        <td style="width:35%;text-align:left"><span style="color:var(--ink-300);margin-right:8px;font-size:11px">${i+1}</span>
+      return `<tr>
+        <td style="width:33%;text-align:left" onclick="openMonthDetail('${safe}','${year}','${month}')" style="cursor:pointer">
+          <span style="color:var(--ink-300);margin-right:8px;font-size:11px">${i+1}</span>
           <strong style="color:var(--ink-900)">${nm}</strong><span style="font-size:11px;color:var(--accent-m);margin-left:6px">↗</span>
         </td>
-        <td style="width:21%;text-align:right;padding-right:14px;font-family:var(--fd);font-weight:500">${(r.cnt||0).toLocaleString()}건</td>
-        <td style="width:21%;text-align:right;padding-right:14px;font-family:var(--fd);font-weight:500">${(r.qty||0).toLocaleString()}개</td>
-        <td style="width:23%;text-align:right;padding-right:14px;font-family:var(--fd);font-weight:700;color:var(--accent-m)">${r.total!=null?N(r.total)+'원':'—'}</td>
+        <td style="width:19%;text-align:right;padding-right:14px;font-family:var(--fd);font-weight:500" onclick="openMonthDetail('${safe}','${year}','${month}')" style="cursor:pointer">${(r.cnt||0).toLocaleString()}건</td>
+        <td style="width:19%;text-align:right;padding-right:14px;font-family:var(--fd);font-weight:500" onclick="openMonthDetail('${safe}','${year}','${month}')" style="cursor:pointer">${(r.qty||0).toLocaleString()}개</td>
+        <td style="width:21%;text-align:right;padding-right:14px;font-family:var(--fd);font-weight:700;color:var(--accent-m)" onclick="openMonthDetail('${safe}','${year}','${month}')" style="cursor:pointer">${r.total!=null?N(r.total)+'원':'—'}</td>
+        <td style="width:8%;text-align:center">
+          <button class="btn btn-xs" style="background:var(--red-lt);color:var(--red);padding:3px 7px"
+            onclick="event.stopPropagation();deleteSeller('${safe}')" title="매장 삭제">삭제</button>
+        </td>
       </tr>`;
     }).join('');
   }
@@ -3244,11 +3251,60 @@ async function confirmUpload(){
 }
 
 async function normalizeSellers(){
-  if(!confirm('기존 저장된 데이터에서 매장명의 언더바(_)를 공백으로 통일합니다.\n예: 베이비하우스_영통점 → 베이비하우스 영통점\n계속하시겠습니까?')) return;
+  if(!confirm('저장된 데이터에서 매장명을 정규화합니다.\n• 베이비하우스 대구 → 베이비하우스 대구점\n• 주식회사 에스엘컴퍼니 → 베이비하우스 동대전점\n• 베이비하우스 하남미시점 → 베이비하우스 하남미사점\n• 고객 포함 항목 삭제\n계속하시겠습니까?')) return;
   const r = await api('/api/admin/normalize-sellers', {method:'POST', body:{}});
-  if(r && r.ok) toast(`✅ ${r.normalized}개 매장명 통합 완료`);
-  else toast('오류가 발생했습니다', false);
+  if(r && r.ok) {
+    toast(`✅ ${r.normalized}개 통합, ${r.deleted}개 삭제 완료`);
+    loadSalesPage();
+  } else toast('오류가 발생했습니다', false);
 }
+
+async function deleteSeller(sellerName){
+  if(!confirm(`"${sellerName}" 매장의 모든 판매 데이터를 삭제하시겠습니까?\n이 작업은 되돌릴 수 없습니다.`)) return;
+  const r = await api('/api/admin/delete-seller', {method:'POST', body:{seller_name: sellerName}});
+  if(r && r.ok){
+    toast(`✅ "${sellerName}" ${r.deleted}건 삭제 완료`);
+    loadSalesPage();
+  } else toast('삭제 실패', false);
+}
+
+function openMergeModal(){
+  let m=document.getElementById('merge-seller-modal');
+  if(!m){
+    m=document.createElement('div');
+    m.id='merge-seller-modal';
+    m.style.cssText='display:none;position:fixed;inset:0;background:rgba(16,24,40,.4);z-index:1000;align-items:center;justify-content:center';
+    m.innerHTML=`<div style="background:var(--paper);border-radius:var(--r-xl);padding:24px;width:min(440px,95vw);box-shadow:0 24px 60px rgba(0,0,0,.2)">
+      <div style="font-size:15px;font-weight:700;margin-bottom:16px">매장 통합 (A → B로 병합)</div>
+      <div style="margin-bottom:12px"><div class="flbl">통합할 매장 (FROM) — 삭제될 이름</div>
+        <input class="fi" id="merge-from" placeholder="예: 베이비하우스 대구"></div>
+      <div style="margin-bottom:20px"><div class="flbl">통합 대상 (TO) — 유지할 이름</div>
+        <input class="fi" id="merge-to" placeholder="예: 베이비하우스 대구점"></div>
+      <div style="font-size:11px;color:var(--t-300);margin-bottom:16px">FROM 매장의 모든 판매 데이터가 TO 매장으로 이전됩니다</div>
+      <div style="display:flex;gap:8px;justify-content:flex-end">
+        <button class="btn btn-ghost" onclick="document.getElementById('merge-seller-modal').style.display='none'">취소</button>
+        <button class="btn btn-primary" onclick="executeMerge()">통합 실행</button>
+      </div>
+    </div>`;
+    document.body.appendChild(m);
+  }
+  m.style.display='flex';
+}
+
+async function executeMerge(){
+  const from=document.getElementById('merge-from').value.trim();
+  const to=document.getElementById('merge-to').value.trim();
+  if(!from||!to){toast('양쪽 모두 입력해주세요',false);return;}
+  if(from===to){toast('같은 이름입니다',false);return;}
+  if(!confirm(`"${from}" → "${to}"로 통합하시겠습니까?`)) return;
+  const r=await api('/api/admin/merge-seller',{method:'POST',body:{from_seller:from,to_seller:to}});
+  if(r&&r.ok){
+    document.getElementById('merge-seller-modal').style.display='none';
+    toast(`✅ ${r.merged}건 통합 완료`);
+    loadSalesPage();
+  } else toast(r?.msg||'오류', false);
+}
+
 function cancelUpload(){
   document.getElementById('preview-area').style.display='none';
   uploadType='';uploadPreviewData=[];

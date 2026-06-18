@@ -740,8 +740,35 @@ def export_sales_ranking():
 # 브랜드 순서 (엑셀 열 순서)
 # ── 매장명 별칭 매핑 ─────────────────────────────
 SELLER_ALIAS = {
+    # 관악점
     '주식회사 위드에이컴퍼니': '베이비하우스 관악점',
     '위드에이컴퍼니':          '베이비하우스 관악점',
+    # 대구점 통합
+    '베이비하우스 대구':        '베이비하우스 대구점',
+    # 동대전점 통합 (에스엘컴퍼니 = 동대전 발육기 매장)
+    '주식회사 에스엘컴퍼니':   '베이비하우스 동대전점',
+    # 하남미사점 (오타 수정)
+    '베이비하우스 하남미시점':  '베이비하우스 하남미사점',
+    '베이비하우스 하남미사':    '베이비하우스 하남미사점',
+    # 군포점 (안양점 = 군포점 별칭)
+    '베이비하우스 안양점':      '베이비하우스 군포점',
+    # 동래점
+    '베이비하우스 동래':        '베이비하우스 동래점',
+    '베이비하우스 부산동래점':  '베이비하우스 동래점',
+    # 부천점
+    '베이비하우스 부천':        '베이비하우스 부천점',
+    '부천 베이비하우스':        '베이비하우스 부천점',
+    # 광주점
+    '광주베이비하우스':         '베이비하우스 광주점',
+    '베이비하우스광주':         '베이비하우스 광주점',
+    # 베네피아 다산 = 베이비스토어 다산
+    '베이비스토어 다산':        '베네피아 다산',
+    '베이비스토어다산':         '베네피아 다산',
+    # 베투키
+    '주식회사 베이비투키즈':    '베투키',
+    '베이비투키즈':             '베투키',
+    # 베이비스토리
+    '베이비스토리':             '베이비스토리 판교점',
 }
 def resolve_seller(name):
     """매장명 정규화 — 별칭 매핑 + 불필요한 텍스트 제거"""
@@ -3354,22 +3381,94 @@ def api_sellers():
     conn.close()
     return jsonify(rows)
 
+@app.route("/api/admin/merge-seller", methods=["POST"])
+@login_required
+def api_merge_seller():
+    """두 real_seller를 하나로 통합 (from → to)"""
+    d = request.json or {}
+    from_seller = d.get('from_seller','').strip()
+    to_seller   = d.get('to_seller','').strip()
+    if not from_seller or not to_seller or from_seller == to_seller:
+        return jsonify({'ok': False, 'msg': '매장명을 확인해주세요'}), 400
+    conn = get_db()
+    cnt = conn.execute("SELECT COUNT(*) FROM sales_data WHERE real_seller=?", (from_seller,)).fetchone()[0]
+    conn.execute("UPDATE sales_data SET real_seller=? WHERE real_seller=?", (to_seller, from_seller))
+    conn.execute("UPDATE display_record SET seller_name=? WHERE seller_name=?", (to_seller, from_seller))
+    conn.commit(); conn.close()
+    return jsonify({'ok': True, 'merged': cnt, 'from': from_seller, 'to': to_seller})
+
+@app.route("/api/admin/delete-seller", methods=["POST"])
+@login_required
+def api_delete_seller():
+    """real_seller 항목 삭제 (판매 데이터 포함)"""
+    d = request.json or {}
+    seller = d.get('seller_name','').strip()
+    if not seller:
+        return jsonify({'ok': False, 'msg': '매장명을 입력해주세요'}), 400
+    conn = get_db()
+    cnt = conn.execute("SELECT COUNT(*) FROM sales_data WHERE real_seller=?", (seller,)).fetchone()[0]
+    conn.execute("DELETE FROM sales_data WHERE real_seller=?", (seller,))
+    conn.execute("DELETE FROM display_record WHERE seller_name=?", (seller,))
+    conn.commit(); conn.close()
+    return jsonify({'ok': True, 'deleted': cnt, 'seller': seller})
+
 @app.route("/api/admin/normalize-sellers", methods=["POST"])
 @login_required
 def normalize_sellers():
-    """sales_data의 real_seller 언더바→공백 정규화 + 불필요한 텍스트 제거 + 지역 자동 배정"""
+    """sales_data의 real_seller 정규화
+    1. 언더바→공백
+    2. SELLER_ALIAS 적용 (대구/동대전/하남미사 등 통합)
+    3. '고객' 포함된 항목 삭제
+    4. resolve_seller로 브랜드명 제거
+    """
     conn = get_db()
     rows = conn.execute("SELECT DISTINCT real_seller FROM sales_data WHERE real_seller != ''").fetchall()
     updated = 0
+    deleted = 0
+
     for r in rows:
         old = r[0]
+
+        # '고객' 포함된 항목 삭제
+        if '고객' in old:
+            conn.execute("DELETE FROM sales_data WHERE real_seller=?", (old,))
+            deleted += 1
+            continue
+
         # 언더바 → 공백
-        new = old.replace('_', ' ')
-        # resolve_seller로 정규화 (브랜드명 텍스트 제거 등)
+        new = old.replace('_', ' ').strip()
+        # SELLER_ALIAS 직접 적용
+        new = SELLER_ALIAS.get(new, new)
+        # resolve_seller로 추가 정규화
         new = resolve_seller(new)
+
         if old != new:
             conn.execute("UPDATE sales_data SET real_seller=? WHERE real_seller=?", (new, old))
             updated += 1
+
+    # display_record real_seller도 동일하게 정규화
+    disp_rows = conn.execute("SELECT DISTINCT seller_name FROM display_record WHERE seller_name!=''").fetchall()
+    disp_updated = 0
+    for r in disp_rows:
+        old = r[0]
+        if '고객' in old:
+            conn.execute("DELETE FROM display_record WHERE seller_name=?", (old,))
+            continue
+        new = SELLER_ALIAS.get(old.replace('_',' ').strip(), old)
+        new = resolve_seller(new)
+        if old != new:
+            # display_record는 UNIQUE(campaign_id, seller_name, product_name) 제약
+            # 대상 통합 — 기존 record 있으면 점수 합산
+            existing = conn.execute(
+                "SELECT id, score FROM display_record WHERE seller_name=? AND campaign_id=(SELECT campaign_id FROM display_record WHERE seller_name=? LIMIT 1) AND product_name=(SELECT product_name FROM display_record WHERE seller_name=? LIMIT 1) LIMIT 1",
+                (new, old, old)).fetchone()
+            if existing:
+                conn.execute("UPDATE display_record SET score=score+(SELECT score FROM display_record WHERE seller_name=? LIMIT 1) WHERE id=?", (old, existing[0]))
+                conn.execute("DELETE FROM display_record WHERE seller_name=?", (old,))
+            else:
+                conn.execute("UPDATE display_record SET seller_name=? WHERE seller_name=?", (new, old))
+            disp_updated += 1
+
     # branches 지역 자동 배정
     branches = conn.execute("SELECT id, name FROM branches WHERE region='' OR region IS NULL").fetchall()
     region_updated = 0
@@ -3378,8 +3477,15 @@ def normalize_sellers():
         if region:
             conn.execute("UPDATE branches SET region=? WHERE id=?", (region, b["id"]))
             region_updated += 1
+
     conn.commit(); conn.close()
-    return jsonify({"ok": True, "normalized": updated, "region_updated": region_updated})
+    return jsonify({
+        "ok": True,
+        "normalized": updated,
+        "deleted": deleted,
+        "disp_updated": disp_updated,
+        "region_updated": region_updated
+    })
 
 @app.route("/api/admin/merge-branches", methods=["POST"])
 @login_required
