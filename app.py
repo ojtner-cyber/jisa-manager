@@ -118,7 +118,44 @@ def init_db():
         real_seller TEXT DEFAULT ''
     )""")
 
-    # 행사 및 진열 신청 테이블
+    # 행사/진열 신청 관리 (기한 기반 점수)
+    conn.execute("""CREATE TABLE IF NOT EXISTS display_campaign (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        campaign_name TEXT NOT NULL,
+        brand TEXT DEFAULT '',
+        event_type TEXT DEFAULT 'display',
+        period_start TEXT DEFAULT '',
+        period_end TEXT DEFAULT '',
+        score_in_period INTEGER DEFAULT 5,
+        score_out_period INTEGER DEFAULT 2,
+        created_at TEXT DEFAULT ''
+    )""")
+    conn.execute("""CREATE TABLE IF NOT EXISTS display_upload (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        campaign_id INTEGER NOT NULL,
+        sheet_name TEXT NOT NULL,
+        product_name TEXT NOT NULL,
+        upload_seq INTEGER DEFAULT 1,
+        upload_date TEXT DEFAULT '',
+        upload_at TEXT DEFAULT ''
+    )""")
+    conn.execute("""CREATE TABLE IF NOT EXISTS display_record (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        campaign_id INTEGER NOT NULL,
+        upload_id INTEGER NOT NULL,
+        seller_name TEXT NOT NULL,
+        seller_code TEXT DEFAULT '',
+        product_name TEXT NOT NULL,
+        quantity INTEGER DEFAULT 0,
+        has_display INTEGER DEFAULT 0,
+        score INTEGER DEFAULT 0,
+        upload_date TEXT DEFAULT '',
+        is_manual INTEGER DEFAULT 0,
+        memo TEXT DEFAULT '',
+        updated_at TEXT DEFAULT '',
+        UNIQUE(campaign_id, seller_name, product_name)
+    )""")
+    # 마이그레이션: 구버전 테이블도 유지 (기존 데이터 보호)
     conn.execute("""CREATE TABLE IF NOT EXISTS display_event (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         event_name TEXT NOT NULL,
@@ -4824,241 +4861,378 @@ def api_export_display():
 
 
 # ── 행사 및 진열 신청 API ──────────────────────────
-@app.route("/api/display/events")
+# ── 행사/진열 신청 API (v2 — 기한 기반 점수) ────────────────────
+@app.route("/api/display/campaigns")
 @login_required
-def api_display_events():
+def api_display_campaigns():
+    """캠페인 목록 + 업로드 이력"""
     conn = get_db()
-    events = [dict(r) for r in conn.execute(
-        "SELECT * FROM display_event ORDER BY event_type, upload_order, id").fetchall()]
+    campaigns = [dict(r) for r in conn.execute(
+        "SELECT * FROM display_campaign ORDER BY id DESC").fetchall()]
+    for c in campaigns:
+        c['uploads'] = [dict(r) for r in conn.execute(
+            "SELECT * FROM display_upload WHERE campaign_id=? ORDER BY upload_seq",
+            (c['id'],)).fetchall()]
+        c['total_records'] = conn.execute(
+            "SELECT COUNT(*) FROM display_record WHERE campaign_id=? AND has_display=1",
+            (c['id'],)).fetchone()[0]
     conn.close()
-    return jsonify(events)
+    return jsonify(campaigns)
 
-@app.route("/api/display/scores")
+@app.route("/api/display/campaign/create", methods=["POST"])
 @login_required
-def api_display_scores():
-    """매장별 행사/진열 점수 합계 — 제품별 분류 포함"""
-    year = request.args.get("year", str(datetime.now().year))
+def api_display_campaign_create():
+    """새 캠페인 생성"""
+    d = request.json or {}
+    from datetime import datetime as dt2
     conn = get_db()
-    # 매장별 점수 (제품명 포함)
-    scores = [dict(r) for r in conn.execute("""
-        SELECT ds.seller_name,
-               SUM(ds.score) total_score,
-               COUNT(DISTINCT ds.event_id) event_cnt,
-               GROUP_CONCAT(
-                   de.event_type || '|' || COALESCE(de.product_name,de.event_name) || '|' || de.event_name || '|' || ds.score,
-                   '||'
-               ) raw_detail
-        FROM display_score ds
-        JOIN display_event de ON ds.event_id=de.id
-        GROUP BY ds.seller_name ORDER BY total_score DESC
-    """).fetchall()]
+    conn.execute("""INSERT INTO display_campaign
+        (campaign_name, brand, event_type, period_start, period_end,
+         score_in_period, score_out_period, created_at)
+        VALUES(?,?,?,?,?,?,?,?)""",
+        (d.get('campaign_name',''), d.get('brand',''),
+         d.get('event_type','display'),
+         d.get('period_start',''), d.get('period_end',''),
+         int(d.get('score_in_period', 5)), int(d.get('score_out_period', 2)),
+         dt2.now().strftime('%Y-%m-%d %H:%M')))
+    cid = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+    conn.commit(); conn.close()
+    return jsonify({'ok': True, 'id': cid})
 
-    # raw_detail 파싱 → 진열/행사 분리
-    def parse_detail(raw):
-        if not raw: return []
-        items = []
-        for part in raw.split('||'):
-            parts = part.split('|')
-            if len(parts) >= 4:
-                items.append({
-                    'type': parts[0],
-                    'product': parts[1],
-                    'event_name': parts[2],
-                    'score': int(parts[3]) if parts[3].isdigit() else 0,
-                })
-        return items
+@app.route("/api/display/campaign/update", methods=["POST"])
+@login_required
+def api_display_campaign_update():
+    """캠페인 기간/점수 수정"""
+    d = request.json or {}
+    conn = get_db()
+    conn.execute("""UPDATE display_campaign SET
+        campaign_name=?, period_start=?, period_end=?,
+        score_in_period=?, score_out_period=?
+        WHERE id=?""",
+        (d.get('campaign_name',''), d.get('period_start',''), d.get('period_end',''),
+         int(d.get('score_in_period',5)), int(d.get('score_out_period',2)), d.get('id')))
+    conn.commit(); conn.close()
+    return jsonify({'ok': True})
 
-    # 판매 데이터 연동
-    sales_map = {r[0]: r[1] for r in conn.execute(
-        f"SELECT real_seller, SUM(total) t FROM sales_data "
-        f"WHERE sale_date LIKE '{year}%' AND real_seller!='' GROUP BY real_seller"
-    ).fetchall()}
-    all_sellers = [r[0] for r in conn.execute(
-        f"SELECT DISTINCT real_seller FROM sales_data WHERE real_seller!='' AND sale_date LIKE '{year}%' ORDER BY real_seller"
-    ).fetchall()]
-    conn.close()
-    score_map = {r['seller_name']: r for r in scores}
-    result = []
-    for s in all_sellers:
-        info = score_map.get(s, {})
-        detail_items = parse_detail(info.get('raw_detail',''))
-        display_items = [d for d in detail_items if d['type']=='display']
-        event_items   = [d for d in detail_items if d['type']=='event']
-        result.append({
-            'seller_name':   s,
-            'total_score':   info.get('total_score', 0),
-            'event_cnt':     info.get('event_cnt', 0),
-            'display_score': sum(d['score'] for d in display_items),
-            'event_score':   sum(d['score'] for d in event_items),
-            'display_items': display_items,
-            'event_items':   event_items,
-            'year_sales':    sales_map.get(s, 0),
-        })
-    result.sort(key=lambda x: (-x['total_score'], -x['year_sales']))
-    return jsonify(result)
+@app.route("/api/display/campaign/delete", methods=["POST"])
+@login_required
+def api_display_campaign_delete():
+    cid = (request.json or {}).get('id')
+    if not cid: return jsonify({'ok':False}), 400
+    conn = get_db()
+    conn.execute("DELETE FROM display_record WHERE campaign_id=?", (cid,))
+    conn.execute("DELETE FROM display_upload WHERE campaign_id=?", (cid,))
+    conn.execute("DELETE FROM display_campaign WHERE id=?", (cid,))
+    conn.commit(); conn.close()
+    return jsonify({'ok': True})
 
 @app.route("/api/display/upload", methods=["POST"])
 @login_required
 def api_display_upload():
-    """진열/행사 엑셀 업로드 → 점수 자동 부여"""
+    """진열/행사 엑셀 업로드
+    - 시트명 자동 파싱 → 연도/제품명 추출
+    - 합계 컬럼 자동 감지 → 진열 여부 판단
+    - 캠페인의 기한 내/외 기준으로 점수 자동 부여
+    - 같은 캠페인+매장+제품 조합은 최초 진열 점수 유지 (누적)
+    """
     from datetime import datetime as dt2
     import re as _re
 
     if 'file' not in request.files:
         return jsonify({'ok': False, 'msg': '파일 없음'}), 400
 
-    event_name   = request.form.get('event_name', f"업로드_{dt2.now().strftime('%Y%m%d')}")
-    event_type   = request.form.get('event_type', 'display')   # display / event
-    product_name = request.form.get('product_name', '')
+    campaign_id = request.form.get('campaign_id')
+    if not campaign_id:
+        return jsonify({'ok': False, 'msg': '캠페인을 선택해주세요'}), 400
+
     file = request.files['file']
     data = file.read()
+    now_str = dt2.now().strftime('%Y-%m-%d %H:%M')
+    today = dt2.now().strftime('%Y-%m-%d')
 
     conn = get_db()
 
-    # 이번 event_type의 업로드 순서 계산
-    order = (conn.execute(
-        "SELECT MAX(upload_order) FROM display_event WHERE event_type=?", (event_type,)
-    ).fetchone()[0] or 0) + 1
+    # 캠페인 정보 로드
+    campaign = conn.execute(
+        "SELECT * FROM display_campaign WHERE id=?", (campaign_id,)).fetchone()
+    if not campaign:
+        conn.close()
+        return jsonify({'ok': False, 'msg': '캠페인 없음'}), 404
+    campaign = dict(campaign)
 
-    # 점수 기준: 1번째=5점, 2번째=3점, 3번째+1점
-    score_map_order = {1: 5, 2: 3}
-    base_score = score_map_order.get(order, 1)
+    # 점수 결정 (기한 내 여부)
+    p_start = campaign.get('period_start','')
+    p_end   = campaign.get('period_end','')
+    if p_start and p_end and p_start <= today <= p_end:
+        base_score = campaign.get('score_in_period', 5)
+        period_label = f"기한 내 ({p_start}~{p_end})"
+    elif p_end and today > p_end:
+        base_score = campaign.get('score_out_period', 2)
+        period_label = f"기한 후 (+{base_score}점)"
+    else:
+        base_score = campaign.get('score_in_period', 5)
+        period_label = "기한 내"
 
-    # 이벤트 등록
-    conn.execute("""INSERT INTO display_event (event_name, event_type, product_name, upload_order, upload_date, created_at)
-        VALUES(?,?,?,?,?,?)""",
-        (event_name, event_type, product_name, order,
-         dt2.now().strftime('%Y-%m-%d'), dt2.now().strftime('%Y-%m-%d %H:%M')))
-    event_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+    # 이번 업로드 seq 계산
+    upload_seq = (conn.execute(
+        "SELECT MAX(upload_seq) FROM display_upload WHERE campaign_id=?",
+        (campaign_id,)).fetchone()[0] or 0) + 1
 
     # 엑셀 파싱
     try:
         wb = openpyxl.load_workbook(io.BytesIO(data), data_only=True)
-        ws = wb.active
+    except Exception as e:
+        conn.close()
+        return jsonify({'ok': False, 'msg': f'엑셀 파싱 실패: {e}'}), 500
+
+    # real_seller 매핑
+    sc_map = {}
+    for r in conn.execute("SELECT display_name, real_seller FROM seller_code WHERE real_seller!=''").fetchall():
+        sc_map[r[0].replace('_',' ')] = r[1]
+        sc_map[r[0]] = r[1]
+    all_real = {r[0] for r in conn.execute(
+        "SELECT DISTINCT real_seller FROM sales_data WHERE real_seller!=''").fetchall()}
+
+    def normalize_seller_name(raw):
+        if not raw: return ''
+        s = str(raw).strip().replace('_',' ')
+        if s in all_real: return s
+        if s in sc_map:   return sc_map[s]
+        # 공백 제거 후 검색
+        for real in all_real:
+            if real.replace(' ','') == s.replace(' ',''): return real
+        return s  # 매핑 못 하면 원본 사용
+
+    total_inserted = 0
+    total_updated  = 0
+    sheet_results  = []
+
+    for sheet_name in wb.sheetnames:
+        ws = wb[sheet_name]
         raw_rows = list(ws.iter_rows(values_only=True))
 
-        # 헤더 찾기
-        header_idx = 0
-        headers = []
-        for i, row in enumerate(raw_rows[:6]):
-            non_empty = sum(1 for c in row if c is not None and str(c).strip())
-            if non_empty >= 2:
-                header_idx = i
-                headers = [str(c or '').strip() for c in row]
+        # 시트명에서 제품명 추출: "2026_벨릭스" → "벨릭스"
+        sheet_clean = _re.sub(r'^20\d{2}_', '', sheet_name).strip()
+        # 행사 시트 판별
+        is_event_sheet = '행사' in sheet_clean
+        actual_type = 'event' if is_event_sheet else 'display'
+
+        # 헤더 행 찾기 (업체구분/거래처코드 등 포함된 행)
+        header_row_idx = None
+        for i, row in enumerate(raw_rows[:8]):
+            vals = [str(c).strip() for c in row if c is not None]
+            if any(k in vals for k in ['업체구분','거래처코드','거래처명']):
+                header_row_idx = i
                 break
 
-        # 매장명 컬럼 찾기
-        NAME_KEYS = ['실적용거래처명','거래처명','매장명','seller','name']
-        QTY_KEYS  = ['합계','수량','total','qty','합산']
+        if header_row_idx is None:
+            sheet_results.append({'sheet': sheet_name, 'product': sheet_clean, 'inserted': 0, 'skipped': 0, 'msg': '헤더 없음'})
+            continue
+
+        headers = [str(c or '').strip() for c in raw_rows[header_row_idx]]
+
+        # 컬럼 인덱스 파악
         def find_col(keys, hdrs):
             for k in keys:
                 for i, h in enumerate(hdrs):
-                    if k.lower() in h.lower(): return i
+                    if k == h.strip(): return i
             return -1
 
-        name_idx = find_col(NAME_KEYS, headers)
-        qty_idx  = find_col(QTY_KEYS,  headers)
-        if name_idx == -1: name_idx = 3  # 실적용거래처명 위치 기본값
-        if qty_idx  == -1: qty_idx  = len(headers)-2
+        NAME_IDX  = find_col(['실적용거래처명','거래처명'], headers)
+        CODE_IDX  = find_col(['거래처코드'], headers)
+        SUM_IDX   = find_col(['합계'], headers)
 
-        # real_seller 매핑
-        sc_map = {r[1]: r[1] for r in conn.execute("SELECT display_name, real_seller FROM seller_code WHERE real_seller!=''").fetchall()}
-        # display_name → real_seller (언더바 → 공백)
-        sc_map2 = {r[0].replace('_',' '): r[1] for r in conn.execute("SELECT display_name, real_seller FROM seller_code WHERE real_seller!=''").fetchall()}
-        all_real = {r[0]: r[0] for r in conn.execute("SELECT DISTINCT real_seller FROM sales_data WHERE real_seller!=''").fetchall()}
+        if NAME_IDX == -1: NAME_IDX = 3   # 기본값
+        if SUM_IDX  == -1: SUM_IDX  = len(headers)-2
 
-        def find_real_seller(name_val):
-            if not name_val: return ''
-            s = str(name_val).strip()
-            if s in all_real: return s
-            s2 = s.replace('_', ' ')
-            if s2 in all_real: return s2
-            if s in sc_map: return sc_map[s]
-            if s in sc_map2: return sc_map2[s]
-            return s
+        # 업로드 이력 저장
+        upload_id = conn.execute("SELECT id FROM display_upload WHERE campaign_id=? AND sheet_name=?",
+            (campaign_id, sheet_name)).fetchone()
+        if upload_id:
+            upload_id = upload_id[0]
+            conn.execute("UPDATE display_upload SET upload_seq=?,upload_date=?,upload_at=? WHERE id=?",
+                (upload_seq, today, now_str, upload_id))
+        else:
+            conn.execute("""INSERT INTO display_upload
+                (campaign_id, sheet_name, product_name, upload_seq, upload_date, upload_at)
+                VALUES(?,?,?,?,?,?)""",
+                (campaign_id, sheet_name, sheet_clean, upload_seq, today, now_str))
+            upload_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
 
-        inserted = 0
-        now_str = dt2.now().strftime('%Y-%m-%d %H:%M')
-        for row in raw_rows[header_idx+1:]:
+        # 데이터 행 처리 (헤더 아래 1줄은 색상 행일 수 있으므로 스킵)
+        data_start = header_row_idx + 2
+        inserted = skipped = 0
+
+        for row in raw_rows[data_start:]:
             if not any(row): continue
-            name_val = row[name_idx] if name_idx < len(row) else None
-            qty_val  = row[qty_idx]  if qty_idx  < len(row) else 0
-            try: qty = int(float(str(qty_val or 0).replace(',','')))
-            except: qty = 0
-            if not name_val or qty <= 0: continue
 
-            real_seller = find_real_seller(name_val)
-            if not real_seller: continue
+            # 매장명
+            raw_name = row[NAME_IDX] if NAME_IDX < len(row) else None
+            if not raw_name or str(raw_name).strip() in ('', '합계', '총 합계', '소계'): continue
 
-            # 이미 점수 있는 매장은 누적 (점수 더 주지 않음 — 나중에 올린 엑셀에서 처음 나타난 것만)
-            existing = conn.execute(
-                "SELECT id, score FROM display_score WHERE seller_name=? AND event_id=?",
-                (real_seller, event_id)).fetchone()
-            if not existing:
-                conn.execute("""INSERT INTO display_score
-                    (seller_name, event_id, score, quantity, is_manual, updated_at)
-                    VALUES(?,?,?,?,0,?)""",
-                    (real_seller, event_id, base_score, qty, now_str))
+            # 합계
+            raw_sum = row[SUM_IDX] if SUM_IDX < len(row) else 0
+            try:
+                qty = int(float(str(raw_sum or 0).replace(',','')))
+            except:
+                qty = 0
+
+            has_display = 1 if qty > 0 else 0
+            seller = normalize_seller_name(raw_name)
+            code   = str(row[CODE_IDX]).strip() if CODE_IDX >= 0 and CODE_IDX < len(row) and row[CODE_IDX] else ''
+
+            # 누적 처리: 이미 has_display=1 기록이 있으면 점수 유지 (덮어쓰지 않음)
+            existing = conn.execute("""SELECT id, has_display, score, is_manual FROM display_record
+                WHERE campaign_id=? AND seller_name=? AND product_name=?""",
+                (campaign_id, seller, sheet_clean)).fetchone()
+
+            if existing:
+                ex_id, ex_has, ex_score, ex_manual = existing
+                if ex_manual:
+                    skipped += 1  # 수동 수정된 건 건드리지 않음
+                    continue
+                if ex_has == 1 and has_display == 0:
+                    skipped += 1  # 이미 진열 완료인데 이번에 0이면 유지
+                    continue
+                if ex_has == 0 and has_display == 1:
+                    # 이번에 처음 진열 확인 → 점수 부여
+                    conn.execute("""UPDATE display_record SET
+                        has_display=1, quantity=?, score=?, upload_id=?, upload_date=?, updated_at=?
+                        WHERE id=?""",
+                        (qty, base_score, upload_id, today, now_str, ex_id))
+                    total_updated += 1
+                else:
+                    # 수량만 업데이트
+                    conn.execute("UPDATE display_record SET quantity=?,updated_at=? WHERE id=?",
+                        (qty, now_str, ex_id))
+                    skipped += 1
+            else:
+                # 신규 등록
+                conn.execute("""INSERT INTO display_record
+                    (campaign_id, upload_id, seller_name, seller_code, product_name,
+                     quantity, has_display, score, upload_date, updated_at)
+                    VALUES(?,?,?,?,?,?,?,?,?,?)""",
+                    (campaign_id, upload_id, seller, code, sheet_clean,
+                     qty, has_display,
+                     base_score if has_display else 0,
+                     today, now_str))
                 inserted += 1
 
-        conn.commit()
-    except Exception as e:
-        conn.close()
-        return jsonify({'ok': False, 'msg': str(e)}), 500
+        total_inserted += inserted
+        sheet_results.append({
+            'sheet': sheet_name, 'product': sheet_clean,
+            'inserted': inserted, 'updated': total_updated,
+            'skipped': skipped, 'type': actual_type
+        })
 
-    conn.close()
+    conn.commit(); conn.close()
     return jsonify({
-        'ok': True, 'event_id': event_id, 'event_name': event_name,
-        'upload_order': order, 'base_score': base_score, 'inserted': inserted
+        'ok': True, 'campaign_id': campaign_id,
+        'upload_seq': upload_seq,
+        'base_score': base_score, 'period_label': period_label,
+        'total_inserted': total_inserted,
+        'sheets': sheet_results
     })
 
-@app.route("/api/display/score/update", methods=["POST"])
+
+@app.route("/api/display/scores")
 @login_required
-def api_display_score_update():
-    """수동 점수 수정"""
+def api_display_scores():
+    """캠페인별 매장 점수 집계"""
+    campaign_id = request.args.get('campaign_id')
+    year = request.args.get('year', str(datetime.now().year))
+    conn = get_db()
+
+    if campaign_id:
+        # 특정 캠페인 점수
+        records = [dict(r) for r in conn.execute("""
+            SELECT seller_name, product_name, has_display, quantity, score, is_manual, upload_date
+            FROM display_record WHERE campaign_id=? ORDER BY seller_name, product_name
+        """, (campaign_id,)).fetchall()]
+    else:
+        # 전체 캠페인 합산
+        records = [dict(r) for r in conn.execute("""
+            SELECT dr.seller_name,
+                   SUM(dr.score) total_score,
+                   COUNT(CASE WHEN dr.has_display=1 THEN 1 END) display_cnt,
+                   GROUP_CONCAT(dc.campaign_name || '/' || dr.product_name || ':' || dr.score, '|') detail_raw
+            FROM display_record dr
+            JOIN display_campaign dc ON dr.campaign_id=dc.id
+            WHERE dr.has_display=1
+            GROUP BY dr.seller_name ORDER BY total_score DESC
+        """).fetchall()]
+
+    # 판매 데이터
+    sales_map = {r[0]:r[1] for r in conn.execute(
+        f"SELECT real_seller, SUM(total) FROM sales_data "
+        f"WHERE sale_date LIKE '{year}%' AND real_seller!='' GROUP BY real_seller").fetchall()}
+    all_sellers = [r[0] for r in conn.execute(
+        f"SELECT DISTINCT real_seller FROM sales_data WHERE real_seller!='' AND sale_date LIKE '{year}%' ORDER BY real_seller"
+    ).fetchall()]
+    conn.close()
+
+    if campaign_id:
+        # 캠페인별 상세: 매장 × 제품 형태
+        seller_map = {}
+        for r in records:
+            s = r['seller_name']
+            if s not in seller_map: seller_map[s] = {'products': [], 'total_score': 0}
+            seller_map[s]['products'].append(r)
+            seller_map[s]['total_score'] += r['score'] or 0
+        result = [{'seller_name':s, **v, 'year_sales': sales_map.get(s,0)}
+                  for s,v in sorted(seller_map.items(), key=lambda x:-x[1]['total_score'])]
+        return jsonify(result)
+    else:
+        score_map = {r['seller_name']: r for r in records}
+        result = []
+        for s in all_sellers:
+            info = score_map.get(s, {})
+            detail_raw = info.get('detail_raw','')
+            # 캠페인/제품별 상세 파싱
+            detail_items = []
+            if detail_raw:
+                for part in detail_raw.split('|'):
+                    if ':' in part and '/' in part:
+                        try:
+                            camp_prod, sc = part.rsplit(':',1)
+                            camp, prod = camp_prod.split('/',1)
+                            detail_items.append({'campaign':camp, 'product':prod, 'score':int(sc)})
+                        except: pass
+            result.append({
+                'seller_name':   s,
+                'total_score':   info.get('total_score', 0) or 0,
+                'display_cnt':   info.get('display_cnt', 0) or 0,
+                'detail_items':  detail_items,
+                'year_sales':    sales_map.get(s, 0),
+            })
+        result.sort(key=lambda x: (-x['total_score'], -x['year_sales']))
+        return jsonify(result)
+
+
+@app.route("/api/display/record/update", methods=["POST"])
+@login_required
+def api_display_record_update():
+    """수동 점수/메모 수정"""
     d = request.json or {}
     conn = get_db()
     now = datetime.now().strftime('%Y-%m-%d %H:%M')
-    seller = d.get('seller_name','')
-    event_id = d.get('event_id')
-    score = int(d.get('score', 0))
-    memo  = d.get('memo','')
-    if not seller or not event_id:
-        conn.close(); return jsonify({'ok':False}), 400
-    existing = conn.execute("SELECT id FROM display_score WHERE seller_name=? AND event_id=?",
-        (seller, event_id)).fetchone()
-    if existing:
-        conn.execute("UPDATE display_score SET score=?,memo=?,is_manual=1,updated_at=? WHERE seller_name=? AND event_id=?",
-            (score, memo, now, seller, event_id))
-    else:
-        conn.execute("INSERT INTO display_score (seller_name,event_id,score,memo,is_manual,updated_at) VALUES(?,?,?,?,1,?)",
-            (seller, event_id, score, memo, now))
+    rid = d.get('id')
+    if rid:
+        conn.execute("""UPDATE display_record SET score=?,has_display=?,memo=?,is_manual=1,updated_at=? WHERE id=?""",
+            (int(d.get('score',0)), int(d.get('has_display',0)), d.get('memo',''), now, rid))
     conn.commit(); conn.close()
     return jsonify({'ok': True})
 
-@app.route("/api/display/event/update", methods=["POST"])
+@app.route("/api/display/events")
 @login_required
-def api_display_event_update():
-    """행사/진열 이벤트명·제품명 수동 수정"""
-    d = request.json or {}
+def api_display_events():
     conn = get_db()
-    conn.execute("UPDATE display_event SET event_name=?,product_name=? WHERE id=?",
-        (d.get('event_name',''), d.get('product_name',''), d.get('id')))
-    conn.commit(); conn.close()
-    return jsonify({'ok': True})
+    rows = [dict(r) for r in conn.execute(
+        "SELECT * FROM display_event ORDER BY event_type, upload_order, id").fetchall()]
+    conn.close()
+    return jsonify(rows)
 
-@app.route("/api/display/event/delete", methods=["POST"])
-@login_required
-def api_display_event_delete():
-    """이벤트 삭제 (점수도 함께)"""
-    eid = (request.json or {}).get('id')
-    if not eid: return jsonify({'ok':False}), 400
-    conn = get_db()
-    conn.execute("DELETE FROM display_score WHERE event_id=?", (eid,))
-    conn.execute("DELETE FROM display_event WHERE id=?", (eid,))
-    conn.commit(); conn.close()
-    return jsonify({'ok': True})
-
+# Render/gunicorn 실행 시 자동 초기화
 # Render/gunicorn 실행 시 자동 초기화
 init_db()
 

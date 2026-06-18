@@ -988,84 +988,104 @@ td.center{text-align:center}
     <!-- ██ 행사 및 진열 신청 ██ -->
     <div class="page" id="page-display">
       <div class="ph">
-        <div><h2>행사 및 진열 신청</h2><p>엑셀 업로드 → 자동 점수 부여 · 누적 관리</p></div>
+        <div><h2>행사 및 진열 신청</h2><p>캠페인 기한별 자동 점수 · 시트별 제품 자동 분류 · 누적 관리</p></div>
         <div class="ph-r">
           <select class="ysel" id="display-year" onchange="loadDisplay()"></select>
-          <!-- 진열 신청 업로드 -->
-          <div style="position:relative">
-            <button class="btn btn-primary btn-sm" onclick="document.getElementById('display-file-input').click()">📊 진열신청 업로드</button>
-            <input type="file" id="display-file-input" accept=".xlsx,.xls" style="display:none"
-              onchange="openUploadModal(this,'display')">
-          </div>
-          <!-- 행사 업로드 -->
-          <div style="position:relative">
-            <button class="btn btn-ghost btn-sm" onclick="document.getElementById('event-file-input').click()">🎪 행사신청 업로드</button>
-            <input type="file" id="event-file-input" accept=".xlsx,.xls" style="display:none"
-              onchange="openUploadModal(this,'event')">
-          </div>
+          <button class="btn btn-primary btn-sm" onclick="openCreateCampaign()">+ 캠페인 만들기</button>
         </div>
       </div>
 
-      <!-- 점수 기준 안내 -->
-      <div style="background:#EFF6FF;border:1px solid #BFDBFE;border-radius:var(--r-md);padding:12px 16px;margin-bottom:20px;font-size:12px;color:#1E40AF">
-        <strong>점수 기준:</strong> 첫 번째 업로드에서 신청한 매장 +5점 · 두 번째 +3점 · 세 번째 이후 +1점 (누적 보존)
-        &nbsp;|&nbsp; <strong>수동 수정</strong>도 가능합니다
-      </div>
+      <!-- 캠페인 목록 -->
+      <div id="display-campaigns-wrap" style="margin-bottom:24px"></div>
 
-      <!-- KPI -->
-      <div id="display-kpi" style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:20px"></div>
-
-      <!-- 이벤트 목록 -->
-      <div id="display-events-wrap" style="margin-bottom:20px"></div>
-
-      <!-- 매장별 점수 테이블 -->
-      <div style="font-size:13px;font-weight:600;color:var(--t-700);margin-bottom:10px">매장별 누적 점수</div>
-      <div class="tw">
-        <table id="display-table">
-          <thead><tr>
+      <!-- 현재 선택 캠페인 -->
+      <div id="display-detail-wrap" style="display:none">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:10px">
+          <div style="font-size:14px;font-weight:700;color:var(--t-900)" id="display-detail-title">캠페인 상세</div>
+          <div style="display:flex;gap:8px;flex-wrap:wrap">
+            <label class="btn btn-primary btn-sm" style="cursor:pointer">
+              📤 엑셀 업로드
+              <input type="file" id="display-file-input" accept=".xlsx,.xls" style="display:none" onchange="uploadDisplayFile(this)">
+            </label>
+            <button class="btn btn-ghost btn-sm" onclick="editCampaign()">⚙ 기간/점수 수정</button>
+            <button class="btn btn-xs" style="background:var(--red-lt);color:var(--red)" onclick="deleteCampaign()">삭제</button>
+          </div>
+        </div>
+        <!-- KPI -->
+        <div id="display-kpi" style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:20px"></div>
+        <!-- 업로드 이력 -->
+        <div id="display-upload-history" style="margin-bottom:18px"></div>
+        <!-- 매장별 점수 테이블 -->
+        <div class="tw">
+          <table><thead><tr>
             <th style="width:4%">#</th>
-            <th style="width:18%">매장명</th>
+            <th style="width:20%">매장명</th>
             <th style="width:8%;text-align:center">누적 점수</th>
-            <th style="width:7%;text-align:center">참여횟수</th>
-            <th style="width:7%;text-align:center">진열점수</th>
-            <th style="width:7%;text-align:center">행사점수</th>
-            <th style="width:34%">상세 내역 (제품별)</th>
-            <th style="width:10%;text-align:right">연매출</th>
+            <th style="width:38%">제품별 진열 현황</th>
+            <th style="width:12%;text-align:right">연매출</th>
+            <th style="width:8%;text-align:center">수정</th>
           </tr></thead>
           <tbody id="display-tbody"></tbody>
-        </table>
+        </table></div>
       </div>
     </div>
 
-    <!-- 업로드 설정 모달 -->
-    <div id="display-upload-modal" style="display:none;position:fixed;inset:0;background:rgba(16,24,40,.4);z-index:1000;align-items:center;justify-content:center">
-      <div style="background:var(--paper);border-radius:var(--r-xl);padding:24px;width:min(440px,95vw);box-shadow:0 24px 60px rgba(0,0,0,.2)">
-        <div style="font-size:15px;font-weight:700;margin-bottom:16px" id="dum-title">업로드 설정</div>
-        <div style="margin-bottom:12px"><div class="flbl">이벤트/진열 이름</div>
-          <input class="fi" id="dum-name" placeholder="예: 줄즈 에어2 진열신청 1차"></div>
-        <div style="margin-bottom:16px"><div class="flbl">제품명 (수동 입력)</div>
-          <input class="fi" id="dum-product" placeholder="예: 줄즈 에어2 샌디타프"></div>
-        <div style="display:flex;gap:8px;justify-content:flex-end">
-          <button class="btn btn-ghost" onclick="closeUploadModal()">취소</button>
-          <button class="btn btn-primary" onclick="confirmUpload()">업로드</button>
+    <!-- 캠페인 생성/수정 모달 -->
+    <div id="campaign-modal" style="display:none;position:fixed;inset:0;background:rgba(16,24,40,.4);z-index:1000;align-items:center;justify-content:center">
+      <div style="background:var(--paper);border-radius:var(--r-xl);padding:26px;width:min(480px,95vw);box-shadow:0 24px 60px rgba(0,0,0,.2)">
+        <div style="font-size:15px;font-weight:700;margin-bottom:20px" id="cm-title">새 캠페인</div>
+        <div style="margin-bottom:12px"><div class="flbl">캠페인 이름</div>
+          <input class="fi" id="cm-name" placeholder="예: 레카로 벨릭스 진열신청 2차"></div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px">
+          <div><div class="flbl">브랜드</div>
+            <select class="fi" id="cm-brand">
+              <option value="">전체</option>
+              <option>줄즈</option><option>레카로</option><option>엔픽스</option>
+              <option>카오스</option><option>원더폴드</option><option>ABC디자인</option><option>타프토이즈</option>
+            </select></div>
+          <div><div class="flbl">유형</div>
+            <select class="fi" id="cm-type">
+              <option value="display">진열신청</option>
+              <option value="event">행사신청</option>
+            </select></div>
         </div>
-        <input type="hidden" id="dum-type">
+        <div style="background:var(--p-lt);border-radius:var(--r-md);padding:14px;margin-bottom:14px">
+          <div style="font-size:12px;font-weight:700;color:var(--p);margin-bottom:10px">기한 설정 (이 기간 내 신청 = 더 높은 점수)</div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px">
+            <div><div class="flbl">기한 시작</div><input class="fi" type="date" id="cm-start"></div>
+            <div><div class="flbl">기한 종료</div><input class="fi" type="date" id="cm-end"></div>
+          </div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+            <div><div class="flbl">기한 내 점수</div>
+              <input class="fi" type="number" id="cm-score-in" value="5" min="1" max="10"></div>
+            <div><div class="flbl">기한 후 점수</div>
+              <input class="fi" type="number" id="cm-score-out" value="2" min="1" max="10"></div>
+          </div>
+        </div>
+        <div style="font-size:11px;color:var(--t-300);margin-bottom:16px">
+          * 기한 미설정 시 업로드 시점의 점수가 적용됩니다
+        </div>
+        <div style="display:flex;gap:8px;justify-content:flex-end">
+          <button class="btn btn-ghost" onclick="document.getElementById('campaign-modal').style.display='none'">취소</button>
+          <button class="btn btn-primary" onclick="saveCampaign()">저장</button>
+        </div>
+        <input type="hidden" id="cm-edit-id">
       </div>
     </div>
 
-    <!-- 점수 수정 모달 -->
+    <!-- 점수 수동 수정 모달 -->
     <div id="display-score-modal" style="display:none;position:fixed;inset:0;background:rgba(16,24,40,.4);z-index:1000;align-items:center;justify-content:center">
-      <div style="background:var(--paper);border-radius:var(--r-xl);padding:24px;width:min(400px,95vw);box-shadow:0 24px 60px rgba(0,0,0,.2)">
+      <div style="background:var(--paper);border-radius:var(--r-xl);padding:24px;width:min(440px,95vw);box-shadow:0 24px 60px rgba(0,0,0,.2)">
         <div style="font-size:14px;font-weight:700;margin-bottom:16px" id="dsm-seller"></div>
-        <div id="dsm-fields" style="margin-bottom:16px"></div>
-        <div style="display:flex;gap:8px;justify-content:flex-end">
+        <div id="dsm-fields"></div>
+        <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:16px">
           <button class="btn btn-ghost" onclick="document.getElementById('display-score-modal').style.display='none'">닫기</button>
-          <button class="btn btn-primary" onclick="saveDisplayScores()">저장</button>
+          <button class="btn btn-primary" onclick="saveDisplayManual()">저장</button>
         </div>
       </div>
     </div>
 
-    <!-- ██ 엑셀 업로드 ██ -->
+    <!-- ██ 엑셀 업로드 ██ -->    <!-- ██ 엑셀 업로드 ██ -->
     <div class="page" id="page-upload">
       <div class="ph">
         <div><h2>엑셀 업로드</h2><p>CSV 파일로 지사 · 판매부수 데이터를 일괄 입력하세요</p></div>
@@ -1646,145 +1666,253 @@ function toggleAceCard(ci){
   t.textContent=open?'▼ 세부 보기':'▲ 접기';
 }
 
-// ── 행사 및 진열 신청 ────────────────────────────
-let displayPendingFile=null, displayPendingType='';
-
-function openUploadModal(input, type){
-  const file=input.files[0]; if(!file) return;
-  displayPendingFile=file; displayPendingType=type;
-  const typeLabel=type==='display'?'진열 신청':'행사 신청';
-  document.getElementById('dum-title').textContent=`${typeLabel} 엑셀 업로드`;
-  document.getElementById('dum-type').value=type;
-  document.getElementById('dum-name').value=`${typeLabel} ${new Date().toLocaleDateString('ko-KR')}`;
-  document.getElementById('dum-product').value='';
-  document.getElementById('display-upload-modal').style.display='flex';
-  input.value='';
-}
-function closeUploadModal(){ document.getElementById('display-upload-modal').style.display='none'; }
-
-async function confirmUpload(){
-  if(!displayPendingFile) return;
-  const fd=new FormData();
-  fd.append('file', displayPendingFile);
-  fd.append('event_name',   document.getElementById('dum-name').value||'업로드');
-  fd.append('event_type',   document.getElementById('dum-type').value);
-  fd.append('product_name', document.getElementById('dum-product').value);
-  closeUploadModal();
-  const r=await fetch('/api/display/upload',{method:'POST',body:fd});
-  const d=await r.json();
-  if(d.ok){
-    toast(`✅ ${d.event_name} 업로드 완료 — ${d.inserted}개 매장 ${d.base_score}점 부여`);
-    loadDisplay();
-  } else toast('업로드 실패: '+(d.msg||''), false);
-}
+// ── 행사 및 진열 신청 (v2) ───────────────────────
+let currentCampaignId = null;
+let currentCampaignData = null;
 
 async function loadDisplay(){
   const yrSel=document.getElementById('display-year');
   if(yrSel&&!yrSel.value){
     const cur=new Date().getFullYear();
-    if(!yrSel.options.length||!Array.from(yrSel.options).find(o=>parseInt(o.value)==cur)){
-      yrSel.innerHTML='';
-      for(let y=cur;y>=cur-3;y--) yrSel.innerHTML+=`<option value="${y}">${y}년</option>`;
-    }
+    yrSel.innerHTML='';
+    for(let y=cur;y>=cur-3;y--) yrSel.innerHTML+=`<option value="${y}">${y}년</option>`;
   }
   const year=yrSel?.value||new Date().getFullYear();
-  const [events,scores]=await Promise.all([
-    api('/api/display/events'),
-    api(`/api/display/scores?year=${year}`),
-  ]);
-  if(!events||!scores) return;
-  renderDisplayKPI(scores);
-  renderDisplayEvents(events);
-  renderDisplayTable(scores,events);
+  const campaigns=await api('/api/display/campaigns');
+  if(!campaigns) return;
+  renderCampaigns(campaigns, year);
+  if(currentCampaignId){
+    const found=campaigns.find(c=>c.id===currentCampaignId);
+    if(found) await loadCampaignDetail(currentCampaignId, year);
+  }
 }
 
-function renderDisplayKPI(scores){
+function renderCampaigns(campaigns, year){
+  const wrap=document.getElementById('display-campaigns-wrap');
+  if(!campaigns.length){
+    wrap.innerHTML=`<div style="background:var(--paper);border:1.5px dashed var(--border-md);border-radius:var(--r-lg);padding:40px;text-align:center;color:var(--t-300)">
+      <div style="font-size:24px;margin-bottom:10px">📋</div>
+      <div style="font-size:14px">캠페인이 없습니다</div>
+      <div style="font-size:12px;margin-top:4px">상단의 "+ 캠페인 만들기"로 시작하세요</div>
+    </div>`;
+    return;
+  }
+  const today=new Date().toISOString().slice(0,10);
+  wrap.innerHTML=`<div style="font-size:12px;font-weight:700;color:var(--t-500);letter-spacing:.3px;text-transform:uppercase;margin-bottom:10px">캠페인 목록</div>
+  <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:12px">
+  ${campaigns.map(c=>{
+    const inPeriod=c.period_start&&c.period_end&&c.period_start<=today&&today<=c.period_end;
+    const expired=c.period_end&&today>c.period_end;
+    const status=inPeriod?'기한 내':expired?'기한 종료':'기한 미설정';
+    const statusColor=inPeriod?'var(--green)':expired?'var(--t-300)':'var(--amber)';
+    const isActive=c.id===currentCampaignId;
+    return`<div onclick="loadCampaignDetail(${c.id})" style="background:var(--paper);border:1.5px solid ${isActive?'var(--p)':'var(--border)'};border-radius:var(--r-lg);padding:16px;cursor:pointer;transition:.15s"
+      onmouseenter="this.style.borderColor='var(--p-mid)'" onmouseleave="this.style.borderColor='${isActive?'var(--p)':'var(--border)'}'">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:8px">
+        <div style="font-size:13px;font-weight:700;color:var(--t-900)">${c.campaign_name}</div>
+        <span style="font-size:10px;font-weight:700;color:${statusColor};background:${statusColor}18;padding:2px 7px;border-radius:20px;white-space:nowrap">${status}</span>
+      </div>
+      <div style="font-size:11px;color:var(--t-300);margin-bottom:10px">
+        ${c.brand?`<span style="background:var(--p-lt);color:var(--p);padding:1px 6px;border-radius:10px;margin-right:4px">${c.brand}</span>`:''}
+        ${c.event_type==='event'?'🎪 행사신청':'📊 진열신청'}
+      </div>
+      ${c.period_start&&c.period_end?`<div style="font-size:11px;color:var(--t-500);margin-bottom:6px">📅 ${c.period_start} ~ ${c.period_end}</div>`:''}
+      <div style="font-size:11px;display:flex;gap:12px;color:var(--t-400)">
+        <span>기한내 <b style="color:var(--green)">+${c.score_in_period}pt</b></span>
+        <span>기한후 <b style="color:var(--t-300)">+${c.score_out_period}pt</b></span>
+        <span>진열매장 <b>${c.total_records}개</b></span>
+      </div>
+    </div>`;
+  }).join('')}
+  </div>`;
+}
+
+async function loadCampaignDetail(cid, year){
+  currentCampaignId=cid;
+  const campaigns=await api('/api/display/campaigns');
+  currentCampaignData=campaigns?.find(c=>c.id===cid);
+  if(!currentCampaignData) return;
+
+  year=year||document.getElementById('display-year')?.value||new Date().getFullYear();
+  const scores=await api(`/api/display/scores?campaign_id=${cid}&year=${year}`);
+  if(!scores) return;
+
+  document.getElementById('display-detail-wrap').style.display='block';
+  document.getElementById('display-detail-title').textContent=
+    `${currentCampaignData.campaign_name} — 상세 현황`;
+
+  // KPI
   const total=scores.length;
-  const participated=scores.filter(s=>(s.total_score||0)>0).length;
-  const displayPart=scores.filter(s=>(s.display_score||0)>0).length;
-  const eventPart=scores.filter(s=>(s.event_score||0)>0).length;
+  const hasDisplay=scores.filter(s=>(s.total_score||0)>0).length;
+  const allProducts=[...new Set(scores.flatMap(s=>(s.products||[]).map(p=>p.product_name)))];
   document.getElementById('display-kpi').innerHTML=[
     {l:'전체 매장',v:`${total}개`,c:'var(--p)'},
-    {l:'참여 매장',v:`${participated}개`,c:'var(--green)'},
-    {l:'진열신청',v:`${displayPart}개`,c:'var(--amber)'},
-    {l:'행사신청',v:`${eventPart}개`,c:'var(--purple)'},
+    {l:'진열 완료',v:`${hasDisplay}개 (${total?Math.round(hasDisplay/total*100):0}%)`,c:'var(--green)'},
+    {l:'미진열',v:`${total-hasDisplay}개`,c:'var(--amber)'},
+    {l:'제품 수',v:`${allProducts.length}종`,c:'var(--purple)'},
   ].map(k=>`<div class="kpi"><div class="kpi-accent" style="background:${k.c}"></div>
     <div class="kpi-lbl">${k.l}</div><div class="kpi-val" style="color:${k.c}">${k.v}</div></div>`).join('');
+
+  // 업로드 이력
+  const ups=currentCampaignData.uploads||[];
+  const prodMap={};
+  ups.forEach(u=>{ (prodMap[u.product_name]=prodMap[u.product_name]||[]).push(u); });
+  document.getElementById('display-upload-history').innerHTML=ups.length
+    ?`<div style="font-size:12px;font-weight:700;color:var(--t-700);margin-bottom:8px">업로드 이력 (${ups.length}개 시트)</div>
+      <div style="display:flex;flex-wrap:wrap;gap:6px">
+      ${ups.map(u=>`<span style="background:var(--bg);border:1px solid var(--border);border-radius:var(--r-sm);padding:4px 10px;font-size:11px">
+        <b>${u.product_name}</b> · ${u.upload_date||'—'} · ${u.upload_seq}차 업로드
+      </span>`).join('')}
+      </div>`
+    :'<div style="font-size:12px;color:var(--t-300)">아직 업로드 이력이 없습니다</div>';
+
+  // 테이블
+  renderDisplayTable(scores, allProducts);
+
+  // 캠페인 목록 하이라이트
+  const campaigns2=await api('/api/display/campaigns');
+  renderCampaigns(campaigns2, year);
 }
 
-function renderDisplayTable(scores,events){
+function renderDisplayTable(scores, allProducts){
   if(!scores.length){
-    document.getElementById('display-tbody').innerHTML=`<tr><td colspan="8" style="text-align:center;padding:32px;color:var(--t-300)">데이터가 없습니다. 엑셀을 업로드해주세요.</td></tr>`;
+    document.getElementById('display-tbody').innerHTML=`<tr><td colspan="6" style="text-align:center;padding:32px;color:var(--t-300)">데이터가 없습니다</td></tr>`;
     return;
   }
   document.getElementById('display-tbody').innerHTML=scores.map((r,i)=>{
-    const score=r.total_score||0;
-    const sc=score>=5?'var(--green)':score>=3?'var(--amber)':'var(--t-300)';
-    const displayDetail=(r.display_items||[]).map(d=>
-      `<span style="background:var(--p-lt);color:var(--p);padding:1px 6px;border-radius:10px;font-size:10px;margin-right:3px">${d.product||d.event_name} +${d.score}pt</span>`
-    ).join('');
-    const eventDetail=(r.event_items||[]).map(d=>
-      `<span style="background:var(--purple-lt);color:var(--purple);padding:1px 6px;border-radius:10px;font-size:10px;margin-right:3px">${d.product||d.event_name} +${d.score}pt</span>`
-    ).join('');
+    const total=r.total_score||0;
+    const sc=total>=5?'var(--green)':total>=2?'var(--amber)':'var(--t-300)';
+    const products=r.products||[];
+    const prodCells=products.map(p=>{
+      const done=p.has_display;
+      return`<span style="display:inline-flex;align-items:center;gap:4px;background:${done?'var(--green-lt)':'var(--bg)'};color:${done?'var(--green)':'var(--t-300)'};border:1px solid ${done?'var(--green)':'var(--border)'};padding:2px 8px;border-radius:20px;font-size:10px;margin:2px">
+        ${done?'✓':'○'} ${p.product_name}${done&&p.score?` +${p.score}pt`:''}
+      </span>`;
+    }).join('');
     return`<tr>
       <td style="text-align:center;color:var(--t-300);font-size:12px">${i+1}</td>
-      <td style="font-weight:600">${r.seller_name}</td>
-      <td style="text-align:center"><span style="font-size:15px;font-weight:800;color:${sc}">${score}pt</span></td>
-      <td style="text-align:center;font-size:12px">${r.event_cnt||0}회</td>
-      <td style="text-align:center;font-weight:700;color:var(--p)">${r.display_score||0}</td>
-      <td style="text-align:center;font-weight:700;color:var(--purple)">${r.event_score||0}</td>
-      <td style="font-size:11px;line-height:2;white-space:normal">${displayDetail||''}${eventDetail||(!displayDetail?'—':'')}</td>
+      <td style="font-weight:600;font-size:13px">${r.seller_name}</td>
+      <td style="text-align:center"><span style="font-size:15px;font-weight:800;color:${sc}">${total}pt</span></td>
+      <td style="white-space:normal;line-height:1.8">${prodCells||'—'}</td>
       <td style="text-align:right;font-weight:700;color:var(--p);font-size:12px">${N(r.year_sales||0)}원</td>
+      <td style="text-align:center"><button class="btn btn-ghost btn-xs" onclick="openDisplayScoreModal('${r.seller_name.replace(/'/g,"\'")}')">수정</button></td>
     </tr>`;
   }).join('');
 }
 
+function openCreateCampaign(){
+  document.getElementById('cm-edit-id').value='';
+  document.getElementById('cm-title').textContent='새 캠페인';
+  document.getElementById('cm-name').value='';
+  document.getElementById('cm-brand').value='';
+  document.getElementById('cm-type').value='display';
+  const today=new Date().toISOString().slice(0,10);
+  const end=new Date(Date.now()+14*86400000).toISOString().slice(0,10);
+  document.getElementById('cm-start').value=today;
+  document.getElementById('cm-end').value=end;
+  document.getElementById('cm-score-in').value=5;
+  document.getElementById('cm-score-out').value=2;
+  document.getElementById('campaign-modal').style.display='flex';
+}
 
-let scoreModalSeller='', scoreModalEvents=[];
-async function openScoreModal(seller){
-  scoreModalSeller=seller;
-  const events=await api('/api/display/events');
-  const scores=await api(`/api/display/scores`);
-  scoreModalEvents=events||[];
-  document.getElementById('dsm-seller').textContent=seller+' — 점수 수동 수정';
-  const sellerScore=scores?.find(s=>s.seller_name===seller)||{};
-  // 이벤트별 현재 점수 조회
-  const evScores=await api(`/api/display/scores`);
-  document.getElementById('dsm-fields').innerHTML=(events||[]).map(e=>`
-    <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px">
-      <div style="flex:1;font-size:13px">${e.event_name}</div>
-      <input type="number" id="ds-score-${e.id}" value="0" min="0" max="10"
-        style="width:60px;border:1px solid var(--border-md);border-radius:var(--r-sm);padding:4px 8px;text-align:center;font-size:13px">
-      <span style="font-size:11px;color:var(--t-300)">점</span>
+function editCampaign(){
+  if(!currentCampaignData) return;
+  const c=currentCampaignData;
+  document.getElementById('cm-edit-id').value=c.id;
+  document.getElementById('cm-title').textContent='캠페인 수정';
+  document.getElementById('cm-name').value=c.campaign_name;
+  document.getElementById('cm-brand').value=c.brand||'';
+  document.getElementById('cm-type').value=c.event_type||'display';
+  document.getElementById('cm-start').value=c.period_start||'';
+  document.getElementById('cm-end').value=c.period_end||'';
+  document.getElementById('cm-score-in').value=c.score_in_period||5;
+  document.getElementById('cm-score-out').value=c.score_out_period||2;
+  document.getElementById('campaign-modal').style.display='flex';
+}
+
+async function saveCampaign(){
+  const editId=document.getElementById('cm-edit-id').value;
+  const d={
+    campaign_name: document.getElementById('cm-name').value.trim(),
+    brand:         document.getElementById('cm-brand').value,
+    event_type:    document.getElementById('cm-type').value,
+    period_start:  document.getElementById('cm-start').value,
+    period_end:    document.getElementById('cm-end').value,
+    score_in_period:  parseInt(document.getElementById('cm-score-in').value)||5,
+    score_out_period: parseInt(document.getElementById('cm-score-out').value)||2,
+  };
+  if(!d.campaign_name){toast('캠페인 이름을 입력해주세요',false);return;}
+  let r;
+  if(editId){
+    r=await api('/api/display/campaign/update',{method:'POST',body:{...d,id:parseInt(editId)}});
+  } else {
+    r=await api('/api/display/campaign/create',{method:'POST',body:d});
+    if(r?.id) currentCampaignId=r.id;
+  }
+  document.getElementById('campaign-modal').style.display='none';
+  loadDisplay();
+  toast(editId?'수정됐습니다':'캠페인 생성 완료');
+}
+
+async function deleteCampaign(){
+  if(!currentCampaignId||!confirm('이 캠페인과 모든 점수 데이터를 삭제할까요?')) return;
+  const r=await api('/api/display/campaign/delete',{method:'POST',body:{id:currentCampaignId}});
+  if(r?.ok){
+    currentCampaignId=null;
+    document.getElementById('display-detail-wrap').style.display='none';
+    loadDisplay(); toast('삭제됐습니다');
+  }
+}
+
+async function uploadDisplayFile(input){
+  const file=input.files[0]; if(!file) return;
+  if(!currentCampaignId){toast('캠페인을 먼저 선택해주세요',false); input.value=''; return;}
+  const fd=new FormData();
+  fd.append('file', file);
+  fd.append('campaign_id', currentCampaignId);
+  input.value='';
+  toast('업로드 중...');
+  const r=await fetch('/api/display/upload',{method:'POST',body:fd});
+  const d=await r.json();
+  if(d.ok){
+    const sheetSummary=d.sheets.map(s=>`${s.product}(${s.inserted}개)`).join(', ');
+    toast(`✅ 업로드 완료 — ${d.period_label} / ${sheetSummary}`);
+    loadCampaignDetail(currentCampaignId);
+  } else toast('업로드 실패: '+(d.msg||''), false);
+}
+
+async function openDisplayScoreModal(seller){
+  if(!currentCampaignId) return;
+  const scores=await api(`/api/display/scores?campaign_id=${currentCampaignId}`);
+  const sellerData=scores?.find(s=>s.seller_name===seller);
+  document.getElementById('dsm-seller').textContent=`${seller} — 수동 점수 수정`;
+  const products=sellerData?.products||[];
+  document.getElementById('dsm-fields').innerHTML=products.map(p=>`
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px;border:1px solid var(--border);border-radius:var(--r-md);padding:10px">
+      <div style="flex:1">
+        <div style="font-size:13px;font-weight:600">${p.product_name}</div>
+        <div style="font-size:11px;color:var(--t-300)">${p.has_display?'진열 완료':'미진열'} · 현재 ${p.score||0}pt</div>
+      </div>
+      <input type="checkbox" id="dsm-has-${p.id}" ${p.has_display?'checked':''} style="width:16px;height:16px">
+      <label style="font-size:12px">진열</label>
+      <input type="number" id="dsm-score-${p.id}" value="${p.score||0}" min="0" max="10"
+        style="width:55px;border:1px solid var(--border-md);border-radius:var(--r-sm);padding:4px 8px;font-size:13px;text-align:center">
+      <span style="font-size:11px;color:var(--t-300)">pt</span>
     </div>`).join('');
+  document.getElementById('display-score-modal').setAttribute('data-products', JSON.stringify(products.map(p=>p.id)));
   document.getElementById('display-score-modal').style.display='flex';
 }
 
-async function saveDisplayScores(){
-  const events=scoreModalEvents;
-  for(const e of events){
-    const input=document.getElementById(`ds-score-${e.id}`);
-    const score=parseInt(input?.value||0);
-    if(score>0){
-      await api('/api/display/score/update',{method:'POST',body:{seller_name:scoreModalSeller,event_id:e.id,score}});
-    }
+async function saveDisplayManual(){
+  const idsJson=document.getElementById('display-score-modal').getAttribute('data-products')||'[]';
+  const ids=JSON.parse(idsJson);
+  for(const rid of ids){
+    const score=parseInt(document.getElementById(`dsm-score-${rid}`)?.value||0);
+    const has=document.getElementById(`dsm-has-${rid}`)?.checked?1:0;
+    await api('/api/display/record/update',{method:'POST',body:{id:rid,score,has_display:has}});
   }
   document.getElementById('display-score-modal').style.display='none';
-  loadDisplay(); toast('점수 수정 완료');
-}
-
-async function editEvent(id, name, product){
-  const newName=prompt('이벤트 이름:', name);
-  if(!newName) return;
-  const newProduct=prompt('제품명:', product)||'';
-  await api('/api/display/event/update',{method:'POST',body:{id,event_name:newName,product_name:newProduct}});
-  loadDisplay(); toast('수정됐습니다');
-}
-
-async function deleteEvent(id){
-  if(!confirm('이 이벤트와 관련 점수를 모두 삭제할까요?')) return;
-  await api('/api/display/event/delete',{method:'POST',body:{id}});
-  loadDisplay(); toast('삭제됐습니다');
+  loadCampaignDetail(currentCampaignId); toast('수정됐습니다');
 }
 
 // ── 재고 현황 ──────────────────────────────────────
