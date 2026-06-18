@@ -2173,6 +2173,20 @@ def export_xlsx_monthly():
         SELECT item_group,item_name,SUM(quantity) qty,SUM(total) total,COUNT(*) cnt
         FROM sales_data WHERE {' AND '.join(conds2)}
         GROUP BY item_name ORDER BY item_group,total DESC""",params2).fetchall()]
+
+    # 제품별 상세(월별) 데이터 미리 추출 (conn 닫기 전)
+    prod_monthly_cache = {}
+    for mo in months:
+        for b in BRAND_ORDER:
+            if b == '타프토이즈': continue
+            prows = conn.execute("""
+                SELECT item_name, SUM(quantity) qty, SUM(total) total
+                FROM sales_data
+                WHERE sale_date LIKE ? AND item_group NOT IN ('','NULL') AND real_seller!=''
+                GROUP BY item_name
+            """, (f"{year}-{str(mo).zfill(2)}%",)).fetchall()
+            prod_monthly_cache[(mo, b)] = prows
+
     conn.close()
 
     merged={}
@@ -2243,16 +2257,10 @@ def export_xlsx_monthly():
 
             # 타프토이즈 제외 브랜드: 제품별 상세 추가
             if b != '타프토이즈':
-                # 해당 브랜드·월 제품별 집계
-                prod_rows = conn.execute(f"""
-                    SELECT item_name, SUM(quantity) qty, SUM(total) total
-                    FROM sales_data
-                    WHERE sale_date LIKE ? AND item_group NOT IN ('','NULL')
-                      AND real_seller!=''
-                    GROUP BY item_name
-                """, (f"{year}-{str(mo).zfill(2)}%",)).fetchall()
+                # 캐시에서 해당 브랜드·월 데이터 사용
+                prows = prod_monthly_cache.get((mo, b), [])
                 prod_brand = {}
-                for pr in prod_rows:
+                for pr in prows:
                     pb = remap_group('', pr[0]) if not pr[0].startswith('[') else remap_group('X', pr[0])
                     if pb != b: continue
                     norm = normalize_item_name(pr[0])
@@ -2278,283 +2286,6 @@ def export_xlsx_monthly():
     fname=f"오프라인_브랜드별정리_{year}{'_'+month+'월' if month else ''}.xlsx"
     return send_file(buf,mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
                      as_attachment=True,download_name=fname)
-    if month:
-        months = [int(month)]
-    else:
-        months_raw = conn.execute(
-            f"SELECT DISTINCT CAST(strftime('%m',sale_date) AS INTEGER) m "
-            f"FROM sales_data WHERE sale_date LIKE '{year}%' AND sale_date!='' "
-            f"ORDER BY m").fetchall()
-        months = [r[0] for r in months_raw] or list(range(1,13))
-
-    # 매장 목록 (브랜드 정렬)
-    seller_cond = "AND real_seller=?" if seller else ""
-    seller_params = [seller] if seller else []
-    sellers_raw = conn.execute(
-        f"SELECT DISTINCT real_seller FROM sales_data "
-        f"WHERE real_seller!='' AND sale_date LIKE '{year}%' {seller_cond} "
-        f"ORDER BY real_seller", seller_params).fetchall()
-    sellers_list = [r[0] for r in sellers_raw]
-
-    def brand_key(nm):
-        nm = (nm or '').replace('_',' ').lower()
-        if '베이비하우스' in nm: return (0, nm)
-        if '링크맘' in nm: return (1, nm)
-        if '베이비파크' in nm: return (2, nm)
-        if '베네피아' in nm: return (3, nm)
-        return (9, nm)
-    sellers_list.sort(key=brand_key)
-
-    # 데이터 조회 — 매장×월×품목그룹 집계
-    data_rows = conn.execute(
-        f"""SELECT real_seller, CAST(strftime('%m',sale_date) AS INTEGER) mo,
-            item_group, SUM(total) total, SUM(quantity) qty
-            FROM sales_data
-            WHERE real_seller!='' AND sale_date LIKE '{year}%' AND sale_date!=''
-            {seller_cond}
-            GROUP BY real_seller, mo, item_group""",
-        seller_params).fetchall()
-
-    # 인덱스: {(seller, month, group): {total, qty}}
-    idx = {}
-    for r in data_rows:
-        key = (r[0], r[1], r[2])
-        idx[key] = {'total': r[3] or 0, 'qty': r[4] or 0}
-
-    # ── openpyxl 빌드 ──
-    wb = openpyxl.Workbook()
-
-    # 스타일
-    def mk_fill(hex): return PatternFill(start_color=hex,end_color=hex,fill_type="solid")
-    def mk_font(hex, bold=True, sz=10): return Font(color=hex,bold=bold,size=sz)
-    thin = Side(style='thin', color='D1D5DB')
-    bdr  = Border(left=thin,right=thin,top=thin,bottom=thin)
-    num_fmt = '#,##0'
-    center = Alignment(horizontal="center",vertical="center")
-    right  = Alignment(horizontal="right",vertical="center")
-
-    fill_main  = mk_fill("4F46E5")   # 진한 인디고 — 메인 헤더
-    fill_month = mk_fill("818CF8")   # 연한 인디고 — 월 헤더
-    fill_brand = mk_fill("C7D2FE")   # 더 연한 — 브랜드 헤더
-    fill_total = mk_fill("EEF2FF")   # 합계 열
-    fill_even  = mk_fill("F9FAFB")
-    fill_group_bh  = mk_fill("FFF7ED")  # 베이비하우스
-    fill_group_lm  = mk_fill("F0FDF4")  # 링크맘
-    fill_group_etc = mk_fill("FFFFFF")
-
-    def group_fill(nm):
-        nm=(nm or '').replace('_',' ').lower()
-        if '베이비하우스' in nm: return fill_group_bh
-        if '링크맘' in nm: return fill_group_lm
-        return fill_group_etc
-
-    # ── 시트1: 브랜드별 금액 ──
-    ws1 = wb.active; ws1.title = "브랜드별 금액"
-
-    # 행1: 타이틀
-    ws1.merge_cells(f"A1:{get_column_letter(4 + len(months)*(len(brands)+1))}1")
-    c=ws1.cell(row=1,column=1,value=f"오프라인 판매금액 브랜드별 정리_{year}")
-    c.fill=fill_main; c.font=mk_font("FFFFFF",True,12)
-    c.alignment=center; ws1.row_dimensions[1].height=28
-
-    # 행2: 월 헤더 (span 브랜드+합계)
-    fixed_cols = 3  # 업체구분, 거래처명, 실적용거래처명
-    col_start = fixed_cols + 1
-    ws1.cell(row=2,column=1,value="업체구분").fill=fill_brand
-    ws1.cell(row=2,column=2,value="거래처명").fill=fill_brand
-    ws1.cell(row=2,column=3,value="실적용거래처명").fill=fill_brand
-    for ci in range(1,4):
-        ws1.cell(row=2,column=ci).font=mk_font("374151",True,10)
-        ws1.cell(row=2,column=ci).alignment=center
-        ws1.cell(row=2,column=ci).border=bdr
-    ws1.merge_cells(f"A2:A3"); ws1.merge_cells(f"B2:B3"); ws1.merge_cells(f"C2:C3")
-
-    col = col_start
-    for mo in months:
-        span = len(brands)+1
-        end_col = col+span-1
-        ws1.merge_cells(f"{get_column_letter(col)}2:{get_column_letter(end_col)}2")
-        c=ws1.cell(row=2,column=col,value=f"{year}_{mo:02d}")
-        c.fill=fill_month; c.font=mk_font("FFFFFF",True,11); c.alignment=center; c.border=bdr
-        col += span
-
-    # 행3: 브랜드명 헤더
-    col = col_start
-    for mo in months:
-        for b in brands:
-            c=ws1.cell(row=3,column=col,value=f"{b}금액")
-            c.fill=fill_brand; c.font=mk_font("374151",True,9); c.alignment=center; c.border=bdr
-            col+=1
-        c=ws1.cell(row=3,column=col,value="합계")
-        c.fill=mk_fill("A5B4FC"); c.font=mk_font("1E1B4B",True,9); c.alignment=center; c.border=bdr
-        col+=1
-    ws1.row_dimensions[2].height=20; ws1.row_dimensions[3].height=18
-
-    # 고정 컬럼 너비
-    ws1.column_dimensions['A'].width = 12
-    ws1.column_dimensions['B'].width = 20
-    ws1.column_dimensions['C'].width = 22
-
-    # 데이터 행
-    # 업체구분 파악 (branches 테이블)
-    branch_group = {}
-    try:
-        bg_conn = get_db()
-        for r in bg_conn.execute("SELECT name, note FROM branches").fetchall():
-            branch_group[r[0]] = r[1] or ''
-        bg_conn.close()
-    except: pass
-
-    prev_group = None
-    for ri, s in enumerate(sellers_list, 4):
-        grp = branch_group.get(s,'')
-        row_fill = group_fill(s)
-
-        # 업체구분 — 그룹 변경 시만 표시
-        grp_val = grp if grp != prev_group else ''
-        prev_group = grp
-
-        ws1.cell(row=ri,column=1,value=grp_val).fill=row_fill
-        ws1.cell(row=ri,column=2,value=s).fill=row_fill
-        ws1.cell(row=ri,column=3,value=s).fill=row_fill
-        for ci in range(1,4):
-            ws1.cell(row=ri,column=ci).border=bdr
-            ws1.cell(row=ri,column=ci).font=Font(size=10)
-
-        col = col_start
-        for mo in months:
-            month_total = 0
-            for b in brands:
-                val = idx.get((s,mo,b),{}).get('total',0)
-                month_total += val
-                c=ws1.cell(row=ri,column=col,value=val if val else 0)
-                c.fill=row_fill; c.border=bdr; c.alignment=right
-                c.number_format=num_fmt; c.font=Font(size=10)
-                col+=1
-            # 합계
-            c=ws1.cell(row=ri,column=col,value=month_total)
-            c.fill=fill_total; c.border=bdr; c.alignment=right
-            c.number_format=num_fmt; c.font=Font(bold=True,size=10)
-            col+=1
-
-    # 합계 행
-    tot_row = len(sellers_list)+4
-    ws1.cell(row=tot_row,column=1,value="합계").fill=fill_main
-    ws1.cell(row=tot_row,column=2,value="").fill=fill_main
-    ws1.cell(row=tot_row,column=3,value="").fill=fill_main
-    for ci in range(1,4): ws1.cell(row=tot_row,column=ci).font=mk_font("FFFFFF",True,10)
-    col = col_start
-    for mo in months:
-        for b in brands:
-            total_b = sum(idx.get((s,mo,b),{}).get('total',0) for s in sellers_list)
-            c=ws1.cell(row=tot_row,column=col,value=total_b)
-            c.fill=fill_main; c.font=mk_font("FFFFFF",True,10)
-            c.border=bdr; c.alignment=right; c.number_format=num_fmt; col+=1
-        grand = sum(idx.get((s,mo,b),{}).get('total',0) for s in sellers_list for b in brands)
-        c=ws1.cell(row=tot_row,column=col,value=grand)
-        c.fill=mk_fill("312E81"); c.font=mk_font("FFFFFF",True,10)
-        c.border=bdr; c.alignment=right; c.number_format=num_fmt; col+=1
-
-    # 데이터 컬럼 너비
-    brand_col_width = 11
-    for mo_i in range(len(months)):
-        for b_i in range(len(brands)+1):
-            col_idx = col_start + mo_i*(len(brands)+1) + b_i
-            ws1.column_dimensions[get_column_letter(col_idx)].width = brand_col_width
-
-    ws1.freeze_panes = "D4"
-
-    # ── 시트2: 브랜드별 수량 ──
-    ws2 = wb.create_sheet("브랜드별 수량")
-    # 동일 구조, qty
-    ws2.merge_cells(f"A1:{get_column_letter(4 + len(months)*(len(brands)+1))}1")
-    c=ws2.cell(row=1,column=1,value=f"오프라인 판매수량 브랜드별 정리_{year}")
-    c.fill=mk_fill("065F46"); c.font=mk_font("FFFFFF",True,12); c.alignment=center
-    ws2.row_dimensions[1].height=28
-
-    for ci in range(1,4):
-        ws2.cell(row=2,column=ci,value=["업체구분","거래처명","실적용거래처명"][ci-1])
-        ws2.cell(row=2,column=ci).fill=fill_brand; ws2.cell(row=2,column=ci).font=mk_font("374151",True,10)
-        ws2.cell(row=2,column=ci).alignment=center; ws2.cell(row=2,column=ci).border=bdr
-    ws2.merge_cells(f"A2:A3"); ws2.merge_cells(f"B2:B3"); ws2.merge_cells(f"C2:C3")
-
-    col=col_start
-    for mo in months:
-        span=len(brands)+1; end_col=col+span-1
-        ws2.merge_cells(f"{get_column_letter(col)}2:{get_column_letter(end_col)}2")
-        c=ws2.cell(row=2,column=col,value=f"{year}_{mo:02d}")
-        c.fill=mk_fill("065F46"); c.font=mk_font("FFFFFF",True,11); c.alignment=center; c.border=bdr
-        for b in brands:
-            c2=ws2.cell(row=3,column=col,value=f"{b}수량")
-            c2.fill=mk_fill("D1FAE5"); c2.font=mk_font("374151",True,9); c2.alignment=center; c2.border=bdr; col+=1
-        c2=ws2.cell(row=3,column=col,value="수량합계")
-        c2.fill=mk_fill("6EE7B7"); c2.font=mk_font("065F46",True,9); c2.alignment=center; c2.border=bdr; col+=1
-    ws2.row_dimensions[2].height=20; ws2.row_dimensions[3].height=18
-    ws2.column_dimensions['A'].width=12; ws2.column_dimensions['B'].width=20; ws2.column_dimensions['C'].width=22
-
-    prev_group=None
-    for ri,s in enumerate(sellers_list,4):
-        grp=branch_group.get(s,''); gv=grp if grp!=prev_group else ''; prev_group=grp
-        ws2.cell(row=ri,column=1,value=gv); ws2.cell(row=ri,column=2,value=s); ws2.cell(row=ri,column=3,value=s)
-        for ci in range(1,4):
-            ws2.cell(row=ri,column=ci).border=bdr; ws2.cell(row=ri,column=ci).font=Font(size=10)
-        col=col_start
-        for mo in months:
-            mt=0
-            for b in brands:
-                val=idx.get((s,mo,b),{}).get('qty',0); mt+=val
-                c=ws2.cell(row=ri,column=col,value=val if val else 0)
-                c.border=bdr; c.alignment=right; c.number_format=num_fmt; c.font=Font(size=10); col+=1
-            c=ws2.cell(row=ri,column=col,value=mt)
-            c.fill=mk_fill("ECFDF5"); c.border=bdr; c.alignment=right
-            c.number_format=num_fmt; c.font=Font(bold=True,size=10); col+=1
-
-    for mo_i in range(len(months)):
-        for b_i in range(len(brands)+1):
-            ws2.column_dimensions[get_column_letter(col_start+mo_i*(len(brands)+1)+b_i)].width=brand_col_width
-    ws2.freeze_panes="D4"
-
-    # ── 시트3: 제품별 상세 ──
-    ws3 = wb.create_sheet("제품별 상세")
-    params2=[f"{year}%"]; conds2=["sale_date LIKE ?","sale_date!=''"]
-    if seller: conds2.append("real_seller=?"); params2.append(seller)
-    if month:  conds2.append(f"strftime('%m',sale_date)='{month.zfill(2)}'")
-    raw_items=[dict(r) for r in conn.execute(f"""
-        SELECT item_group,item_name,SUM(quantity) qty,SUM(total) total,COUNT(*) cnt
-        FROM sales_data WHERE {' AND '.join(conds2)}
-        GROUP BY item_name ORDER BY item_group,total DESC""",params2).fetchall()]
-    conn.close()  # 모든 쿼리 완료 후 닫기
-
-    merged={}
-    for r in raw_items:
-        nn=normalize_item_name(r['item_name']); ng=remap_group(r['item_group'],r['item_name'])
-        key=(ng,nn)
-        if key not in merged: merged[key]={'item_group':ng,'item_name':nn,'qty':0,'total':0,'cnt':0}
-        merged[key]['qty']+=r['qty']; merged[key]['total']+=r['total']; merged[key]['cnt']+=r['cnt']
-    sorted_items=sorted(merged.values(),key=lambda x:(get_group_sort_key(x['item_group']),-x['total']))
-
-    hdr3_fill=mk_fill("6366F1")
-    item_hdrs=['품목그룹','제품명','판매건수','판매수량','합계금액(원)']
-    for ci,h in enumerate(item_hdrs,1):
-        c=ws3.cell(row=1,column=ci,value=h); c.fill=hdr3_fill
-        c.font=mk_font("FFFFFF",True,10); c.alignment=center; c.border=bdr
-    ws3.row_dimensions[1].height=22
-    for ri,r in enumerate(sorted_items,2):
-        vals=[r['item_group'],r['item_name'],r['cnt'],r['qty'],r['total']]
-        for ci,val in enumerate(vals,1):
-            c=ws3.cell(row=ri,column=ci,value=val); c.border=bdr
-            if ri%2==0: c.fill=mk_fill("F9FAFB")
-            if ci>2: c.alignment=right
-            if ci==5 and isinstance(val,int): c.number_format=num_fmt
-    for col in ws3.columns:
-        ml=max((len(str(c.value or '')) for c in col),default=8)
-        ws3.column_dimensions[get_column_letter(col[0].column)].width=min(ml+3,35)
-
-    buf=io.BytesIO(); wb.save(buf); buf.seek(0)
-    fname=f"오프라인_브랜드별정리_{year}{'_'+month+'월' if month else ''}.xlsx"
-    return send_file(buf,mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-                     as_attachment=True,download_name=fname)
-
 @app.route("/api/export/xlsx/weekly")
 @login_required
 def export_xlsx_weekly():
@@ -4945,16 +4676,24 @@ def api_export_display():
         ws = wb.create_sheet(title=tab_label)
 
         # 데이터 조회 — 해당 모델 + 캐노피 여/부
+        # norm_name 예: '[줄즈]에어2' → base: '에어2'
+        import re as _re2
+        def extract_base(nm):
+            """[브랜드]모델명 → 모델명만 추출"""
+            m = _re2.match(r'^\[([^\]]+)\](.+)$', nm.strip())
+            return m.group(2).strip() if m else nm.strip()
+
         if is_canopy:
+            base_q = extract_base(norm_name)
             rows_data = conn.execute("""
                 SELECT real_seller, item_name, SUM(quantity) qty
                 FROM sales_data
                 WHERE item_name LIKE ? AND item_name LIKE '%캐노피%'
                   AND sale_date LIKE ? AND real_seller!=''
                 GROUP BY real_seller, item_name
-            """, (f"%{norm_name.replace('[','').replace(']','').split(']')[-1].strip()}%", f"{year}%")).fetchall()
+            """, (f"%{base_q}%", f"{year}%")).fetchall()
         else:
-            base = norm_name.replace('[','').replace(']','').split(']')[-1].strip() if ']' in norm_name else norm_name.strip('[]')
+            base = extract_base(norm_name)
             rows_data = conn.execute("""
                 SELECT real_seller, item_name, SUM(quantity) qty
                 FROM sales_data
@@ -5512,22 +5251,34 @@ def api_display_record_update():
 @app.route("/api/display/export/ranking")
 @login_required
 def api_display_export_ranking():
-    """전체 합산 랭킹 엑셀 다운로드"""
+    """전체 합산 랭킹 엑셀 — 순위 없는 매장 포함, 흰 배경, 쉼표 숫자"""
     from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
     from openpyxl.utils import get_column_letter
     year = request.args.get('year', str(datetime.now().year))
 
     conn = get_db()
+    # 점수 있는 매장
     records = [dict(r) for r in conn.execute("""
         SELECT dr.seller_name, SUM(dr.score) total_score,
                COUNT(CASE WHEN dr.has_display=1 THEN 1 END) display_cnt,
-               GROUP_CONCAT(dc.campaign_name || '/' || dr.product_name || ':' || dr.score, '|') detail_raw
+               GROUP_CONCAT(dr.product_name || ':' || dr.score, '|') detail_raw
         FROM display_record dr JOIN display_campaign dc ON dr.campaign_id=dc.id
         WHERE dr.has_display=1 GROUP BY dr.seller_name ORDER BY total_score DESC
     """).fetchall()]
+    # 점수 없는 매장 (진열 기록 있는 모든 매장)
+    all_record_sellers = {r['seller_name'] for r in records}
+    no_score = [dict(r) for r in conn.execute("""
+        SELECT DISTINCT seller_name FROM display_record WHERE has_display=0
+    """).fetchall() if r['seller_name'] not in all_record_sellers]
+
     sales_map = {r[0]:r[1] for r in conn.execute(
         f"SELECT real_seller, SUM(total) FROM sales_data WHERE sale_date LIKE '{year}%' AND real_seller!='' GROUP BY real_seller"
     ).fetchall()}
+    # 공백 제거 매칭
+    sales_nospace = {k.replace(' ',''):v for k,v in sales_map.items()}
+    def get_sales(s):
+        return sales_map.get(s, sales_nospace.get(s.replace(' ',''), 0)) or 0
+
     conn.close()
 
     # 동점 순위 (dense rank)
@@ -5542,43 +5293,67 @@ def api_display_export_ranking():
     ws = wb.active; ws.title = '전체합산랭킹'
 
     def mf(hex_): return PatternFill("solid", fgColor=hex_)
-    thin = Side(style='thin', color='DDDDDD')
+    thin = Side(style='thin', color='E5E7EB')
     bdr  = Border(left=thin, right=thin, top=thin, bottom=thin)
     ctr  = Alignment(horizontal='center', vertical='center')
     left = Alignment(horizontal='left', vertical='center')
-    GRADE_COLOR = {'A':'D1FAE5','B':'DBEAFE','C':'FEF9C3','D':'F3F4F6'}
+    right_a = Alignment(horizontal='right', vertical='center')
+    GRADE_COLOR = {'A':'EFF6FF','B':'F0FDF4','C':'FFFBEB','D':'F9FAFB'}  # 수정4: 연한 배경
 
     ws.merge_cells('A1:G1')
     c = ws.cell(row=1,column=1,value=f'행사 및 진열 신청 전체 합산 랭킹 ({year}년)')
     c.font=Font(bold=True,size=13,name='맑은 고딕',color='FFFFFF'); c.fill=mf('1E3A5F'); c.alignment=ctr
     ws.row_dimensions[1].height=26
 
-    hdrs = ['순위','등급','매장명','누적 점수','참여 수','상세 내역','연매출 (원)']
-    widths = [8, 8, 26, 12, 10, 60, 18]
+    hdrs = ['순위','등급','매장명','누적 점수','참여 수','상세 내역','연매출']
+    widths = [8, 8, 26, 12, 10, 55, 18]
     for ci,(h,w) in enumerate(zip(hdrs,widths),1):
         c = ws.cell(row=2,column=ci,value=h)
-        c.font=Font(bold=True,size=10,name='맑은 고딕'); c.fill=mf('EFF6FF'); c.border=bdr; c.alignment=ctr
+        c.font=Font(bold=True,size=10,name='맑은 고딕'); c.fill=mf('F1F5F9'); c.border=bdr; c.alignment=ctr
         ws.column_dimensions[get_column_letter(ci)].width=w
     ws.row_dimensions[2].height=20
 
-    for ri, r in enumerate(records, 3):
+    ri = 3
+    for r in records:
         grade = r.get('grade','E'); score = r.get('total_score',0) or 0
-        detail_raw = r.get('detail_raw','') or ''
-        parts=[]
-        for part in detail_raw.split('|'):
-            if ':' in part and '/' in part:
+        # 수정2: 제품명:점수 형식으로만 (캠페인명 제거)
+        parts = []
+        for part in (r.get('detail_raw','') or '').split('|'):
+            if ':' in part:
                 try:
-                    cp,sc=part.rsplit(':',1); ca,pr=cp.split('/',1)
-                    parts.append(f"{pr}({ca})+{sc}pt")
+                    prod, sc = part.rsplit(':',1)
+                    parts.append(f"{prod.strip()} +{sc}pt")
                 except: pass
-        fill = mf(GRADE_COLOR.get(grade,'FFFFFF'))
-        for ci,v in enumerate([r.get('rank',''), grade, r['seller_name'], score,
-                r.get('display_cnt',0), ' / '.join(parts), sales_map.get(r['seller_name'],0)],1):
+        # 중복 제거
+        seen_parts = []; [seen_parts.append(p) for p in parts if p not in seen_parts]
+        row_fill = mf(GRADE_COLOR.get(grade,'FFFFFF'))
+        sales_val = get_sales(r['seller_name'])
+        vals = [r.get('rank',''), grade, r['seller_name'], score,
+                r.get('display_cnt',0), ' / '.join(seen_parts[:5]), sales_val]
+        for ci,v in enumerate(vals,1):
             c=ws.cell(row=ri,column=ci,value=v)
             c.font=Font(size=9,name='맑은 고딕'); c.border=bdr
-            c.alignment=ctr if ci!=3 else left
-            if grade in GRADE_COLOR: c.fill=fill
-        ws.row_dimensions[ri].height=15
+            c.alignment=ctr if ci not in (3,6) else left
+            if grade in GRADE_COLOR and score>0: c.fill=row_fill
+            if ci==7:  # 수정3: 연매출 쉼표 형식
+                c.number_format='#,##0'; c.alignment=right_a
+        ws.row_dimensions[ri].height=15; ri+=1
+
+    # 수정1: 점수 없는 매장도 포함 (구분선 추가)
+    if no_score:
+        c = ws.cell(row=ri,column=1,value='— 미참여 매장 —')
+        ws.merge_cells(f'A{ri}:G{ri}')
+        c.font=Font(size=9,name='맑은 고딕',color='9CA3AF',italic=True)
+        c.fill=mf('F9FAFB'); c.alignment=ctr
+        ws.row_dimensions[ri].height=13; ri+=1
+        for r in no_score:
+            seller = r['seller_name']
+            for ci,v in enumerate(['—', '—', seller, 0, 0, '미참여', get_sales(seller)],1):
+                c=ws.cell(row=ri,column=ci,value=v)
+                c.font=Font(size=9,name='맑은 고딕',color='9CA3AF'); c.border=bdr
+                c.alignment=ctr if ci!=3 else left
+                if ci==7: c.number_format='#,##0'; c.alignment=right_a
+            ws.row_dimensions[ri].height=14; ri+=1
 
     ws.freeze_panes='A3'
     buf=io.BytesIO(); wb.save(buf); buf.seek(0)
@@ -5611,18 +5386,26 @@ def api_display_export_campaign():
     ).fetchall()}
     conn.close()
 
-    wb = openpyxl.Workbook(); ws = wb.active; ws.title='캠페인점수'
+    # 수정5: 시트 제목 = 캠페인이름 (Sheet1 제거)
+    camp_name = campaign.get('campaign_name','캠페인')
+    score_in  = campaign.get('score_in_period',5)
+    score_out = campaign.get('score_out_period',2)
+    wb = openpyxl.Workbook(); ws = wb.active
+    ws.title = (camp_name[:28] + f'+{score_in}pt')[:31]  # 엑셀 탭명 최대 31자
+
     def mf(hex_): return PatternFill("solid", fgColor=hex_)
-    thin=Side(style='thin',color='DDDDDD'); bdr=Border(left=thin,right=thin,top=thin,bottom=thin)
-    ctr=Alignment(horizontal='center',vertical='center'); left=Alignment(horizontal='left',vertical='center')
+    thin=Side(style='thin',color='E5E7EB'); bdr=Border(left=thin,right=thin,top=thin,bottom=thin)
+    ctr=Alignment(horizontal='center',vertical='center')
+    left=Alignment(horizontal='left',vertical='center')
+    right_a=Alignment(horizontal='right',vertical='center')
     col_count = 3+len(products)+2
 
     ws.merge_cells(f'A1:{get_column_letter(col_count)}1')
-    c=ws.cell(row=1,column=1,value=f"{campaign.get('campaign_name','캠페인')} ({year}년)")
+    c=ws.cell(row=1,column=1,value=f"{camp_name} ({year}년)")
     c.font=Font(bold=True,size=13,name='맑은 고딕',color='FFFFFF'); c.fill=mf('1E3A5F'); c.alignment=ctr
     ws.row_dimensions[1].height=26
 
-    period=f"기한: {campaign.get('period_start','')} ~ {campaign.get('period_end','')}  |  기한내 +{campaign.get('score_in_period',5)}pt / 기한후 +{campaign.get('score_out_period',2)}pt"
+    period=f"기한: {campaign.get('period_start','')} ~ {campaign.get('period_end','')}  |  기한내 +{score_in}pt / 기한후 +{score_out}pt"
     ws.merge_cells(f'A2:{get_column_letter(col_count)}2')
     c=ws.cell(row=2,column=1,value=period); c.font=Font(size=9,name='맑은 고딕'); c.fill=mf('EFF6FF'); c.alignment=left
     ws.row_dimensions[2].height=14
@@ -5637,6 +5420,10 @@ def api_display_export_campaign():
         ws.column_dimensions[get_column_letter(4+pi)].width=max(14,len(products[pi])+2)
     ws.column_dimensions[get_column_letter(4+len(products))].width=8
     ws.column_dimensions[get_column_letter(5+len(products))].width=16
+
+    # 공백 제거 매칭
+    sales_nospace = {k.replace(' ',''):v for k,v in sales_map.items()}
+    def get_sales(s): return sales_map.get(s, sales_nospace.get(s.replace(' ',''), 0)) or 0
 
     seller_map={}
     for r in records:
@@ -5660,12 +5447,14 @@ def api_display_export_campaign():
             ws.row_dimensions[ri].height=13; ri+=1; prev_g=g
         info=seller_map[seller]; sc=info['total']
         sc_color='16A34A' if sc>=5 else 'D97706' if sc>=2 else '9CA3AF'
-        row=[g,seller,sc]+[f"✓{info['prods'][p]['score']}pt" if info['prods'].get(p,{}).get('has_display') else '—' if p in info['prods'] else '' for p in products]+[info['cnt'],sales_map.get(seller,0)]
+        row=[g,seller,sc]+[f"✓{info['prods'][p]['score']}pt" if info['prods'].get(p,{}).get('has_display') else '—' if p in info['prods'] else '' for p in products]+[info['cnt'],get_sales(seller)]
         for ci,v in enumerate(row,1):
             c=ws.cell(row=ri,column=ci,value=v); c.font=Font(size=9,name='맑은 고딕'); c.border=bdr
             c.alignment=ctr if ci!=2 else left
             if ci==3 and sc>0: c.font=Font(bold=True,size=10,name='맑은 고딕',color=sc_color)
-            if ci>3 and ci<=3+len(products) and str(v).startswith('✓'): c.fill=mf('DCFCE7')
+            if ci>3 and ci<=3+len(products) and str(v).startswith('✓'): c.fill=mf('EFF6FF')  # 수정4: 흰 배경 유지
+            if ci==3+len(products)+2:  # 수정3: 연매출 쉼표 형식
+                c.number_format='#,##0'; c.alignment=right_a
         ws.row_dimensions[ri].height=14; ri+=1
 
     ws.freeze_panes='A4'
