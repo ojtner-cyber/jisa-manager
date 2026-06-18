@@ -1998,12 +1998,16 @@ def export_xlsx_monthly():
     sellers_list = [r[0] for r in sellers_raw]
 
     def brand_key(nm):
-        nm=(nm or '').replace('_',' ').lower()
-        if '베이비하우스' in nm: return (0,nm)
-        if '링크맘' in nm:       return (1,nm)
-        if '베이비파크' in nm:   return (2,nm)
-        if '베네피아' in nm:     return (3,nm)
-        return (9,nm)
+        nm_lower=(nm or '').replace('_',' ').lower()
+        if '베이비하우스' in nm_lower: return (0,nm_lower)
+        if '링크맘' in nm_lower:       return (1,nm_lower)
+        if '베네피아' in nm_lower:     return (1,nm_lower)   # 링크맘과 같은 그룹
+        if '베이비플러스' in nm_lower:  return (1,nm_lower)
+        if '베이비파크' in nm_lower:   return (2,nm_lower)
+        if '베이비스토리' in nm_lower:  return (3,nm_lower)
+        if '베이비스토어' in nm_lower:  return (3,nm_lower)
+        if '베이비세븐' in nm_lower:   return (4,nm_lower)
+        return (9,nm_lower)
     sellers_list.sort(key=brand_key)
 
     # 데이터 조회 — 매장×월×품목그룹 (item_group, item_name 모두 가져와 remap)
@@ -2107,17 +2111,23 @@ def export_xlsx_monthly():
                 ws.column_dimensions[get_column_letter(col_start+mo_i*(len(brands)+1)+b_i)].width=11
 
         # 데이터 행 (5행부터)
-        branch_group = {}
-        try:
-            bg=get_db()
-            for r in bg.execute("SELECT name,note FROM branches").fetchall():
-                branch_group[r[0]]=r[1] or ''
-            bg.close()
-        except: pass
+        # 업체구분: real_seller 이름에서 자동 파악
+        def detect_group(seller_name):
+            nm = (seller_name or '').lower().replace(' ','').replace('_','')
+            if '베이비하우스' in nm: return '베이비하우스'
+            if '링크맘' in nm or '베네피아' in nm or '베이비플러스' in nm: return '링크맘'
+            if '베이비파크' in nm: return '베이비파크'
+            if '베이비스토리' in nm or '베이비스토어' in nm: return '베이비스토리'
+            if '베이비세븐' in nm: return '베이비세븐'
+            return '기타'
 
+        # 업체구분으로 정렬 (이미 brand_key로 정렬됨, 순서 유지)
         prev_grp=None
         for ri,s in enumerate(sellers_list,5):
-            grp=branch_group.get(s,''); gv=grp if grp!=prev_grp else ''; prev_grp=grp
+            grp=detect_group(s)
+            # 수정4: 그룹이 바뀔 때만 업체구분 표시
+            gv=grp if grp!=prev_grp else ''
+            prev_grp=grp
             # 매장정보 열 (A~C) — 테두리 있음
             for ci,val in enumerate([gv,s,s],1):
                 c=ws.cell(row=ri,column=ci,value=val)
@@ -4724,7 +4734,7 @@ def api_export_display():
             data_map[k2] = data_map.get(k2, 0) + (r[2] or 0)
 
         n_color = len(real_colors)
-        sum_col = 5 + n_color
+        sum_col = 6 + n_color   # col6~(5+n_color) = 색상, col(6+n_color) = 합계
 
         # 행1: 타이틀
         last_col = get_column_letter(sum_col)
@@ -5127,7 +5137,7 @@ def api_display_scores():
             SELECT dr.seller_name,
                    SUM(dr.score) total_score,
                    COUNT(CASE WHEN dr.has_display=1 THEN 1 END) display_cnt,
-                   GROUP_CONCAT(dc.campaign_name || '/' || dr.product_name || ':' || dr.score, '|') detail_raw
+                   GROUP_CONCAT(dc.campaign_name || '§' || dr.product_name || '§' || dr.score, '|') detail_raw
             FROM display_record dr
             JOIN display_campaign dc ON dr.campaign_id=dc.id
             WHERE dr.has_display=1
@@ -5186,11 +5196,15 @@ def api_display_scores():
             detail_items = []
             if detail_raw:
                 for part in detail_raw.split('|'):
-                    if ':' in part and '/' in part:
+                    parts = part.split('§')
+                    if len(parts) >= 3:
                         try:
-                            camp_prod, sc = part.rsplit(':',1)
-                            camp, prod = camp_prod.split('/',1)
+                            camp, prod, sc = parts[0], parts[1], parts[2]
                             detail_items.append({'campaign':camp, 'product':prod, 'score':int(sc)})
+                        except: pass
+                    elif len(parts) == 2:
+                        try:
+                            detail_items.append({'campaign': parts[0], 'product': '', 'score': int(parts[1])})
                         except: pass
             result.append({
                 'seller_name':  s,
@@ -5261,7 +5275,7 @@ def api_display_export_ranking():
     records = [dict(r) for r in conn.execute("""
         SELECT dr.seller_name, SUM(dr.score) total_score,
                COUNT(CASE WHEN dr.has_display=1 THEN 1 END) display_cnt,
-               GROUP_CONCAT(dr.product_name || ':' || dr.score, '|') detail_raw
+               GROUP_CONCAT(dc.campaign_name || '|' || dr.product_name || '|' || dr.score, '§') detail_raw
         FROM display_record dr JOIN display_campaign dc ON dr.campaign_id=dc.id
         WHERE dr.has_display=1 GROUP BY dr.seller_name ORDER BY total_score DESC
     """).fetchall()]
@@ -5316,20 +5330,30 @@ def api_display_export_ranking():
     ri = 3
     for r in records:
         grade = r.get('grade','E'); score = r.get('total_score',0) or 0
-        # 수정2: 제품명:점수 형식으로만 (캠페인명 제거)
+        # 수정3: 상세내역 = 캠페인명+점수pt 형식
         parts = []
-        for part in (r.get('detail_raw','') or '').split('|'):
-            if ':' in part:
+        for item in (r.get('detail_raw','') or '').split('§'):
+            if item.count('|') >= 2:
                 try:
-                    prod, sc = part.rsplit(':',1)
+                    camp, prod, sc = item.split('|', 2)
+                    parts.append(f"{camp.strip()} +{sc}pt")
+                except: pass
+            elif '|' in item:
+                try:
+                    prod, sc = item.split('|', 1)
                     parts.append(f"{prod.strip()} +{sc}pt")
                 except: pass
-        # 중복 제거
-        seen_parts = []; [seen_parts.append(p) for p in parts if p not in seen_parts]
+        # 중복 제거 (같은 캠페인 여러 제품 → 첫 번째 점수)
+        seen_camps = {}
+        for p in parts:
+            camp_key = p.rsplit('+', 1)[0].strip()
+            if camp_key not in seen_camps:
+                seen_camps[camp_key] = p
+        unique_parts = list(seen_camps.values())
         row_fill = mf(GRADE_COLOR.get(grade,'FFFFFF'))
         sales_val = get_sales(r['seller_name'])
         vals = [r.get('rank',''), grade, r['seller_name'], score,
-                r.get('display_cnt',0), ' / '.join(seen_parts[:5]), sales_val]
+                r.get('display_cnt',0), ' / '.join(unique_parts[:4]), sales_val]
         for ci,v in enumerate(vals,1):
             c=ws.cell(row=ri,column=ci,value=v)
             c.font=Font(size=9,name='맑은 고딕'); c.border=bdr

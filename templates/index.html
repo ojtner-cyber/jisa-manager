@@ -1774,7 +1774,7 @@ async function loadAllRanking(year){
     const grade=r.grade||'E';
     const score=r.total_score||0;
     const detail=(r.detail_items||[]).slice(0,4).map(d=>
-      `<span style="font-size:10px;background:var(--bg);border:1px solid var(--border);padding:1px 6px;border-radius:10px;margin-right:3px">${d.product} +${d.score}</span>`
+      `<span style="font-size:10px;background:var(--bg);border:1px solid var(--border);padding:1px 6px;border-radius:10px;margin-right:3px">${d.campaign||d.product} +${d.score}pt</span>`
     ).join('');
     const gStyle=GRADE_STYLE[grade]||GRADE_STYLE.E;
     return`<tr>
