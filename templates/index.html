@@ -995,10 +995,35 @@ td.center{text-align:center}
         </div>
       </div>
 
+      <!-- 전체 합산 패널 -->
+      <div style="background:var(--paper);border:1.5px solid var(--border);border-radius:var(--r-lg);padding:16px 20px;margin-bottom:20px">
+        <div style="display:flex;align-items:center;justify-content:space-between">
+          <div>
+            <div style="font-size:13px;font-weight:700;color:var(--t-900)">📊 전체 합산 랭킹</div>
+            <div style="font-size:11px;color:var(--t-300);margin-top:2px">모든 캠페인 점수 합산 · A/B/C/D 등급 분류</div>
+          </div>
+          <button class="btn btn-ghost btn-sm" onclick="toggleAllRanking()" id="all-ranking-btn">▼ 열기</button>
+        </div>
+        <div id="all-ranking-wrap" style="display:none;margin-top:16px">
+          <div id="all-ranking-kpi" style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:16px"></div>
+          <div class="tw">
+            <table><thead><tr>
+              <th style="width:6%;text-align:center">순위</th>
+              <th style="width:8%;text-align:center">등급</th>
+              <th style="width:22%">매장명</th>
+              <th style="width:10%;text-align:center">누적 점수</th>
+              <th style="width:36%">상세 내역</th>
+              <th style="width:12%;text-align:right">연매출</th>
+            </tr></thead>
+            <tbody id="all-ranking-tbody"></tbody>
+          </table></div>
+        </div>
+      </div>
+
       <!-- 캠페인 목록 -->
       <div id="display-campaigns-wrap" style="margin-bottom:24px"></div>
 
-      <!-- 현재 선택 캠페인 -->
+      <!-- 현재 선택 캠페인 상세 -->
       <div id="display-detail-wrap" style="display:none">
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:10px">
           <div style="font-size:14px;font-weight:700;color:var(--t-900)" id="display-detail-title">캠페인 상세</div>
@@ -1011,19 +1036,17 @@ td.center{text-align:center}
             <button class="btn btn-xs" style="background:var(--red-lt);color:var(--red)" onclick="deleteCampaign()">삭제</button>
           </div>
         </div>
-        <!-- KPI -->
         <div id="display-kpi" style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:20px"></div>
-        <!-- 업로드 이력 -->
         <div id="display-upload-history" style="margin-bottom:18px"></div>
-        <!-- 매장별 점수 테이블 -->
         <div class="tw">
           <table><thead><tr>
             <th style="width:4%">#</th>
-            <th style="width:20%">매장명</th>
-            <th style="width:8%;text-align:center">누적 점수</th>
-            <th style="width:38%">제품별 진열 현황</th>
+            <th style="width:8%">구분</th>
+            <th style="width:18%">매장명</th>
+            <th style="width:8%;text-align:center">점수</th>
+            <th style="width:40%">제품별 진열 현황</th>
             <th style="width:12%;text-align:right">연매출</th>
-            <th style="width:8%;text-align:center">수정</th>
+            <th style="width:7%;text-align:center">수정</th>
           </tr></thead>
           <tbody id="display-tbody"></tbody>
         </table></div>
@@ -1045,8 +1068,7 @@ td.center{text-align:center}
             </select></div>
           <div><div class="flbl">유형</div>
             <select class="fi" id="cm-type">
-              <option value="display">진열신청</option>
-              <option value="event">행사신청</option>
+              <option value="display">진열신청</option><option value="event">행사신청</option>
             </select></div>
         </div>
         <div style="background:var(--p-lt);border-radius:var(--r-md);padding:14px;margin-bottom:14px">
@@ -1056,14 +1078,9 @@ td.center{text-align:center}
             <div><div class="flbl">기한 종료</div><input class="fi" type="date" id="cm-end"></div>
           </div>
           <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
-            <div><div class="flbl">기한 내 점수</div>
-              <input class="fi" type="number" id="cm-score-in" value="5" min="1" max="10"></div>
-            <div><div class="flbl">기한 후 점수</div>
-              <input class="fi" type="number" id="cm-score-out" value="2" min="1" max="10"></div>
+            <div><div class="flbl">기한 내 점수</div><input class="fi" type="number" id="cm-score-in" value="5" min="1" max="20"></div>
+            <div><div class="flbl">기한 후 점수</div><input class="fi" type="number" id="cm-score-out" value="2" min="1" max="20"></div>
           </div>
-        </div>
-        <div style="font-size:11px;color:var(--t-300);margin-bottom:16px">
-          * 기한 미설정 시 업로드 시점의 점수가 적용됩니다
         </div>
         <div style="display:flex;gap:8px;justify-content:flex-end">
           <button class="btn btn-ghost" onclick="document.getElementById('campaign-modal').style.display='none'">취소</button>
@@ -1075,11 +1092,12 @@ td.center{text-align:center}
 
     <!-- 점수 수동 수정 모달 -->
     <div id="display-score-modal" style="display:none;position:fixed;inset:0;background:rgba(16,24,40,.4);z-index:1000;align-items:center;justify-content:center">
-      <div style="background:var(--paper);border-radius:var(--r-xl);padding:24px;width:min(440px,95vw);box-shadow:0 24px 60px rgba(0,0,0,.2)">
-        <div style="font-size:14px;font-weight:700;margin-bottom:16px" id="dsm-seller"></div>
+      <div style="background:var(--paper);border-radius:var(--r-xl);padding:24px;width:min(480px,95vw);max-height:85vh;overflow-y:auto;box-shadow:0 24px 60px rgba(0,0,0,.2)">
+        <div style="font-size:14px;font-weight:700;margin-bottom:4px" id="dsm-seller"></div>
+        <div style="font-size:12px;color:var(--t-300);margin-bottom:16px" id="dsm-campaign-name"></div>
         <div id="dsm-fields"></div>
         <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:16px">
-          <button class="btn btn-ghost" onclick="document.getElementById('display-score-modal').style.display='none'">닫기</button>
+          <button class="btn btn-ghost" onclick="document.getElementById('display-score-modal').style.display='none'">취소</button>
           <button class="btn btn-primary" onclick="saveDisplayManual()">저장</button>
         </div>
       </div>
@@ -1669,12 +1687,23 @@ function toggleAceCard(ci){
 // ── 행사 및 진열 신청 (v2) ───────────────────────
 let currentCampaignId = null;
 let currentCampaignData = null;
+let allRankingOpen = false;
+
+// 업체구분 정렬
+const SELLER_GROUPS = ['베이비하우스','링크맘','베이비파크','베이비세븐','베이비스토리','베이비스토어'];
+function sellerGroupKey(name){
+  for(let i=0;i<SELLER_GROUPS.length;i++) if(name.includes(SELLER_GROUPS[i])) return i;
+  return SELLER_GROUPS.length;
+}
+function sellerGroupLabel(name){
+  for(const g of SELLER_GROUPS) if(name.includes(g)) return g;
+  return '기타';
+}
 
 async function loadDisplay(){
   const yrSel=document.getElementById('display-year');
   if(yrSel&&!yrSel.value){
-    const cur=new Date().getFullYear();
-    yrSel.innerHTML='';
+    const cur=new Date().getFullYear(); yrSel.innerHTML='';
     for(let y=cur;y>=cur-3;y--) yrSel.innerHTML+=`<option value="${y}">${y}년</option>`;
   }
   const year=yrSel?.value||new Date().getFullYear();
@@ -1685,6 +1714,58 @@ async function loadDisplay(){
     const found=campaigns.find(c=>c.id===currentCampaignId);
     if(found) await loadCampaignDetail(currentCampaignId, year);
   }
+  if(allRankingOpen) loadAllRanking(year);
+}
+
+async function toggleAllRanking(){
+  allRankingOpen=!allRankingOpen;
+  const wrap=document.getElementById('all-ranking-wrap');
+  const btn=document.getElementById('all-ranking-btn');
+  wrap.style.display=allRankingOpen?'block':'none';
+  btn.textContent=allRankingOpen?'▲ 닫기':'▼ 열기';
+  if(allRankingOpen){
+    const year=document.getElementById('display-year')?.value||new Date().getFullYear();
+    await loadAllRanking(year);
+  }
+}
+
+async function loadAllRanking(year){
+  const data=await api(`/api/display/scores?year=${year}`);
+  if(!data) return;
+  // KPI
+  const grades={A:0,B:0,C:0,D:0,E:0};
+  data.forEach(r=>{ if(r.total_score>0) grades[r.grade||'E']++; });
+  document.getElementById('all-ranking-kpi').innerHTML=[
+    {l:'A등급 (1~25위)',v:`${grades.A}개`,c:'#16A34A'},
+    {l:'B등급 (26~50위)',v:`${grades.B}개`,c:'var(--p)'},
+    {l:'C등급 (51~75위)',v:`${grades.C}개`,c:'var(--amber)'},
+    {l:'D등급 (76~100위)',v:`${grades.D}개`,c:'var(--t-300)'},
+  ].map(k=>`<div class="kpi"><div class="kpi-accent" style="background:${k.c}"></div>
+    <div class="kpi-lbl">${k.l}</div><div class="kpi-val" style="font-size:18px;color:${k.c}">${k.v}</div></div>`).join('');
+
+  const GRADE_STYLE={
+    A:'background:#DCFCE7;color:#16A34A',
+    B:'background:#DBEAFE;color:var(--p)',
+    C:'background:#FEF9C3;color:#D97706',
+    D:'background:#F3F4F6;color:#9CA3AF',
+    E:'background:#F3F4F6;color:#D1D5DB',
+  };
+  document.getElementById('all-ranking-tbody').innerHTML=data.map(r=>{
+    const grade=r.grade||'E';
+    const score=r.total_score||0;
+    const detail=(r.detail_items||[]).slice(0,4).map(d=>
+      `<span style="font-size:10px;background:var(--bg);border:1px solid var(--border);padding:1px 6px;border-radius:10px;margin-right:3px">${d.product} +${d.score}</span>`
+    ).join('');
+    const gStyle=GRADE_STYLE[grade]||GRADE_STYLE.E;
+    return`<tr>
+      <td style="text-align:center;font-weight:700;font-size:13px">${score>0?r.rank:'—'}</td>
+      <td style="text-align:center"><span style="${gStyle};padding:3px 10px;border-radius:20px;font-size:12px;font-weight:700">${score>0?grade:'—'}</span></td>
+      <td style="font-weight:600;font-size:13px">${r.seller_name}</td>
+      <td style="text-align:center;font-weight:800;font-size:15px;color:${score>0?'var(--t-900)':'var(--t-300)'}">${score||0}pt</td>
+      <td style="white-space:normal;line-height:1.8">${detail||'<span style="color:var(--t-300);font-size:11px">진열 없음</span>'}</td>
+      <td style="text-align:right;font-size:12px;font-weight:600;color:var(--p)">${N(r.year_sales||0)}원</td>
+    </tr>`;
+  }).join('');
 }
 
 function renderCampaigns(campaigns, year){
@@ -1692,8 +1773,7 @@ function renderCampaigns(campaigns, year){
   if(!campaigns.length){
     wrap.innerHTML=`<div style="background:var(--paper);border:1.5px dashed var(--border-md);border-radius:var(--r-lg);padding:40px;text-align:center;color:var(--t-300)">
       <div style="font-size:24px;margin-bottom:10px">📋</div>
-      <div style="font-size:14px">캠페인이 없습니다</div>
-      <div style="font-size:12px;margin-top:4px">상단의 "+ 캠페인 만들기"로 시작하세요</div>
+      <div>캠페인이 없습니다 — "+ 캠페인 만들기"로 시작하세요</div>
     </div>`;
     return;
   }
@@ -1706,13 +1786,14 @@ function renderCampaigns(campaigns, year){
     const status=inPeriod?'기한 내':expired?'기한 종료':'기한 미설정';
     const statusColor=inPeriod?'var(--green)':expired?'var(--t-300)':'var(--amber)';
     const isActive=c.id===currentCampaignId;
-    return`<div onclick="loadCampaignDetail(${c.id})" style="background:var(--paper);border:1.5px solid ${isActive?'var(--p)':'var(--border)'};border-radius:var(--r-lg);padding:16px;cursor:pointer;transition:.15s"
+    return`<div onclick="loadCampaignDetail(${c.id})"
+      style="background:var(--paper);border:1.5px solid ${isActive?'var(--p)':'var(--border)'};border-radius:var(--r-lg);padding:16px;cursor:pointer;transition:.15s"
       onmouseenter="this.style.borderColor='var(--p-mid)'" onmouseleave="this.style.borderColor='${isActive?'var(--p)':'var(--border)'}'">
       <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:8px">
         <div style="font-size:13px;font-weight:700;color:var(--t-900)">${c.campaign_name}</div>
         <span style="font-size:10px;font-weight:700;color:${statusColor};background:${statusColor}18;padding:2px 7px;border-radius:20px;white-space:nowrap">${status}</span>
       </div>
-      <div style="font-size:11px;color:var(--t-300);margin-bottom:10px">
+      <div style="font-size:11px;color:var(--t-300);margin-bottom:8px">
         ${c.brand?`<span style="background:var(--p-lt);color:var(--p);padding:1px 6px;border-radius:10px;margin-right:4px">${c.brand}</span>`:''}
         ${c.event_type==='event'?'🎪 행사신청':'📊 진열신청'}
       </div>
@@ -1720,7 +1801,7 @@ function renderCampaigns(campaigns, year){
       <div style="font-size:11px;display:flex;gap:12px;color:var(--t-400)">
         <span>기한내 <b style="color:var(--green)">+${c.score_in_period}pt</b></span>
         <span>기한후 <b style="color:var(--t-300)">+${c.score_out_period}pt</b></span>
-        <span>진열매장 <b>${c.total_records}개</b></span>
+        <span>진열 <b>${c.total_records}개</b></span>
       </div>
     </div>`;
   }).join('')}
@@ -1729,13 +1810,13 @@ function renderCampaigns(campaigns, year){
 
 async function loadCampaignDetail(cid, year){
   currentCampaignId=cid;
-  const campaigns=await api('/api/display/campaigns');
-  currentCampaignData=campaigns?.find(c=>c.id===cid);
-  if(!currentCampaignData) return;
-
   year=year||document.getElementById('display-year')?.value||new Date().getFullYear();
-  const scores=await api(`/api/display/scores?campaign_id=${cid}&year=${year}`);
-  if(!scores) return;
+  const [campaigns, scores]=await Promise.all([
+    api('/api/display/campaigns'),
+    api(`/api/display/scores?campaign_id=${cid}&year=${year}`),
+  ]);
+  currentCampaignData=campaigns?.find(c=>c.id===cid);
+  if(!currentCampaignData||!scores) return;
 
   document.getElementById('display-detail-wrap').style.display='block';
   document.getElementById('display-detail-title').textContent=
@@ -1743,59 +1824,57 @@ async function loadCampaignDetail(cid, year){
 
   // KPI
   const total=scores.length;
-  const hasDisplay=scores.filter(s=>(s.total_score||0)>0).length;
-  const allProducts=[...new Set(scores.flatMap(s=>(s.products||[]).map(p=>p.product_name)))];
+  const hasDis=scores.filter(s=>(s.total_score||0)>0).length;
+  const allProds=[...new Set(scores.flatMap(s=>(s.products||[]).map(p=>p.product_name)))];
   document.getElementById('display-kpi').innerHTML=[
     {l:'전체 매장',v:`${total}개`,c:'var(--p)'},
-    {l:'진열 완료',v:`${hasDisplay}개 (${total?Math.round(hasDisplay/total*100):0}%)`,c:'var(--green)'},
-    {l:'미진열',v:`${total-hasDisplay}개`,c:'var(--amber)'},
-    {l:'제품 수',v:`${allProducts.length}종`,c:'var(--purple)'},
+    {l:'진열 완료',v:`${hasDis}개 (${total?Math.round(hasDis/total*100):0}%)`,c:'var(--green)'},
+    {l:'미진열',v:`${total-hasDis}개`,c:'var(--amber)'},
+    {l:'제품 수',v:`${allProds.length}종`,c:'var(--purple)'},
   ].map(k=>`<div class="kpi"><div class="kpi-accent" style="background:${k.c}"></div>
     <div class="kpi-lbl">${k.l}</div><div class="kpi-val" style="color:${k.c}">${k.v}</div></div>`).join('');
 
   // 업로드 이력
   const ups=currentCampaignData.uploads||[];
-  const prodMap={};
-  ups.forEach(u=>{ (prodMap[u.product_name]=prodMap[u.product_name]||[]).push(u); });
   document.getElementById('display-upload-history').innerHTML=ups.length
     ?`<div style="font-size:12px;font-weight:700;color:var(--t-700);margin-bottom:8px">업로드 이력 (${ups.length}개 시트)</div>
-      <div style="display:flex;flex-wrap:wrap;gap:6px">
-      ${ups.map(u=>`<span style="background:var(--bg);border:1px solid var(--border);border-radius:var(--r-sm);padding:4px 10px;font-size:11px">
-        <b>${u.product_name}</b> · ${u.upload_date||'—'} · ${u.upload_seq}차 업로드
-      </span>`).join('')}
-      </div>`
+      <div style="display:flex;flex-wrap:wrap;gap:6px">${ups.map(u=>`<span style="background:var(--bg);border:1px solid var(--border);border-radius:var(--r-sm);padding:4px 10px;font-size:11px"><b>${u.product_name}</b> · ${u.upload_date||'—'} · ${u.upload_seq}차</span>`).join('')}</div>`
     :'<div style="font-size:12px;color:var(--t-300)">아직 업로드 이력이 없습니다</div>';
 
-  // 테이블
-  renderDisplayTable(scores, allProducts);
-
-  // 캠페인 목록 하이라이트
-  const campaigns2=await api('/api/display/campaigns');
-  renderCampaigns(campaigns2, year);
+  renderDisplayTable(scores, allProds);
+  renderCampaigns(campaigns, year);
 }
 
-function renderDisplayTable(scores, allProducts){
+function renderDisplayTable(scores, allProds){
   if(!scores.length){
-    document.getElementById('display-tbody').innerHTML=`<tr><td colspan="6" style="text-align:center;padding:32px;color:var(--t-300)">데이터가 없습니다</td></tr>`;
+    document.getElementById('display-tbody').innerHTML=`<tr><td colspan="7" style="text-align:center;padding:32px;color:var(--t-300)">데이터가 없습니다</td></tr>`;
     return;
   }
+  // 업체구분으로 그룹핑하여 표시
+  let prevGroup='';
   document.getElementById('display-tbody').innerHTML=scores.map((r,i)=>{
-    const total=r.total_score||0;
-    const sc=total>=5?'var(--green)':total>=2?'var(--amber)':'var(--t-300)';
-    const products=r.products||[];
-    const prodCells=products.map(p=>{
+    const score=r.total_score||0;
+    const sc=score>0?'var(--green)':'var(--t-300)';
+    const group=sellerGroupLabel(r.seller_name);
+    let groupRow='';
+    if(group!==prevGroup){
+      prevGroup=group;
+      groupRow=`<tr style="background:var(--bg)"><td colspan="7" style="padding:8px 14px;font-size:11px;font-weight:700;color:var(--t-500);letter-spacing:.3px;text-transform:uppercase">${group}</td></tr>`;
+    }
+    const prods=(r.products||[]).map(p=>{
       const done=p.has_display;
-      return`<span style="display:inline-flex;align-items:center;gap:4px;background:${done?'var(--green-lt)':'var(--bg)'};color:${done?'var(--green)':'var(--t-300)'};border:1px solid ${done?'var(--green)':'var(--border)'};padding:2px 8px;border-radius:20px;font-size:10px;margin:2px">
-        ${done?'✓':'○'} ${p.product_name}${done&&p.score?` +${p.score}pt`:''}
-      </span>`;
+      return`<span style="display:inline-flex;align-items:center;gap:3px;background:${done?'var(--green-lt)':'var(--bg)'};color:${done?'var(--green)':'var(--t-300)'};border:1px solid ${done?'var(--green)':'var(--border)'};padding:2px 7px;border-radius:20px;font-size:10px;margin:2px">${done?'✓':'○'} ${p.product_name}${done&&p.score?` +${p.score}pt`:''}</span>`;
     }).join('');
-    return`<tr>
+    // seller_name 이스케이프
+    const safeSeller=r.seller_name.replace(/'/g,"\'").replace(/"/g,'&quot;');
+    return groupRow+`<tr>
       <td style="text-align:center;color:var(--t-300);font-size:12px">${i+1}</td>
+      <td style="font-size:11px;color:var(--t-300)">${group}</td>
       <td style="font-weight:600;font-size:13px">${r.seller_name}</td>
-      <td style="text-align:center"><span style="font-size:15px;font-weight:800;color:${sc}">${total}pt</span></td>
-      <td style="white-space:normal;line-height:1.8">${prodCells||'—'}</td>
-      <td style="text-align:right;font-weight:700;color:var(--p);font-size:12px">${N(r.year_sales||0)}원</td>
-      <td style="text-align:center"><button class="btn btn-ghost btn-xs" onclick="openDisplayScoreModal('${r.seller_name.replace(/'/g,"\'")}')">수정</button></td>
+      <td style="text-align:center"><span style="font-size:14px;font-weight:800;color:${sc}">${score}pt</span></td>
+      <td style="white-space:normal;line-height:1.8">${prods||'<span style="color:var(--t-300);font-size:11px">—</span>'}</td>
+      <td style="text-align:right;font-weight:600;color:var(--p);font-size:12px">${N(r.year_sales||0)}원</td>
+      <td style="text-align:center"><button class="btn btn-ghost btn-xs" onclick="openDisplayScoreModal('${safeSeller}')">수정</button></td>
     </tr>`;
   }).join('');
 }
@@ -1807,9 +1886,9 @@ function openCreateCampaign(){
   document.getElementById('cm-brand').value='';
   document.getElementById('cm-type').value='display';
   const today=new Date().toISOString().slice(0,10);
-  const end=new Date(Date.now()+14*86400000).toISOString().slice(0,10);
+  const end2=new Date(Date.now()+14*86400000).toISOString().slice(0,10);
   document.getElementById('cm-start').value=today;
-  document.getElementById('cm-end').value=end;
+  document.getElementById('cm-end').value=end2;
   document.getElementById('cm-score-in').value=5;
   document.getElementById('cm-score-out').value=2;
   document.getElementById('campaign-modal').style.display='flex';
@@ -1833,22 +1912,18 @@ function editCampaign(){
 async function saveCampaign(){
   const editId=document.getElementById('cm-edit-id').value;
   const d={
-    campaign_name: document.getElementById('cm-name').value.trim(),
-    brand:         document.getElementById('cm-brand').value,
-    event_type:    document.getElementById('cm-type').value,
-    period_start:  document.getElementById('cm-start').value,
-    period_end:    document.getElementById('cm-end').value,
+    campaign_name:   document.getElementById('cm-name').value.trim(),
+    brand:           document.getElementById('cm-brand').value,
+    event_type:      document.getElementById('cm-type').value,
+    period_start:    document.getElementById('cm-start').value,
+    period_end:      document.getElementById('cm-end').value,
     score_in_period:  parseInt(document.getElementById('cm-score-in').value)||5,
     score_out_period: parseInt(document.getElementById('cm-score-out').value)||2,
   };
   if(!d.campaign_name){toast('캠페인 이름을 입력해주세요',false);return;}
   let r;
-  if(editId){
-    r=await api('/api/display/campaign/update',{method:'POST',body:{...d,id:parseInt(editId)}});
-  } else {
-    r=await api('/api/display/campaign/create',{method:'POST',body:d});
-    if(r?.id) currentCampaignId=r.id;
-  }
+  if(editId){ r=await api('/api/display/campaign/update',{method:'POST',body:{...d,id:parseInt(editId)}}); }
+  else { r=await api('/api/display/campaign/create',{method:'POST',body:d}); if(r?.id) currentCampaignId=r.id; }
   document.getElementById('campaign-modal').style.display='none';
   loadDisplay();
   toast(editId?'수정됐습니다':'캠페인 생성 완료');
@@ -1857,11 +1932,7 @@ async function saveCampaign(){
 async function deleteCampaign(){
   if(!currentCampaignId||!confirm('이 캠페인과 모든 점수 데이터를 삭제할까요?')) return;
   const r=await api('/api/display/campaign/delete',{method:'POST',body:{id:currentCampaignId}});
-  if(r?.ok){
-    currentCampaignId=null;
-    document.getElementById('display-detail-wrap').style.display='none';
-    loadDisplay(); toast('삭제됐습니다');
-  }
+  if(r?.ok){ currentCampaignId=null; document.getElementById('display-detail-wrap').style.display='none'; loadDisplay(); toast('삭제됐습니다'); }
 }
 
 async function uploadDisplayFile(input){
@@ -1875,44 +1946,55 @@ async function uploadDisplayFile(input){
   const r=await fetch('/api/display/upload',{method:'POST',body:fd});
   const d=await r.json();
   if(d.ok){
-    const sheetSummary=d.sheets.map(s=>`${s.product}(${s.inserted}개)`).join(', ');
-    toast(`✅ 업로드 완료 — ${d.period_label} / ${sheetSummary}`);
+    const sum=d.sheets.map(s=>`${s.product}(${s.inserted||0}+${s.updated||0})`).join(', ');
+    toast(`✅ ${d.period_label} / ${sum}`);
     loadCampaignDetail(currentCampaignId);
   } else toast('업로드 실패: '+(d.msg||''), false);
 }
 
+// 수동 수정 모달 — id 기반으로 수정
 async function openDisplayScoreModal(seller){
   if(!currentCampaignId) return;
   const scores=await api(`/api/display/scores?campaign_id=${currentCampaignId}`);
   const sellerData=scores?.find(s=>s.seller_name===seller);
-  document.getElementById('dsm-seller').textContent=`${seller} — 수동 점수 수정`;
+  document.getElementById('dsm-seller').textContent=`${seller} — 점수 수동 수정`;
+  document.getElementById('dsm-campaign-name').textContent=currentCampaignData?.campaign_name||'';
   const products=sellerData?.products||[];
-  document.getElementById('dsm-fields').innerHTML=products.map(p=>`
-    <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px;border:1px solid var(--border);border-radius:var(--r-md);padding:10px">
-      <div style="flex:1">
-        <div style="font-size:13px;font-weight:600">${p.product_name}</div>
-        <div style="font-size:11px;color:var(--t-300)">${p.has_display?'진열 완료':'미진열'} · 현재 ${p.score||0}pt</div>
-      </div>
-      <input type="checkbox" id="dsm-has-${p.id}" ${p.has_display?'checked':''} style="width:16px;height:16px">
-      <label style="font-size:12px">진열</label>
-      <input type="number" id="dsm-score-${p.id}" value="${p.score||0}" min="0" max="10"
-        style="width:55px;border:1px solid var(--border-md);border-radius:var(--r-sm);padding:4px 8px;font-size:13px;text-align:center">
-      <span style="font-size:11px;color:var(--t-300)">pt</span>
-    </div>`).join('');
-  document.getElementById('display-score-modal').setAttribute('data-products', JSON.stringify(products.map(p=>p.id)));
+  document.getElementById('dsm-fields').innerHTML=products.length
+    ? products.map(p=>`
+      <div style="display:grid;grid-template-columns:1fr 80px 60px;align-items:center;gap:10px;margin-bottom:10px;border:1px solid var(--border);border-radius:var(--r-md);padding:10px">
+        <div>
+          <div style="font-size:13px;font-weight:600">${p.product_name}</div>
+          <div style="font-size:11px;color:var(--t-300)">현재: ${p.has_display?'진열 완료':'미진열'} · ${p.score||0}pt${p.is_manual?'(수동)':''}</div>
+        </div>
+        <label style="display:flex;align-items:center;gap:6px;font-size:12px;cursor:pointer">
+          <input type="checkbox" id="dsm-has-${p.id}" ${p.has_display?'checked':''} style="width:15px;height:15px">진열
+        </label>
+        <input type="number" id="dsm-score-${p.id}" data-record-id="${p.id}" value="${p.score||0}" min="0" max="20"
+          style="border:1px solid var(--border-md);border-radius:var(--r-sm);padding:5px 8px;font-size:13px;text-align:center;width:100%">
+      </div>`).join('')
+    : '<div style="color:var(--t-300);font-size:13px;text-align:center;padding:20px">이 캠페인에 진열 데이터가 없습니다</div>';
   document.getElementById('display-score-modal').style.display='flex';
 }
 
 async function saveDisplayManual(){
-  const idsJson=document.getElementById('display-score-modal').getAttribute('data-products')||'[]';
-  const ids=JSON.parse(idsJson);
-  for(const rid of ids){
-    const score=parseInt(document.getElementById(`dsm-score-${rid}`)?.value||0);
-    const has=document.getElementById(`dsm-has-${rid}`)?.checked?1:0;
-    await api('/api/display/record/update',{method:'POST',body:{id:rid,score,has_display:has}});
+  // 모든 제품의 수정 내용 수집
+  const inputs=document.querySelectorAll('#dsm-fields input[type="number"]');
+  const updates=[];
+  inputs.forEach(inp=>{
+    const rid=inp.getAttribute('data-record-id');
+    const score=parseInt(inp.value)||0;
+    const hasEl=document.getElementById(`dsm-has-${rid}`);
+    const has=hasEl?hasEl.checked?1:0:0;
+    if(rid) updates.push({id:parseInt(rid), score, has_display:has});
+  });
+  if(!updates.length){toast('수정할 데이터가 없습니다',false);return;}
+  const r=await api('/api/display/record/update',{method:'POST',body:{updates}});
+  if(r?.ok){
+    document.getElementById('display-score-modal').style.display='none';
+    loadCampaignDetail(currentCampaignId);
+    toast(`${r.updated||updates.length}개 수정 완료`);
   }
-  document.getElementById('display-score-modal').style.display='none';
-  loadCampaignDetail(currentCampaignId); toast('수정됐습니다');
 }
 
 // ── 재고 현황 ──────────────────────────────────────

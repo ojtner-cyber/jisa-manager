@@ -5143,10 +5143,17 @@ def api_display_scores():
     year = request.args.get('year', str(datetime.now().year))
     conn = get_db()
 
+    # 업체구분 정렬 헬퍼
+    GROUP_ORDER = ['베이비하우스', '링크맘', '베이비파크', '베이비세븐', '베이비스토리', '베이비스토어']
+    def seller_group_key(name):
+        for i, g in enumerate(GROUP_ORDER):
+            if g in name: return (i, name)
+        return (len(GROUP_ORDER), name)
+
     if campaign_id:
-        # 특정 캠페인 점수
+        # 특정 캠페인 점수 — id 포함
         records = [dict(r) for r in conn.execute("""
-            SELECT seller_name, product_name, has_display, quantity, score, is_manual, upload_date
+            SELECT id, seller_name, product_name, has_display, quantity, score, is_manual, upload_date
             FROM display_record WHERE campaign_id=? ORDER BY seller_name, product_name
         """, (campaign_id,)).fetchall()]
     else:
@@ -5172,23 +5179,38 @@ def api_display_scores():
     conn.close()
 
     if campaign_id:
-        # 캠페인별 상세: 매장 × 제품 형태
+        # 캠페인별 상세: 매장 × 제품 형태, 업체구분 순서로 정렬
         seller_map = {}
         for r in records:
             s = r['seller_name']
             if s not in seller_map: seller_map[s] = {'products': [], 'total_score': 0}
             seller_map[s]['products'].append(r)
             seller_map[s]['total_score'] += r['score'] or 0
+
+        # 판매 데이터에 있는 모든 매장 포함 (0점 포함), 업체구분 순서
+        all_in_campaign = set(seller_map.keys())
+        for s in all_sellers:
+            if s not in all_in_campaign:
+                seller_map[s] = {'products': [], 'total_score': 0}
+
         result = [{'seller_name':s, **v, 'year_sales': sales_map.get(s,0)}
-                  for s,v in sorted(seller_map.items(), key=lambda x:-x[1]['total_score'])]
+                  for s,v in seller_map.items()]
+        # 업체구분 정렬 → 총점 내림차순
+        result.sort(key=lambda x: (seller_group_key(x['seller_name'])[0],
+                                   x['seller_name']))
         return jsonify(result)
     else:
+        # 전체 합산: 판매 데이터 매장 + 진열 기록 있는 매장 모두 포함
+        all_display_sellers = {r['seller_name'] for r in records}
+        merged_sellers = sorted(
+            set(all_sellers) | all_display_sellers,
+            key=lambda s: (seller_group_key(s)[0], s)
+        )
         score_map = {r['seller_name']: r for r in records}
         result = []
-        for s in all_sellers:
+        for s in merged_sellers:
             info = score_map.get(s, {})
             detail_raw = info.get('detail_raw','')
-            # 캠페인/제품별 상세 파싱
             detail_items = []
             if detail_raw:
                 for part in detail_raw.split('|'):
@@ -5199,29 +5221,60 @@ def api_display_scores():
                             detail_items.append({'campaign':camp, 'product':prod, 'score':int(sc)})
                         except: pass
             result.append({
-                'seller_name':   s,
-                'total_score':   info.get('total_score', 0) or 0,
-                'display_cnt':   info.get('display_cnt', 0) or 0,
-                'detail_items':  detail_items,
-                'year_sales':    sales_map.get(s, 0),
+                'seller_name':  s,
+                'total_score':  info.get('total_score', 0) or 0,
+                'display_cnt':  info.get('display_cnt', 0) or 0,
+                'detail_items': detail_items,
+                'year_sales':   sales_map.get(s, 0),
             })
-        result.sort(key=lambda x: (-x['total_score'], -x['year_sales']))
+
+        # 동점 순위 계산 (dense rank — 동점 같은 순위, 다음 점수는 다음 순위)
+        result.sort(key=lambda x: -x['total_score'])
+        rank = 0; prev_score = None
+        for r in result:
+            sc = r['total_score']
+            if sc != prev_score:
+                rank += 1
+                prev_score = sc
+            r['rank'] = rank
+
+        # A/B/C/D 등급 — 순위 기준
+        for r in result:
+            rk = r['rank']
+            r['grade'] = 'A' if rk <= 25 else 'B' if rk <= 50 else 'C' if rk <= 75 else 'D' if rk <= 100 else 'E'
+
         return jsonify(result)
 
 
 @app.route("/api/display/record/update", methods=["POST"])
 @login_required
 def api_display_record_update():
-    """수동 점수/메모 수정"""
+    """수동 점수/메모 수정 — id 직접 또는 updates 배열"""
     d = request.json or {}
     conn = get_db()
     now = datetime.now().strftime('%Y-%m-%d %H:%M')
+    updated = 0
+
+    # 단일 id 방식
     rid = d.get('id')
     if rid:
-        conn.execute("""UPDATE display_record SET score=?,has_display=?,memo=?,is_manual=1,updated_at=? WHERE id=?""",
+        conn.execute("""UPDATE display_record SET score=?,has_display=?,memo=?,is_manual=1,updated_at=?
+            WHERE id=?""",
             (int(d.get('score',0)), int(d.get('has_display',0)), d.get('memo',''), now, rid))
+        updated = conn.execute("SELECT changes()").fetchone()[0]
+
+    # 배열 방식 (여러 레코드 한번에)
+    for item in d.get('updates', []):
+        item_rid = item.get('id')
+        if item_rid:
+            conn.execute("""UPDATE display_record SET score=?,has_display=?,memo=?,is_manual=1,updated_at=?
+                WHERE id=?""",
+                (int(item.get('score',0)), int(item.get('has_display',0)), item.get('memo',''), now, item_rid))
+            updated += 1
+
     conn.commit(); conn.close()
-    return jsonify({'ok': True})
+    return jsonify({'ok': True, 'updated': updated})
+
 
 @app.route("/api/display/events")
 @login_required
@@ -5232,7 +5285,6 @@ def api_display_events():
     conn.close()
     return jsonify(rows)
 
-# Render/gunicorn 실행 시 자동 초기화
 # Render/gunicorn 실행 시 자동 초기화
 init_db()
 
