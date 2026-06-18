@@ -814,6 +814,7 @@ td.center{text-align:center}
             </div>
             <div style="display:flex;gap:8px">
               <button class="btn btn-ghost btn-sm" onclick="printReport()" id="print-report-btn" style="display:none">🖨 출력</button>
+              <button class="btn btn-ghost btn-sm" onclick="exportReportExcel()" id="excel-report-btn" style="display:none">📥 엑셀 저장</button>
               <button class="btn btn-dark btn-sm" onclick="generateReport()" id="gen-report-btn">보고서 생성</button>
             </div>
           </div>
@@ -1004,6 +1005,7 @@ td.center{text-align:center}
             <div style="font-size:11px;color:var(--t-300);margin-top:2px">모든 캠페인 점수 합산 · A/B/C/D 등급 분류</div>
           </div>
           <button class="btn btn-ghost btn-sm" onclick="toggleAllRanking()" id="all-ranking-btn">▼ 열기</button>
+          <button class="btn btn-ghost btn-sm" onclick="downloadRankingExcel()" id="all-ranking-dl-btn" style="display:none">📥 엑셀 다운로드</button>
         </div>
         <div id="all-ranking-wrap" style="display:none;margin-top:16px">
           <div id="all-ranking-kpi" style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:16px"></div>
@@ -1034,6 +1036,7 @@ td.center{text-align:center}
               <input type="file" id="display-file-input" accept=".xlsx,.xls" style="display:none" onchange="uploadDisplayFile(this)">
             </label>
             <button class="btn btn-ghost btn-sm" onclick="editCampaign()">⚙ 기간/점수 수정</button>
+            <button class="btn btn-ghost btn-sm" onclick="downloadCampaignExcel()">📥 엑셀 다운로드</button>
             <button class="btn btn-xs" style="background:var(--red-lt);color:var(--red)" onclick="deleteCampaign()">삭제</button>
           </div>
         </div>
@@ -1723,12 +1726,27 @@ async function toggleAllRanking(){
   allRankingOpen=!allRankingOpen;
   const wrap=document.getElementById('all-ranking-wrap');
   const btn=document.getElementById('all-ranking-btn');
+  const dlBtn=document.getElementById('all-ranking-dl-btn');
   wrap.style.display=allRankingOpen?'block':'none';
   btn.textContent=allRankingOpen?'▲ 닫기':'▼ 열기';
+  if(dlBtn) dlBtn.style.display=allRankingOpen?'':'none';
   if(allRankingOpen){
     const year=document.getElementById('display-year')?.value||new Date().getFullYear();
     await loadAllRanking(year);
   }
+}
+
+function downloadRankingExcel(){
+  const year=document.getElementById('display-year')?.value||new Date().getFullYear();
+  window.location.href=`/api/display/export/ranking?year=${year}`;
+  toast('전체 랭킹 엑셀 다운로드 중...');
+}
+
+function downloadCampaignExcel(){
+  if(!currentCampaignId){toast('캠페인을 먼저 선택해주세요',false);return;}
+  const year=document.getElementById('display-year')?.value||new Date().getFullYear();
+  window.location.href=`/api/display/export/campaign?campaign_id=${currentCampaignId}&year=${year}`;
+  toast('캠페인 엑셀 다운로드 중...');
 }
 
 async function loadAllRanking(year){
@@ -2158,6 +2176,8 @@ async function loadScriptAnalysis(){
   document.getElementById('report-placeholder').style.display='block';
   const prb=document.getElementById('print-report-btn');
   if(prb) prb.style.display='none';
+  const erb=document.getElementById('excel-report-btn');
+  if(erb) erb.style.display='none';
   const grb=document.getElementById('gen-report-btn');
   if(grb) grb.textContent='보고서 생성';
 }

@@ -1633,7 +1633,59 @@ def api_script_report():
         mgmt_comments.get((grade,'안정'),
         f"[{grade}등급] 거래처로서 {visit_cycle} 주기의 정기 방문과 지속적인 관계 관리를 권고합니다."))
 
-    action_block = '\n'.join(f"  {i+1}. {a}" for i,a in enumerate(action_items))
+    # ── 수정4: 행사/진열 등급 조회 ──────────────────
+    display_grade_info = ''
+    try:
+        conn_d = get_db()
+        disp_scores = conn_d.execute("""
+            SELECT SUM(dr.score) total, COUNT(CASE WHEN dr.has_display=1 THEN 1 END) cnt
+            FROM display_record dr WHERE dr.seller_name=?
+        """, (seller,)).fetchone()
+        if disp_scores and disp_scores[0]:
+            disp_total = disp_scores[0] or 0
+            disp_cnt   = disp_scores[1] or 0
+            # 전체 랭킹에서 순위 파악
+            all_scores = [r[0] or 0 for r in conn_d.execute(
+                "SELECT SUM(score) FROM display_record GROUP BY seller_name ORDER BY 1 DESC"
+            ).fetchall()]
+            disp_rank = next((i+1 for i,s in enumerate(all_scores) if s<=disp_total), len(all_scores))
+            disp_display_grade = 'A' if disp_rank<=25 else 'B' if disp_rank<=50 else 'C' if disp_rank<=75 else 'D' if disp_rank<=100 else 'E'
+            display_grade_info = f"  진열/행사 등급 : {disp_display_grade}등급  (누적점수 {disp_total}점 / 참여 {disp_cnt}건 / 전체 {disp_rank}위)"
+        conn_d.close()
+    except: pass
+
+    # ── 수정5: 연도별 매출 비교 ──────────────────────
+    yearly_comparison = ''
+    try:
+        conn_y = get_db()
+        seller_raw_y = data.get('seller_raw', seller)
+        years_data = conn_y.execute("""
+            SELECT strftime('%Y', sale_date) yr, SUM(total) total, SUM(quantity) qty
+            FROM sales_data
+            WHERE (real_seller=? OR real_seller=?) AND sale_date!=''
+            GROUP BY yr ORDER BY yr
+        """, (seller, seller_raw_y)).fetchall()
+        if years_data and len(years_data) >= 1:
+            yearly_comparison = "\n  [ 연도별 매출 비교 ]\n"
+            prev_total = None
+            for yr_row in years_data:
+                yr_name = yr_row[0]; yr_total = yr_row[1] or 0; yr_qty = yr_row[2] or 0
+                if prev_total and prev_total > 0:
+                    yr_chg = (yr_total - prev_total) / prev_total * 100
+                    chg_str = f"  ▲ +{yr_chg:.1f}%" if yr_chg > 0 else f"  ▼ {yr_chg:.1f}%"
+                else:
+                    chg_str = '  (기준)'
+                yearly_comparison += f"  {yr_name}년  {w(yr_total)}원  ({yr_qty}개){chg_str}\n"
+                prev_total = yr_total
+            # 최근 2년 비교 요약
+            if len(years_data) >= 2:
+                y1, y2 = years_data[-2], years_data[-1]
+                diff = (y2[1] or 0) - (y1[1] or 0)
+                diff_pct = diff / (y1[1] or 1) * 100
+                arrow = '↑' if diff > 0 else '↓'
+                yearly_comparison += f"\n  {y1[0]}→{y2[0]} 변화: {arrow} {abs(diff_pct):.1f}%  ({w(abs(diff))}원 {'증가' if diff>0 else '감소'})\n"
+        conn_y.close()
+    except: pass
 
     # ── 최종 보고서 ────────────────────────────────
     sep1 = '─'*60; sep2 = '━'*60; sep3 = '·'*60
@@ -1643,7 +1695,6 @@ def api_script_report():
 {sep2}
   거래처명   : {seller}
   분석 기간  : {year}년 / 작성 일자 : {now.strftime('%Y년 %m월 %d일')}
-  담당자     :                   제출처 :
 {sep2}
 
 {sep1}
@@ -1654,13 +1705,14 @@ def api_script_report():
   연간 매출      : {w(total)}원
   거래처 등급    : {grade}등급  ({grade_basis})
   매출 추이      : {trend_label if trend_label else '-'}  ({trend_detail if trend_detail else '-'})
+{display_grade_info}
 
   판매 건수      : {w(total_cnt)}건
   판매 수량      : {w(total_qty)}개
   건당 평균 매출 : {w(avg_per_tx)}원
   취급 브랜드 수 : {brand_cnt}개 / 취급 제품 종류 : {item_cnt}종
   타프토이즈     : {taft_pct}% ({taft_cnt_k}종 / {w(taft_total)}원)
-
+{yearly_comparison}
 {sep3}
   [ 종합 평가 ]
   {grade_comment}
@@ -1709,31 +1761,68 @@ def api_script_report():
 
   핵심 실행 항목:
 {action_block}
-
-{sep1}
-  7. 담당자 기록란
-{sep1}
-
-  방문일 :                         방문 유형 : □ 정기  □ 긴급  □ 기타
-  사장님 반응 :
-
-  주요 논의 내용 :
-
-
-  발주 내역 :
-
-
-  특이사항 및 메모 :
-
-
-  다음 방문 예정일 :               담당자 서명 :
-
-{sep2}
-  ※ 본 리포트는 {year}년 실판매 데이터를 기반으로 작성되었습니다.
-  ※ 제출 전 담당자 확인 및 서명 필수.
-{sep2}"""
+"""
 
     return jsonify({'report': report, 'ok': True})
+
+@app.route("/api/script/report/excel", methods=["POST"])
+@login_required
+def api_script_report_excel():
+    """매장 분석 리포트 엑셀 다운로드"""
+    from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
+    from openpyxl.utils import get_column_letter
+
+    data    = request.json or {}
+    report  = data.get('report', '')
+    seller  = data.get('seller', '매장')
+
+    wb = openpyxl.Workbook()
+    ws = wb.active; ws.title = '매장분석리포트'
+
+    def mf(hex_): return PatternFill("solid", fgColor=hex_)
+    thin = Side(style='thin', color='DDDDDD')
+    bdr  = Border(left=thin, right=thin, top=thin, bottom=thin)
+    left = Alignment(horizontal='left', vertical='top', wrap_text=True)
+
+    ws.column_dimensions['A'].width = 2
+    ws.column_dimensions['B'].width = 90
+
+    ri = 1
+    in_header = False
+    for line in report.split('\n'):
+        # 구분선 스킵
+        if set(line.strip()) <= {'━','─','·','',} and len(line.strip()) > 3:
+            continue
+        cell = ws.cell(row=ri, column=2, value=line)
+        cell.font = Font(size=10, name='맑은 고딕')
+        cell.alignment = left
+
+        stripped = line.strip()
+        # 제목 줄 (숫자. 포함하거나 [ ] 포함)
+        if stripped.startswith('  매장 분석 리포트'):
+            cell.font = Font(bold=True, size=14, name='맑은 고딕', color='FFFFFF')
+            cell.fill = mf('1E3A5F')
+            ws.row_dimensions[ri].height = 30
+        elif stripped.startswith(('1.','2.','3.','4.','5.','6.')):
+            cell.font = Font(bold=True, size=11, name='맑은 고딕')
+            cell.fill = mf('EFF6FF')
+            ws.row_dimensions[ri].height = 22
+        elif stripped.startswith('[') and stripped.endswith(']'):
+            cell.font = Font(bold=True, size=10, name='맑은 고딕')
+            cell.fill = mf('F2F4F7')
+            ws.row_dimensions[ri].height = 18
+        else:
+            ws.row_dimensions[ri].height = 15
+
+        ri += 1
+
+    ws.freeze_panes = 'A1'
+    buf = io.BytesIO(); wb.save(buf); buf.seek(0)
+    safe = seller.replace('/','_').replace(':','')
+    return send_file(buf,
+        mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        as_attachment=True, download_name=f'매장분석리포트_{safe}.xlsx')
+
 
 @app.route("/api/export/xlsx/script")
 @login_required
@@ -2145,11 +2234,42 @@ def export_xlsx_monthly():
             if bv==0: continue
             pct_b=round(bv/mo_total*100,1) if mo_total else 0
             ws4.cell(row=ri4,column=1,value=""); ws4.cell(row=ri4,column=2,value=f"  └ {b}")
+            ws4.cell(row=ri4,column=2).font=mft(FONT_BLACK,True,9)
             for ci,val in [(3,bv),(4,bq),(5,pct_b),(6,""),(7,"")]:
                 c4=ws4.cell(row=ri4,column=ci,value=val); c4.border=bdr_none; c4.alignment=right
                 if ci==3 and isinstance(val,int): c4.number_format=num_fmt
                 if ci==5: c4.number_format='0.0'
             ws4.row_dimensions[ri4].height=16; ri4+=1
+
+            # 타프토이즈 제외 브랜드: 제품별 상세 추가
+            if b != '타프토이즈':
+                # 해당 브랜드·월 제품별 집계
+                prod_rows = conn.execute(f"""
+                    SELECT item_name, SUM(quantity) qty, SUM(total) total
+                    FROM sales_data
+                    WHERE sale_date LIKE ? AND item_group NOT IN ('','NULL')
+                      AND real_seller!=''
+                    GROUP BY item_name
+                """, (f"{year}-{str(mo).zfill(2)}%",)).fetchall()
+                prod_brand = {}
+                for pr in prod_rows:
+                    pb = remap_group('', pr[0]) if not pr[0].startswith('[') else remap_group('X', pr[0])
+                    if pb != b: continue
+                    norm = normalize_item_name(pr[0])
+                    if norm not in prod_brand:
+                        prod_brand[norm] = {'qty':0,'total':0}
+                    prod_brand[norm]['qty']   += pr[1] or 0
+                    prod_brand[norm]['total'] += pr[2] or 0
+                for pnorm, pvals in sorted(prod_brand.items(), key=lambda x:-x[1]['total']):
+                    if pvals['total']==0: continue
+                    pname = pnorm.replace('['+b+']','').strip() if '['+b+']' in pnorm else pnorm
+                    ws4.cell(row=ri4,column=2,value=f"      · {pname}")
+                    ws4.cell(row=ri4,column=2).font=mft(FONT_GRAY,False,8)
+                    c4=ws4.cell(row=ri4,column=3,value=pvals['total'])
+                    c4.font=mft(FONT_GRAY,False,8); c4.border=bdr_none; c4.alignment=right; c4.number_format=num_fmt
+                    c4q=ws4.cell(row=ri4,column=4,value=pvals['qty'])
+                    c4q.font=mft(FONT_GRAY,False,8); c4q.border=bdr_none; c4q.alignment=right
+                    ws4.row_dimensions[ri4].height=13; ri4+=1
         ws4.row_dimensions[ri4].height=6; ri4+=1
     for ci,ww in enumerate([8,18,16,10,10,16,16],1):
         ws4.column_dimensions[get_column_letter(ci)].width=ww
@@ -2766,6 +2886,8 @@ def api_product_groups():
     for r in raw:
         brand = remap_group(r[0], r[1])
         if not brand or brand == '기타': continue
+        # 흡착식기 제외
+        if '흡착' in (r[0] or '') or '흡착' in (r[1] or ''): continue
         norm  = normalize_item_name(r[1])
         if brand not in brand_items:
             brand_items[brand]  = set()
@@ -2780,7 +2902,9 @@ def api_product_groups():
         for b in brand_items
     ]
     result.sort(key=lambda x: get_group_sort_key(x['item_group']))
-    return jsonify(result)
+    resp = jsonify(result)
+    resp.headers['Cache-Control'] = 'no-store'
+    return resp
 
 @app.route("/api/products/items")
 @login_required
@@ -4856,9 +4980,9 @@ def api_export_display():
 
         data_map = {}
         for r in rows_data:
-            c = extract_color(r[1])
-            k = (r[0], c)
-            data_map[k] = data_map.get(k, 0) + r[2]
+            c2 = extract_color(r[1])
+            k2 = (r[0], c2)
+            data_map[k2] = data_map.get(k2, 0) + (r[2] or 0)
 
         n_color = len(real_colors)
         sum_col = 5 + n_color
@@ -5383,6 +5507,172 @@ def api_display_record_update():
 
     conn.commit(); conn.close()
     return jsonify({'ok': True, 'updated': updated})
+
+
+@app.route("/api/display/export/ranking")
+@login_required
+def api_display_export_ranking():
+    """전체 합산 랭킹 엑셀 다운로드"""
+    from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
+    from openpyxl.utils import get_column_letter
+    year = request.args.get('year', str(datetime.now().year))
+
+    conn = get_db()
+    records = [dict(r) for r in conn.execute("""
+        SELECT dr.seller_name, SUM(dr.score) total_score,
+               COUNT(CASE WHEN dr.has_display=1 THEN 1 END) display_cnt,
+               GROUP_CONCAT(dc.campaign_name || '/' || dr.product_name || ':' || dr.score, '|') detail_raw
+        FROM display_record dr JOIN display_campaign dc ON dr.campaign_id=dc.id
+        WHERE dr.has_display=1 GROUP BY dr.seller_name ORDER BY total_score DESC
+    """).fetchall()]
+    sales_map = {r[0]:r[1] for r in conn.execute(
+        f"SELECT real_seller, SUM(total) FROM sales_data WHERE sale_date LIKE '{year}%' AND real_seller!='' GROUP BY real_seller"
+    ).fetchall()}
+    conn.close()
+
+    # 동점 순위 (dense rank)
+    rank_val = 0; prev_sc = None
+    for r in records:
+        sc = r.get('total_score',0) or 0
+        if sc != prev_sc: rank_val += 1; prev_sc = sc
+        r['rank'] = rank_val
+        r['grade'] = 'A' if rank_val<=25 else 'B' if rank_val<=50 else 'C' if rank_val<=75 else 'D' if rank_val<=100 else 'E'
+
+    wb = openpyxl.Workbook()
+    ws = wb.active; ws.title = '전체합산랭킹'
+
+    def mf(hex_): return PatternFill("solid", fgColor=hex_)
+    thin = Side(style='thin', color='DDDDDD')
+    bdr  = Border(left=thin, right=thin, top=thin, bottom=thin)
+    ctr  = Alignment(horizontal='center', vertical='center')
+    left = Alignment(horizontal='left', vertical='center')
+    GRADE_COLOR = {'A':'D1FAE5','B':'DBEAFE','C':'FEF9C3','D':'F3F4F6'}
+
+    ws.merge_cells('A1:G1')
+    c = ws.cell(row=1,column=1,value=f'행사 및 진열 신청 전체 합산 랭킹 ({year}년)')
+    c.font=Font(bold=True,size=13,name='맑은 고딕',color='FFFFFF'); c.fill=mf('1E3A5F'); c.alignment=ctr
+    ws.row_dimensions[1].height=26
+
+    hdrs = ['순위','등급','매장명','누적 점수','참여 수','상세 내역','연매출 (원)']
+    widths = [8, 8, 26, 12, 10, 60, 18]
+    for ci,(h,w) in enumerate(zip(hdrs,widths),1):
+        c = ws.cell(row=2,column=ci,value=h)
+        c.font=Font(bold=True,size=10,name='맑은 고딕'); c.fill=mf('EFF6FF'); c.border=bdr; c.alignment=ctr
+        ws.column_dimensions[get_column_letter(ci)].width=w
+    ws.row_dimensions[2].height=20
+
+    for ri, r in enumerate(records, 3):
+        grade = r.get('grade','E'); score = r.get('total_score',0) or 0
+        detail_raw = r.get('detail_raw','') or ''
+        parts=[]
+        for part in detail_raw.split('|'):
+            if ':' in part and '/' in part:
+                try:
+                    cp,sc=part.rsplit(':',1); ca,pr=cp.split('/',1)
+                    parts.append(f"{pr}({ca})+{sc}pt")
+                except: pass
+        fill = mf(GRADE_COLOR.get(grade,'FFFFFF'))
+        for ci,v in enumerate([r.get('rank',''), grade, r['seller_name'], score,
+                r.get('display_cnt',0), ' / '.join(parts), sales_map.get(r['seller_name'],0)],1):
+            c=ws.cell(row=ri,column=ci,value=v)
+            c.font=Font(size=9,name='맑은 고딕'); c.border=bdr
+            c.alignment=ctr if ci!=3 else left
+            if grade in GRADE_COLOR: c.fill=fill
+        ws.row_dimensions[ri].height=15
+
+    ws.freeze_panes='A3'
+    buf=io.BytesIO(); wb.save(buf); buf.seek(0)
+    return send_file(buf, mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        as_attachment=True, download_name=f'행사진열_전체랭킹_{year}.xlsx')
+
+
+@app.route("/api/display/export/campaign")
+@login_required
+def api_display_export_campaign():
+    """특정 캠페인 매장별 점수 엑셀 다운로드"""
+    from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
+    from openpyxl.utils import get_column_letter
+    campaign_id = request.args.get('campaign_id')
+    year = request.args.get('year', str(datetime.now().year))
+    if not campaign_id:
+        return jsonify({'ok':False,'msg':'campaign_id 필요'}), 400
+
+    conn = get_db()
+    camp_row = conn.execute("SELECT * FROM display_campaign WHERE id=?", (campaign_id,)).fetchone()
+    campaign = dict(camp_row) if camp_row else {}
+    records = [dict(r) for r in conn.execute("""
+        SELECT seller_name, product_name, has_display, quantity, score, upload_date
+        FROM display_record WHERE campaign_id=? ORDER BY seller_name, product_name
+    """, (campaign_id,)).fetchall()]
+    products = [r[0] for r in conn.execute(
+        "SELECT DISTINCT product_name FROM display_upload WHERE campaign_id=? ORDER BY upload_seq", (campaign_id,)).fetchall()]
+    sales_map = {r[0]:r[1] for r in conn.execute(
+        f"SELECT real_seller, SUM(total) FROM sales_data WHERE sale_date LIKE '{year}%' AND real_seller!='' GROUP BY real_seller"
+    ).fetchall()}
+    conn.close()
+
+    wb = openpyxl.Workbook(); ws = wb.active; ws.title='캠페인점수'
+    def mf(hex_): return PatternFill("solid", fgColor=hex_)
+    thin=Side(style='thin',color='DDDDDD'); bdr=Border(left=thin,right=thin,top=thin,bottom=thin)
+    ctr=Alignment(horizontal='center',vertical='center'); left=Alignment(horizontal='left',vertical='center')
+    col_count = 3+len(products)+2
+
+    ws.merge_cells(f'A1:{get_column_letter(col_count)}1')
+    c=ws.cell(row=1,column=1,value=f"{campaign.get('campaign_name','캠페인')} ({year}년)")
+    c.font=Font(bold=True,size=13,name='맑은 고딕',color='FFFFFF'); c.fill=mf('1E3A5F'); c.alignment=ctr
+    ws.row_dimensions[1].height=26
+
+    period=f"기한: {campaign.get('period_start','')} ~ {campaign.get('period_end','')}  |  기한내 +{campaign.get('score_in_period',5)}pt / 기한후 +{campaign.get('score_out_period',2)}pt"
+    ws.merge_cells(f'A2:{get_column_letter(col_count)}2')
+    c=ws.cell(row=2,column=1,value=period); c.font=Font(size=9,name='맑은 고딕'); c.fill=mf('EFF6FF'); c.alignment=left
+    ws.row_dimensions[2].height=14
+
+    for ci,h in enumerate(['구분','매장명','누계점수']+products+['진열수','연매출(원)'],1):
+        c=ws.cell(row=3,column=ci,value=h); c.font=Font(bold=True,size=9,name='맑은 고딕')
+        c.fill=mf('D9E1F2'); c.border=bdr; c.alignment=ctr
+    ws.row_dimensions[3].height=18
+
+    ws.column_dimensions['A'].width=12; ws.column_dimensions['B'].width=24; ws.column_dimensions['C'].width=10
+    for pi in range(len(products)):
+        ws.column_dimensions[get_column_letter(4+pi)].width=max(14,len(products[pi])+2)
+    ws.column_dimensions[get_column_letter(4+len(products))].width=8
+    ws.column_dimensions[get_column_letter(5+len(products))].width=16
+
+    seller_map={}
+    for r in records:
+        s=r['seller_name']
+        if s not in seller_map: seller_map[s]={'prods':{},'total':0,'cnt':0}
+        seller_map[s]['prods'][r['product_name']]=r
+        seller_map[s]['total']+=r['score'] or 0
+        if r['has_display']: seller_map[s]['cnt']+=1
+
+    GRPS=['베이비하우스','링크맘','베이비파크']
+    def grp(n): return next((g for g in GRPS if g in n),'기타')
+    sellers=sorted(seller_map.keys(),key=lambda s:(GRPS.index(grp(s)) if grp(s) in GRPS else 99,s))
+
+    ri=4; prev_g=''
+    for seller in sellers:
+        g=grp(seller)
+        if g!=prev_g:
+            ws.merge_cells(f'A{ri}:{get_column_letter(col_count)}{ri}')
+            c=ws.cell(row=ri,column=1,value=g); c.font=Font(bold=True,size=9,name='맑은 고딕',color='555555')
+            c.fill=mf('F2F4F7'); c.alignment=left; c.border=bdr
+            ws.row_dimensions[ri].height=13; ri+=1; prev_g=g
+        info=seller_map[seller]; sc=info['total']
+        sc_color='16A34A' if sc>=5 else 'D97706' if sc>=2 else '9CA3AF'
+        row=[g,seller,sc]+[f"✓{info['prods'][p]['score']}pt" if info['prods'].get(p,{}).get('has_display') else '—' if p in info['prods'] else '' for p in products]+[info['cnt'],sales_map.get(seller,0)]
+        for ci,v in enumerate(row,1):
+            c=ws.cell(row=ri,column=ci,value=v); c.font=Font(size=9,name='맑은 고딕'); c.border=bdr
+            c.alignment=ctr if ci!=2 else left
+            if ci==3 and sc>0: c.font=Font(bold=True,size=10,name='맑은 고딕',color=sc_color)
+            if ci>3 and ci<=3+len(products) and str(v).startswith('✓'): c.fill=mf('DCFCE7')
+        ws.row_dimensions[ri].height=14; ri+=1
+
+    ws.freeze_panes='A4'
+    buf=io.BytesIO(); wb.save(buf); buf.seek(0)
+    safe=campaign.get('campaign_name','캠페인').replace('/','_')
+    return send_file(buf, mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        as_attachment=True, download_name=f'진열신청_{safe}_{year}.xlsx')
 
 
 @app.route("/api/display/events")
