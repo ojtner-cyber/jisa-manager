@@ -1687,6 +1687,8 @@ def api_script_report():
         conn_y.close()
     except: pass
 
+    action_block = '\n'.join(f"  {i+1}. {a}" for i, a in enumerate(action_items)) if action_items else "  · 지속적인 관계 관리 및 정기 방문 유지"
+
     # ── 최종 보고서 ────────────────────────────────
     sep1 = '─'*60; sep2 = '━'*60; sep3 = '·'*60
 
@@ -2404,6 +2406,7 @@ def export_xlsx_weekly():
     bdr_none   = Border(left=no_bdr,right=no_bdr,top=no_bdr,bottom=no_bdr)
     center     = Alignment(horizontal="center",vertical="center")
     right      = Alignment(horizontal="right",vertical="center")
+    left       = Alignment(horizontal="left",vertical="center")
     num_fmt    = '#,##0'
     mf  = lambda h: PatternFill(start_color=h,end_color=h,fill_type="solid")
     mft = lambda h,b=False,s=10: Font(color=h,bold=b,size=s)
@@ -2585,6 +2588,84 @@ def export_xlsx_weekly():
                 if ci==6 and isinstance(v,int): c.number_format=num_fmt
             ri+=1
     for ci,w in enumerate([10,26,14,36,12,16],1): ws4.column_dimensions[get_column_letter(ci)].width=w
+
+    # ── 시트5: 주별 브랜드 요약 (브랜드 아래 제품 표시) ──
+    ws5 = wb.create_sheet("주별 브랜드 요약")
+
+    # 전체 주별×브랜드×제품 집계
+    brand_week_prod = {}   # {wk: {brand: {prod_norm: {qty, total}}}}
+    brand_week_total = {}  # {wk: {brand: {qty, total}}}
+    for wk_info in weeks:
+        wk = wk_info['wk']
+        brand_week_prod[wk]  = {}
+        brand_week_total[wk] = {}
+        for k, item in items_by_week.get(wk, {}).items():
+            b = item['item_group']
+            norm = normalize_item_name(item['item_name'])
+            if b not in brand_week_prod[wk]:
+                brand_week_prod[wk][b]  = {}
+                brand_week_total[wk][b] = {'qty':0,'total':0}
+            if norm not in brand_week_prod[wk][b]:
+                brand_week_prod[wk][b][norm] = {'qty':0,'total':0}
+            brand_week_prod[wk][b][norm]['qty']   += item['qty']
+            brand_week_prod[wk][b][norm]['total'] += item['total']
+            brand_week_total[wk][b]['qty']   += item['qty']
+            brand_week_total[wk][b]['total'] += item['total']
+
+    # 헤더
+    ws5h = ['주차','기간','브랜드/제품','판매금액(원)','판매수량','비율(%)']
+    for ci,h in enumerate(ws5h,1):
+        c=ws5.cell(row=1,column=ci,value=h)
+        c.fill=mf(GRAY_LIGHT); c.font=mft(FONT_GRAY,True,10)
+        c.alignment=center; c.border=bdr_none
+    ws5.row_dimensions[1].height=20
+
+    ri5=2
+    for i, wk_info in enumerate(weeks):
+        wk = wk_info['wk']
+        wk_total_val = sum(v['total'] for v in brand_week_total.get(wk,{}).values()) or 1
+        wk_label = f"{i+1}주차"
+        period_label = f"{wk_info['ws']}~{wk_info['we']}"
+
+        # 전체 합계행
+        wk_sum = sum(v['total'] for v in brand_week_total.get(wk,{}).values())
+        wk_qty = sum(v['qty'] for v in brand_week_total.get(wk,{}).values())
+        for ci,v in enumerate([wk_label, period_label, '전체 합계', wk_sum, wk_qty, 100.0],1):
+            c=ws5.cell(row=ri5,column=ci,value=v)
+            c.font=mft(FONT_BLACK,True,10); c.alignment=right if ci>=4 else (center if ci<=2 else left)
+            c.fill=mf(GRAY_LIGHT)
+            if ci==4: c.number_format=num_fmt
+            if ci==6: c.number_format='0.0'
+        ws5.row_dimensions[ri5].height=18; ri5+=1
+
+        for b in brands:
+            bt = brand_week_total.get(wk,{}).get(b)
+            if not bt or bt['total']==0: continue
+            pct_b = round(bt['total']/wk_total_val*100,1)
+
+            # 브랜드행
+            for ci,v in enumerate(['','', f'  └ {b}', bt['total'], bt['qty'], pct_b],1):
+                c=ws5.cell(row=ri5,column=ci,value=v)
+                c.font=mft(FONT_BLACK,True,9); c.alignment=right if ci>=4 else left
+                if ci==4: c.number_format=num_fmt
+                if ci==6: c.number_format='0.0'
+            ws5.row_dimensions[ri5].height=16; ri5+=1
+
+            # 타프토이즈 제외 브랜드만 제품 상세
+            if b != '타프토이즈':
+                prods = brand_week_prod.get(wk,{}).get(b,{})
+                for pnorm, pv in sorted(prods.items(), key=lambda x:-x[1]['total']):
+                    pname = pnorm.replace(f'[{b}]','').strip()
+                    for ci,v in enumerate(['','', f'      · {pname}', pv['total'], pv['qty'],''],1):
+                        c=ws5.cell(row=ri5,column=ci,value=v)
+                        c.font=mft(FONT_GRAY,False,8); c.alignment=right if ci in (4,5) else left
+                        if ci==4: c.number_format=num_fmt
+                    ws5.row_dimensions[ri5].height=13; ri5+=1
+
+        ws5.row_dimensions[ri5].height=6; ri5+=1  # 주간 구분
+
+    for ci,w in enumerate([10,26,24,18,12,10],1):
+        ws5.column_dimensions[get_column_letter(ci)].width=w
 
     buf=io.BytesIO(); wb.save(buf); buf.seek(0)
     fname=f"주별실적_{year}{'_'+month+'월' if month else ''}.xlsx"
@@ -4750,8 +4831,10 @@ def api_export_display():
             c3.font = bold10(); c3.fill = HDR_FILL; c3.alignment = center; c3.border = bdr
 
         # 행3: 제품명 병합
+        # 색상: 6열~(5+n_color)열, 합계: (6+n_color)열
+        # 브랜드명 헤더 merge: F3 ~ (5+n_color)열
         if n_color > 1:
-            ws.merge_cells(f"F3:{get_column_letter(4+n_color)}3")
+            ws.merge_cells(f"F3:{get_column_letter(5+n_color)}3")
         c3p = ws.cell(row=3, column=6, value=tab_label)
         c3p.font = bold10(); c3p.fill = SUM_FILL; c3p.alignment = center; c3p.border = bdr
 
