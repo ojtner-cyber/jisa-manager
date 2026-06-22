@@ -611,7 +611,6 @@ def api_sales_by_store():
         date_cond = f"{year}%"
 
     if seller:
-        # 특정 매장 → 월별 실적 반환 (seller_name 포함)
         rows = [dict(r) for r in conn.execute("""
             SELECT ? AS seller_name,
                    CAST(strftime('%m', sale_date) AS INTEGER) AS month,
@@ -622,7 +621,6 @@ def api_sales_by_store():
         conn.close()
         return jsonify(rows)
     else:
-        # 전체 매장 요약 — 브랜드별 그룹 정렬 (베이비하우스 → 링크맘 → 기타)
         rows = [dict(r) for r in conn.execute("""
             SELECT real_seller AS seller_name,
                    COUNT(*) cnt, SUM(total) total, SUM(quantity) qty
@@ -641,6 +639,102 @@ def api_sales_by_store():
 
         rows.sort(key=brand_sort_key)
         return jsonify(rows)
+
+
+@app.route("/api/sales/trend")
+@login_required
+def api_sales_trend():
+    """매장별 최근 월별 매출 흐름 분석 — 추세 계산"""
+    year  = request.args.get("year",  str(datetime.now().year))
+    conn  = get_db()
+
+    # 매장별 월별 매출
+    monthly = conn.execute("""
+        SELECT real_seller, CAST(strftime('%m', sale_date) AS INTEGER) mo,
+               SUM(total) total, SUM(quantity) qty
+        FROM sales_data
+        WHERE real_seller!='' AND sale_date LIKE ? AND sale_date!=''
+        GROUP BY real_seller, mo ORDER BY real_seller, mo
+    """, (f"{year}%",)).fetchall()
+
+    # 전체 연매출
+    totals = {r[0]:r[1] for r in conn.execute("""
+        SELECT real_seller, SUM(total) FROM sales_data
+        WHERE real_seller!='' AND sale_date LIKE ? AND sale_date!=''
+        GROUP BY real_seller
+    """, (f"{year}%",)).fetchall()}
+    conn.close()
+
+    # 매장별 월 데이터 집계
+    from collections import defaultdict
+    seller_months = defaultdict(lambda: defaultdict(lambda: {'total':0,'qty':0}))
+    for r in monthly:
+        seller_months[r[0]][r[1]]['total'] = r[2]
+        seller_months[r[0]][r[1]]['qty']   = r[3]
+
+    def calc_trend(monthly_vals):
+        """최근 3개월 평균 대비 직전 3개월 평균으로 추세 계산"""
+        if len(monthly_vals) < 2: return 0, 'none'
+        # 선형 회귀 기울기 (간단 버전)
+        n = len(monthly_vals)
+        xs = list(range(n))
+        ys = [v for v in monthly_vals]
+        x_mean = sum(xs)/n; y_mean = sum(ys)/n
+        num = sum((x-x_mean)*(y-y_mean) for x,y in zip(xs,ys))
+        den = sum((x-x_mean)**2 for x in xs)
+        slope = num/den if den else 0
+        # 최근 2개월 변화
+        pct = (ys[-1]-ys[-2])/ys[-2]*100 if ys[-2] else 0
+        # 방향 판정
+        if slope > y_mean * 0.05: direction = 'up'
+        elif slope < -y_mean * 0.05: direction = 'down'
+        else: direction = 'stable'
+        return round(slope), direction, round(pct, 1)
+
+    result = []
+    for seller, months_data in seller_months.items():
+        sorted_months = sorted(months_data.items())
+        monthly_totals = [v['total'] for _, v in sorted_months]
+        monthly_list   = [{'mo': m, 'total': v['total'], 'qty': v['qty']}
+                          for m, v in sorted_months]
+
+        if len(monthly_totals) < 2:
+            direction = 'none'; slope = 0; pct = 0
+        else:
+            slope, direction, pct = calc_trend(monthly_totals)
+
+        # 최고/최저 달
+        peak_mo   = max(sorted_months, key=lambda x:x[1]['total'], default=(0,{'total':0}))
+        trough_mo = min(sorted_months, key=lambda x:x[1]['total'], default=(0,{'total':0}))
+
+        # 연속 상승/하락 스트릭
+        streak = 0; streak_dir = 'none'
+        if len(monthly_totals) >= 2:
+            streak_dir = 'up' if monthly_totals[-1] > monthly_totals[-2] else 'down'
+            for i in range(len(monthly_totals)-1, 0, -1):
+                if streak_dir == 'up' and monthly_totals[i] > monthly_totals[i-1]: streak += 1
+                elif streak_dir == 'down' and monthly_totals[i] < monthly_totals[i-1]: streak += 1
+                else: break
+
+        result.append({
+            'seller_name': seller,
+            'year_total':  totals.get(seller, 0),
+            'monthly':     monthly_list,
+            'direction':   direction,
+            'slope':       slope,
+            'pct_last':    pct,
+            'peak_mo':     peak_mo[0],
+            'peak_total':  peak_mo[1]['total'],
+            'trough_mo':   trough_mo[0],
+            'trough_total':trough_mo[1]['total'],
+            'streak':      streak,
+            'streak_dir':  streak_dir,
+            'month_cnt':   len(monthly_list),
+        })
+
+    # 연매출 내림차순 정렬
+    result.sort(key=lambda x: -x['year_total'])
+    return jsonify(result)
 
 # ── 판매현황 — 판매처 수 전체 반환 ──────────────
 # ── 판매실적 엑셀 내보내기 ────────────────────────
@@ -4677,18 +4771,22 @@ def api_export_display():
 
     conn = get_db()
 
-    # ── 거래처코드 매핑 ──────────────────────────────
-    code_rows = [dict(r) for r in conn.execute("SELECT * FROM seller_code").fetchall()]
-    seller_to_code = {r['real_seller']: r for r in code_rows if r['real_seller']}
+    # ── 거래처코드 매핑 (없어도 동작) ──────────────────
+    try:
+        code_rows = [dict(r) for r in conn.execute("SELECT * FROM seller_code").fetchall()]
+    except Exception:
+        code_rows = []
+    seller_to_code = {r['real_seller']: r for r in code_rows if r.get('real_seller')}
 
     GROUP_ORDER_LIST = ['베이비파크','베이비하우스','링크맘','기타']
     def seller_group(seller):
         info = seller_to_code.get(seller, {})
         g = info.get('group_name','')
         if not g:
-            if '베이비파크' in seller: g='베이비파크'
-            elif '베이비하우스' in seller: g='베이비하우스'
-            elif '링크맘' in seller: g='링크맘'
+            nm = (seller or '').lower()
+            if '베이비파크' in nm: g='베이비파크'
+            elif '베이비하우스' in nm: g='베이비하우스'
+            elif '링크맘' in nm or '베네피아' in nm: g='링크맘'
             else: g='기타'
         return g
 
