@@ -2185,8 +2185,8 @@ async function loadScriptAnalysis(){
   // 월별 차트 (수정2)
   if(cScriptMonthly) cScriptMonthly.destroy();
   // 월별 데이터는 sales-by-store API에서 가져옴
-  const year=document.getElementById('script-year')?.value||new Date().getFullYear();
-  const monthlyData=await api(`/api/sales-by-store?seller=${encodeURIComponent(scriptSeller)}&year=${year}`)||[];
+  const monthYear=document.getElementById('script-year')?.value||new Date().getFullYear();
+  const monthlyData=await api(`/api/sales-by-store?seller=${encodeURIComponent(scriptSeller)}&year=${monthYear}`)||[];
   const ALL_MONTHS=['1월','2월','3월','4월','5월','6월','7월','8월','9월','10월','11월','12월'];
   const monthTotals=new Array(12).fill(0);
   monthlyData.forEach(m=>{ if(m.month>=1&&m.month<=12) monthTotals[m.month-1]=m.total; });
