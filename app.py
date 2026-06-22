@@ -247,11 +247,14 @@ def init_db():
                 conn.execute(f"ALTER TABLE sns_info ADD COLUMN {col} {typ}")
     except: pass
 
-    # 기본 계정만 생성 (샘플 데이터 없음)
+    # 기본 계정 — 없으면 생성, 있으면 비밀번호 보장
     conn.execute("INSERT OR IGNORE INTO users(email,password,name,role) VALUES(?,?,?,?)",
         ("hwkim@enfix.com","hwkim123!","관리자","admin"))
     conn.execute("INSERT OR IGNORE INTO users(email,password,name,role) VALUES(?,?,?,?)",
         ("user@visang.com","hwkim123!","일반사용자","user"))
+    # Railway 재배포 후 비밀번호가 달라졌을 경우를 위해 강제 보장
+    conn.execute("UPDATE users SET password=? WHERE email=? AND role='admin'",
+        ("hwkim123!", "hwkim@enfix.com"))
     conn.commit(); conn.close()
 
 # ── 인증 ──────────────────────────────────────
@@ -292,6 +295,20 @@ def login():
             return jsonify({"ok":True, "role": user["role"]})
         return jsonify({"ok":False, "msg":"이메일 또는 비밀번호가 올바르지 않습니다."}), 401
     return render_template("index.html", regions=REGIONS)
+
+@app.route("/api/reset-admin", methods=["POST"])
+def api_reset_admin():
+    """비상 관리자 계정 리셋 — 배포 후 로그인 불가 시 사용"""
+    secret = request.json.get("secret","") if request.is_json else request.form.get("secret","")
+    if secret != "enfix2024reset":
+        return jsonify({"ok": False}), 403
+    conn = get_db()
+    conn.execute("UPDATE users SET password=? WHERE email=?", ("hwkim123!", "hwkim@enfix.com"))
+    conn.execute("INSERT OR IGNORE INTO users(email,password,name,role) VALUES(?,?,?,?)",
+        ("hwkim@enfix.com","hwkim123!","관리자","admin"))
+    conn.commit(); conn.close()
+    return jsonify({"ok": True, "msg": "관리자 비밀번호가 hwkim123! 으로 초기화됐습니다"})
+
 
 @app.route("/logout")
 def logout():
