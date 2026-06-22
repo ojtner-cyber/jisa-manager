@@ -2521,12 +2521,14 @@ async function saveMemo(){
 function exportDisplayXlsx(mode){
   const year=document.getElementById('prod-year')?.value||new Date().getFullYear();
   const m=mode||'display';
-  // 현재 선택된 품목그룹(브랜드)
   const groupSel=document.getElementById('prod-group');
-  const brand=groupSel?.options[groupSel.selectedIndex]?.text||groupSel?.value||'';
-  if(!brand||brand==='전체'||brand==='— 전체 —'){toast('품목그룹을 먼저 선택해주세요',false);return;}
-  // 브랜드명 정제 (예: "줄즈 (4종)" → "줄즈")
-  const brandClean=brand.replace(/\s*\(.*\)/,'').trim();
+  const rawBrand=groupSel?.value||'';
+  const brandText=groupSel?.options[groupSel.selectedIndex]?.text||'';
+  // "전체 그룹" 또는 빈 값 선택 시 경고
+  if(!rawBrand||rawBrand==='all'||rawBrand===''||brandText.includes('전체')){
+    toast('품목그룹을 먼저 선택해주세요 (전체 제외)',false); return;
+  }
+  const brandClean=brandText.replace(/\s*\(.*\)/,'').trim();
   window.location.href=`/api/export/xlsx/display?year=${year}&mode=${m}&brand=${encodeURIComponent(brandClean)}`;
   toast(`${m==='display'?'진열':'판매'} 현황 엑셀 (${brandClean}) 다운로드 중...`);
 }
@@ -2908,19 +2910,37 @@ let salesTab = 'monthly';
 
 function switchSalesTab(tab){
   salesTab = tab;
-  ['monthly','weekly','ranking'].forEach(t=>{
+  ['monthly','weekly','ranking','trend'].forEach(t=>{
     const btn=document.getElementById(`tab-${t}`);
     if(!btn) return;
-    btn.style.color = t===tab?'var(--accent-m)':'var(--ink-300)';
-    btn.style.borderBottom = t===tab?'2.5px solid var(--accent-m)':'2.5px solid transparent';
+    btn.style.color = t===tab?'var(--p)':'var(--t-300)';
+    btn.style.borderBottom = t===tab?'2.5px solid var(--p)':'2.5px solid transparent';
   });
   document.getElementById('sales-monthly-view').style.display=tab==='monthly'?'block':'none';
   document.getElementById('sales-weekly-view').style.display =tab==='weekly' ?'block':'none';
   document.getElementById('sales-ranking-view').style.display=tab==='ranking'?'block':'none';
   document.getElementById('sales-trend-view').style.display=tab==='trend'?'block':'none';
   if(tab==='trend') loadTrendData();
-  if(tab==='ranking') renderRanking();
+  else if(tab==='ranking') renderRanking();
   else loadSalesPage();
+}
+
+// ── 매장명 표시명 변환 ─────────────────────────────
+const DISPLAY_NAME_MAP = {
+  '베이비하우스 하남미시점': '베이비하우스 하남미사점',
+  '주식회사 에스엘컴퍼니':   '베이비하우스 동대전점_발육',
+  '베이비하우스 동대전점':   '베이비하우스 동대전점_발육',
+  '베투키':                  '베이비 투 키즈',
+  '베이비하우스 군포점':     '베이비하우스 안양점',
+  '베네피아 부천점':         '링크맘 부천점',
+  '베이비하우스 일산화정점': '베이비하우스 일산점',
+  '베이비하우스 파주점/신성준고객': null,  // 숨김
+};
+function DS(name){ // Display Seller name
+  if(!name) return name;
+  const mapped = DISPLAY_NAME_MAP[name];
+  if(mapped === null) return null;   // 숨김
+  return mapped !== undefined ? mapped : name;
 }
 
 // ── 최근 흐름 ─────────────────────────────────────
@@ -2984,15 +3004,17 @@ function renderTrend(){
       ? `<span style="font-size:10px;color:${r.streak_dir==='up'?'var(--green)':'var(--red)'}">${r.streak_dir==='up'?'▲':'▼'} ${r.streak}개월 연속</span>`
       : '';
 
-    // 월별 바 차트
+    // 월별 바 차트 — 금액/막대/월 영역 완전 분리
     const barMax = Math.max(...vals) || 1;
+    const BAR_AREA_H = 40; // 막대 영역 고정 높이(px)
     const bars = monthly.map(m => {
-      const pct_bar = Math.round(m.total / barMax * 100);
+      const pct_bar = m.total / barMax;
+      const barH = Math.max(2, Math.round(pct_bar * BAR_AREA_H));
       const barColor = m.mo === r.peak_mo ? '#16A34A' : m.mo === r.trough_mo ? '#EF4444' : '#94A3B8';
-      return `<div style="display:flex;flex-direction:column;align-items:center;gap:2px;flex:1">
-        <div style="font-size:9px;color:var(--t-300);font-weight:500">${N_short(m.total)}</div>
-        <div style="width:100%;height:${pct_bar*0.5+2}px;background:${barColor};border-radius:2px 2px 0 0;min-height:2px;transition:.3s"></div>
-        <div style="font-size:9px;color:var(--t-400)">${MONTHS_KR[m.mo]}</div>
+      return `<div style="display:flex;flex-direction:column;align-items:center;gap:1px;flex:1;min-width:0">
+        <div style="font-size:8px;color:var(--t-300);font-weight:500;white-space:nowrap;height:14px;display:flex;align-items:flex-end;line-height:1">${m.total>0?N_short(m.total):''}</div>
+        <div style="width:calc(100% - 2px);flex:none;background:${barColor};border-radius:2px 2px 0 0;height:${barH}px;min-height:2px;align-self:flex-end"></div>
+        <div style="font-size:8px;color:var(--t-400);height:12px;line-height:1;display:flex;align-items:center">${MONTHS_KR[m.mo]}</div>
       </div>`;
     }).join('');
 
@@ -3012,8 +3034,8 @@ function renderTrend(){
         </div>
       </div>
 
-      <!-- 바 차트 -->
-      <div style="display:flex;align-items:flex-end;gap:3px;height:60px;margin-bottom:12px;padding:0 2px">
+      <!-- 바 차트: 금액(위)/막대(중)/월(아래) 완전 분리 -->
+      <div style="display:flex;align-items:flex-end;gap:2px;margin-bottom:12px;padding:0 2px">
         ${bars}
       </div>
 
@@ -3104,20 +3126,21 @@ async function renderMonthly(year, month, seller){
       tbody.innerHTML=`<tr><td colspan="4" style="text-align:center;padding:40px;color:var(--ink-300)">데이터가 없습니다. 판매현황 엑셀을 먼저 업로드해 주세요.</td></tr>`;
       return;
     }
-    tbody.innerHTML=rows.map((r,i)=>{
-      const nm=r.seller_name||'—';
+    tbody.innerHTML=rows.filter(r=>DS(r.seller_name)!==null).map((r,i)=>{
+      const nm=DS(r.seller_name)||r.seller_name||'—';
       const safe=nm.replace(/'/g,"\\'");
+      const rawSafe=(r.seller_name||'').replace(/'/g,"\\'");
       return `<tr>
-        <td style="width:33%;text-align:left" onclick="openMonthDetail('${safe}','${year}','${month}')" style="cursor:pointer">
+        <td style="width:33%;text-align:left" onclick="openMonthDetail('${rawSafe}','${year}','${month}')" style="cursor:pointer">
           <span style="color:var(--ink-300);margin-right:8px;font-size:11px">${i+1}</span>
           <strong style="color:var(--ink-900)">${nm}</strong><span style="font-size:11px;color:var(--accent-m);margin-left:6px">↗</span>
         </td>
-        <td style="width:19%;text-align:right;padding-right:14px;font-family:var(--fd);font-weight:500" onclick="openMonthDetail('${safe}','${year}','${month}')" style="cursor:pointer">${(r.cnt||0).toLocaleString()}건</td>
-        <td style="width:19%;text-align:right;padding-right:14px;font-family:var(--fd);font-weight:500" onclick="openMonthDetail('${safe}','${year}','${month}')" style="cursor:pointer">${(r.qty||0).toLocaleString()}개</td>
-        <td style="width:21%;text-align:right;padding-right:14px;font-family:var(--fd);font-weight:700;color:var(--accent-m)" onclick="openMonthDetail('${safe}','${year}','${month}')" style="cursor:pointer">${r.total!=null?N(r.total)+'원':'—'}</td>
+        <td style="width:19%;text-align:right;padding-right:14px;font-family:var(--fd);font-weight:500" onclick="openMonthDetail('${rawSafe}','${year}','${month}')" style="cursor:pointer">${(r.cnt||0).toLocaleString()}건</td>
+        <td style="width:19%;text-align:right;padding-right:14px;font-family:var(--fd);font-weight:500" onclick="openMonthDetail('${rawSafe}','${year}','${month}')" style="cursor:pointer">${(r.qty||0).toLocaleString()}개</td>
+        <td style="width:21%;text-align:right;padding-right:14px;font-family:var(--fd);font-weight:700;color:var(--accent-m)" onclick="openMonthDetail('${rawSafe}','${year}','${month}')" style="cursor:pointer">${r.total!=null?N(r.total)+'원':'—'}</td>
         <td style="width:8%;text-align:center">
           <button class="btn btn-xs" style="background:var(--red-lt);color:var(--red);padding:3px 7px"
-            onclick="event.stopPropagation();deleteSeller('${safe}')" title="매장 삭제">삭제</button>
+            onclick="event.stopPropagation();deleteSeller('${rawSafe}')" title="매장 삭제">삭제</button>
         </td>
       </tr>`;
     }).join('');
