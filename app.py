@@ -898,15 +898,24 @@ SELLER_ALIAS = {
 
 # 화면 표시 전용 변환 (DB 값은 그대로, 보이는 이름만 변경)
 DISPLAY_NAME = {
-    '베이비하우스 하남미시점': '베이비하우스 하남미사점',
-    '주식회사 에스엘컴퍼니':   '베이비하우스 동대전점_발육',
-    '베이비하우스 동대전점':   '베이비하우스 동대전점_발육',
-    '베투키':                  '베이비 투 키즈',
-    '베이비하우스 군포점':     '베이비하우스 안양점',
-    '베네피아 부천점':         '링크맘 부천점',
-    '베이비하우스 일산화정점': '베이비하우스 일산점',
-    # 숨김 처리 (빈 문자열이면 API에서 제외)
-    '베이비하우스 파주점/신성준고객': None,
+    # 다산: 베네피아 다산 → 베이비스토어 다산 (같은 매장)
+    '베네피아 다산':                    '베이비스토어 다산',
+    # 하남미시점 오타 (DB에 남아있을 경우 대비)
+    '베이비하우스 하남미시점':           '베이비하우스 하남미사점',
+    # 동대전점: _발육 suffix 없이 표시
+    '베이비하우스 동대전점':             '베이비하우스 동대전점',
+    '주식회사 에스엘컴퍼니':            '베이비하우스 동대전점',
+    # 베투키 → 베이비 투 키즈
+    '베투키':                           '베이비 투 키즈',
+    # 군포점 → 안양점으로 표시
+    '베이비하우스 군포점':              '베이비하우스 안양점',
+    # 부천, 일산
+    '베네피아 부천점':                  '링크맘 부천점',
+    '베이비하우스 일산화정점':          '베이비하우스 일산점',
+    # 울산점 불필요 텍스트 포함 버전 (혹시 남아있을 경우)
+    '베이비하우스 울산점  엔픽스. 타프토이즈,카오스': '베이비하우스 울산점',
+    # 숨김 처리 (None = 표시 안 함)
+    '베이비하우스 파주점/신성준고객':   None,
 }
 
 def display_seller(name):
@@ -5705,7 +5714,18 @@ def api_display_export_campaign():
             ws.row_dimensions[ri].height=13; ri+=1; prev_g=g
         info=seller_map[seller]; sc=info['total']
         sc_color='16A34A' if sc>=5 else 'D97706' if sc>=2 else '9CA3AF'
-        row=[g,seller,sc]+[f"✓{info['prods'][p]['score']}pt" if info['prods'].get(p,{}).get('has_display') else '—' if p in info['prods'] else '' for p in products]+[info['cnt'],get_sales(seller)]
+        row=[g,seller,sc]
+        for p in products:
+            pd=info['prods'].get(p)
+            if pd and pd.get('has_display'):
+                qty=pd.get('quantity',0) or 0
+                cell_val=f"✓{qty}개 +{pd['score']}pt" if qty>0 else f"✓+{pd['score']}pt"
+            elif pd:
+                cell_val='—'
+            else:
+                cell_val=''
+            row.append(cell_val)
+        row+=[info['cnt'],get_sales(seller)]
         for ci,v in enumerate(row,1):
             c=ws.cell(row=ri,column=ci,value=v); c.font=Font(size=9,name='맑은 고딕'); c.border=bdr
             c.alignment=ctr if ci!=2 else left

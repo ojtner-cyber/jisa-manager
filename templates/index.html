@@ -1909,7 +1909,13 @@ function renderDisplayTable(scores, allProds){
     }
     const prods=(r.products||[]).map(p=>{
       const done=p.has_display;
-      return`<span style="display:inline-flex;align-items:center;gap:3px;background:${done?'var(--green-lt)':'var(--bg)'};color:${done?'var(--green)':'var(--t-300)'};border:1px solid ${done?'var(--green)':'var(--border)'};padding:2px 7px;border-radius:20px;font-size:10px;margin:2px">${done?'✓':'○'} ${p.product_name}${done&&p.score?` +${p.score}pt`:''}</span>`;
+      const qty=p.quantity||0;
+      // 수량이 있으면 함께 표시
+      const qtyStr=done&&qty>0?` (${qty}개)`:'';
+      const scoreStr=done&&p.score?` +${p.score}pt`:'';
+      return`<span style="display:inline-flex;align-items:center;gap:3px;background:${done?'var(--green-lt)':'var(--bg)'};color:${done?'var(--green)':'var(--t-300)'};border:1px solid ${done?'var(--green)':'var(--border)'};padding:2px 8px;border-radius:20px;font-size:10px;margin:2px">
+        ${done?'✓':'○'} ${p.product_name}${qtyStr}${scoreStr}
+      </span>`;
     }).join('');
     // seller_name 이스케이프
     const safeSeller=r.seller_name.replace(/'/g,"\'").replace(/"/g,'&quot;');
@@ -2927,14 +2933,16 @@ function switchSalesTab(tab){
 
 // ── 매장명 표시명 변환 ─────────────────────────────
 const DISPLAY_NAME_MAP = {
-  '베이비하우스 하남미시점': '베이비하우스 하남미사점',
-  '주식회사 에스엘컴퍼니':   '베이비하우스 동대전점_발육',
-  '베이비하우스 동대전점':   '베이비하우스 동대전점_발육',
-  '베투키':                  '베이비 투 키즈',
-  '베이비하우스 군포점':     '베이비하우스 안양점',
-  '베네피아 부천점':         '링크맘 부천점',
-  '베이비하우스 일산화정점': '베이비하우스 일산점',
-  '베이비하우스 파주점/신성준고객': null,  // 숨김
+  '베네피아 다산':                    '베이비스토어 다산',
+  '베이비하우스 하남미시점':           '베이비하우스 하남미사점',
+  '베이비하우스 동대전점':             '베이비하우스 동대전점',
+  '주식회사 에스엘컴퍼니':            '베이비하우스 동대전점',
+  '베투키':                           '베이비 투 키즈',
+  '베이비하우스 군포점':              '베이비하우스 안양점',
+  '베네피아 부천점':                  '링크맘 부천점',
+  '베이비하우스 일산화정점':          '베이비하우스 일산점',
+  '베이비하우스 울산점  엔픽스. 타프토이즈,카오스': '베이비하우스 울산점',
+  '베이비하우스 파주점/신성준고객':   null,
 };
 function DS(name){ // Display Seller name
   if(!name) return name;
