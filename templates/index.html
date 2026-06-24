@@ -3026,7 +3026,10 @@ function renderTrend(){
       </div>`;
     }).join('');
 
-    return `<div style="background:var(--paper);border:1.5px solid ${dir==='up'?'rgba(22,163,74,.2)':dir==='down'?'rgba(239,68,68,.2)':'var(--border)'};border-radius:var(--r-lg);padding:16px;position:relative;overflow:hidden">
+    return `<div style="background:var(--paper);border:1.5px solid ${dir==='up'?'rgba(22,163,74,.2)':dir==='down'?'rgba(239,68,68,.2)':'var(--border)'};border-radius:var(--r-lg);padding:16px;position:relative;overflow:hidden;cursor:pointer;transition:.15s"
+      onclick="openTrendDetail('${r.seller_name.replace(/'/g,"\\'")}')"
+      onmouseenter="this.style.boxShadow='0 4px 16px rgba(0,0,0,.1)'"
+      onmouseleave="this.style.boxShadow='none'">
       <!-- 좌측 방향 바 -->
       <div style="position:absolute;left:0;top:0;bottom:0;width:3px;background:${DIR_COLOR[dir]};border-radius:4px 0 0 4px"></div>
       
@@ -3034,7 +3037,7 @@ function renderTrend(){
       <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:12px">
         <div style="flex:1;min-width:0">
           <div style="font-size:13px;font-weight:700;color:var(--t-900);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${r.seller_name}</div>
-          <div style="font-size:11px;color:var(--t-300);margin-top:2px">${N(r.year_total)}원 (연간)</div>
+          <div style="font-size:11px;color:var(--t-300);margin-top:2px">${N(r.year_total)}원 (연간) · <span style="color:var(--p);font-size:10px">클릭하면 상세 분석 →</span></div>
         </div>
         <div style="display:flex;flex-direction:column;align-items:flex-end;gap:4px;flex-shrink:0;margin-left:8px">
           <span style="background:${DIR_BG[dir]};color:${DIR_COLOR[dir]};font-size:12px;font-weight:700;padding:3px 10px;border-radius:20px">${DIR_LABEL[dir]}</span>
@@ -3078,6 +3081,114 @@ function N_short(n){
   if(n >= 1000000) return (n/1000000).toFixed(0)+'백만';
   if(n >= 10000) return (n/10000).toFixed(0)+'만';
   return N(n);
+}
+
+// 최근흐름 카드 클릭 → 매장 상세 분석 슬라이드
+async function openTrendDetail(sellerName){
+  const year=document.getElementById('sales-year')?.value||new Date().getFullYear();
+  // 매장 분석 데이터 로드
+  const data = await api(`/api/script/analysis?seller=${encodeURIComponent(sellerName)}&year=${year}`);
+  if(!data) return;
+
+  let panel = document.getElementById('trend-detail-panel');
+  if(!panel){
+    panel = document.createElement('div');
+    panel.id='trend-detail-panel';
+    panel.style.cssText='position:fixed;top:0;right:0;width:min(520px,100vw);height:100vh;background:var(--paper);box-shadow:-8px 0 32px rgba(0,0,0,.15);z-index:800;overflow-y:auto;transform:translateX(100%);transition:.3s cubic-bezier(.4,0,.2,1)';
+    panel.innerHTML=`<div style="padding:20px 24px">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px">
+        <div id="tdp-name" style="font-size:16px;font-weight:700;color:var(--t-900)"></div>
+        <button onclick="closeTrendDetail()" style="background:none;border:none;cursor:pointer;font-size:20px;color:var(--t-300)">✕</button>
+      </div>
+      <div id="tdp-body"></div>
+    </div>`;
+    document.body.appendChild(panel);
+  }
+
+  document.getElementById('tdp-name').textContent=sellerName;
+
+  // 브랜드별 + 최근 흐름 분석
+  const brands={}; const MONTHS_KR2=['','1월','2월','3월','4월','5월','6월','7월','8월','9월','10월','11월','12월'];
+  (data.sold_items||[]).forEach(item=>{
+    const b=item.item_group||'기타';
+    if(!brands[b]) brands[b]={total:0,qty:0,items:[]};
+    brands[b].total+=item.total||0;
+    brands[b].qty+=item.qty||0;
+    brands[b].items.push(item);
+  });
+
+  // 판매 흐름 (월별 데이터)
+  const monthlyRows = await api(`/api/sales-by-store?seller=${encodeURIComponent(sellerName)}&year=${year}`)||[];
+
+  let html='';
+  // 월별 흐름 바
+  if(monthlyRows.length){
+    const maxT=Math.max(...monthlyRows.map(m=>m.total||0))||1;
+    html+=`<div style="margin-bottom:20px"><div style="font-size:12px;font-weight:700;color:var(--t-700);margin-bottom:10px">📈 월별 매출 흐름</div>
+    <div style="display:flex;align-items:flex-end;gap:3px;height:64px">
+    ${monthlyRows.map(m=>{
+      const h=Math.max(2,Math.round(m.total/maxT*52));
+      const pct=m.total>monthlyRows[0]?.total?'var(--green)':'var(--p)';
+      return`<div style="flex:1;display:flex;flex-direction:column;align-items:center;gap:2px">
+        <div style="font-size:8px;color:var(--t-300)">${N_short(m.total)}</div>
+        <div style="width:100%;height:${h}px;background:${pct};border-radius:2px 2px 0 0;min-height:2px"></div>
+        <div style="font-size:8px;color:var(--t-400)">${MONTHS_KR2[m.month]}</div>
+      </div>`;
+    }).join('')}
+    </div></div>`;
+  }
+
+  // 브랜드별 현황
+  html+=`<div style="font-size:12px;font-weight:700;color:var(--t-700);margin-bottom:10px">🏷 브랜드별 판매 현황</div>`;
+  const BRAND_ORDER_D=['줄즈','레카로','ABC디자인','원더폴드','카오스','엔픽스','타프토이즈'];
+  const totalSales=Object.values(brands).reduce((s,v)=>s+v.total,0)||1;
+  BRAND_ORDER_D.forEach(brand=>{
+    const bData=brands[brand]; if(!bData||!bData.total) return;
+    const pct=Math.round(bData.total/totalSales*100);
+    html+=`<div style="margin-bottom:12px">
+      <div style="display:flex;justify-content:space-between;margin-bottom:4px">
+        <span style="font-size:12px;font-weight:600;color:var(--t-900)">${brand}</span>
+        <span style="font-size:11px;color:var(--t-300)">${N(bData.total)}원 (${pct}%)</span>
+      </div>
+      <div style="background:var(--border);height:4px;border-radius:4px;margin-bottom:6px">
+        <div style="background:var(--p);height:4px;border-radius:4px;width:${pct}%"></div>
+      </div>
+      ${bData.items.slice(0,4).map(it=>`
+        <div style="display:flex;justify-content:space-between;padding:3px 8px;font-size:11px;color:var(--t-500)">
+          <span>${it.item_name.replace(/^\[[^\]]+\]/,'').split('_')[0]}</span>
+          <span>${N(it.total)}원 / ${it.qty}개</span>
+        </div>`).join('')}
+    </div>`;
+  });
+
+  // 추천 제품 (타프 미취급)
+  if(data.unsold_taft?.length){
+    html+=`<div style="margin-top:16px;background:var(--amber-lt);border-radius:var(--r-md);padding:12px">
+      <div style="font-size:12px;font-weight:700;color:var(--amber);margin-bottom:8px">💡 추천 신규 제품 (재고 있음)</div>
+      ${data.unsold_taft.slice(0,3).map(p=>`<div style="font-size:11px;color:var(--t-700);margin-bottom:4px">• ${p.name} — ${p.desc}</div>`).join('')}
+    </div>`;
+  }
+
+  document.getElementById('tdp-body').innerHTML=html;
+  panel.style.transform='translateX(0)';
+
+  // 배경 딤
+  let dim=document.getElementById('trend-dim');
+  if(!dim){
+    dim=document.createElement('div');
+    dim.id='trend-dim';
+    dim.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.3);z-index:799;display:none';
+    dim.onclick=closeTrendDetail;
+    document.body.appendChild(dim);
+  }
+  dim.style.display='block';
+}
+
+function closeTrendDetail(){
+  const p=document.getElementById('trend-detail-panel');
+  const d=document.getElementById('trend-dim');
+  if(p) p.style.transform='translateX(100%)';
+  if(d) d.style.display='none';
 }
 
 async function loadSalesPage(){

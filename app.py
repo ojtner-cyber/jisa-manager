@@ -628,13 +628,16 @@ def api_sales_by_store():
         date_cond = f"{year}%"
 
     if seller:
-        rows = [dict(r) for r in conn.execute("""
+        # aliases 포함 조회 (하남미시점 → 하남미사점 등)
+        db_names = get_all_real_sellers_for(seller)
+        placeholders = ','.join('?' for _ in db_names)
+        rows = [dict(r) for r in conn.execute(f"""
             SELECT ? AS seller_name,
                    CAST(strftime('%m', sale_date) AS INTEGER) AS month,
                    COUNT(*) cnt, SUM(total) total, SUM(quantity) qty
             FROM sales_data
-            WHERE real_seller=? AND sale_date LIKE ? AND sale_date != ''
-            GROUP BY month ORDER BY month""", (seller, seller, date_cond)).fetchall()]
+            WHERE real_seller IN ({placeholders}) AND sale_date LIKE ? AND sale_date != ''
+            GROUP BY month ORDER BY month""", [seller] + db_names + [date_cond]).fetchall()]
         conn.close()
         return jsonify(rows)
     else:
@@ -645,6 +648,17 @@ def api_sales_by_store():
             WHERE sale_date LIKE ? AND real_seller != '' AND real_seller IS NOT NULL
             GROUP BY real_seller ORDER BY real_seller""", (date_cond,)).fetchall()]
         conn.close()
+
+        # 표시명으로 그룹화 (베이비하우스 하남미시점 + 하남미사점 → 하남미사점으로 합산)
+        from collections import defaultdict
+        merged = defaultdict(lambda: {'cnt':0,'total':0,'qty':0})
+        for r in rows:
+            display_nm = display_seller(r['seller_name'])
+            if is_hidden_seller(r['seller_name']): continue
+            merged[display_nm]['cnt']   += r['cnt']
+            merged[display_nm]['total'] += r['total']
+            merged[display_nm]['qty']   += r['qty']
+        rows = [{'seller_name':k, **v} for k,v in merged.items()]
 
         def brand_sort_key(r):
             nm = (r['seller_name'] or '').replace('_', ' ').lower()
@@ -866,11 +880,11 @@ SELLER_ALIAS = {
     '베이비하우스 대구':        '베이비하우스 대구점',
     # 동대전점 통합
     '주식회사 에스엘컴퍼니':   '베이비하우스 동대전점',
-    # 하남미사점
+    # 하남미사점 — 미시점(오타)도 미사점으로 통합
     '베이비하우스 하남미시점':  '베이비하우스 하남미사점',
     '베이비하우스 하남미사':    '베이비하우스 하남미사점',
-    # 군포점 → 안양점으로 표시 (DB에는 군포점으로 존재)
-    '베이비하우스 안양점':      '베이비하우스 군포점',  # 업로드 시 정규화
+    # 군포점 → 안양점으로 표시 (업로드 시 정규화용)
+    '베이비하우스 안양점':      '베이비하우스 군포점',
     # 동래점
     '베이비하우스 동래':        '베이비하우스 동래점',
     '베이비하우스 부산동래점':  '베이비하우스 동래점',
@@ -878,21 +892,25 @@ SELLER_ALIAS = {
     # 부천점
     '베이비하우스 부천':        '베이비하우스 부천점',
     '부천 베이비하우스':        '베이비하우스 부천점',
-    '베네피아 부천점':          '링크맘 부천점',        # 부천점 합산
+    '베네피아 부천점':          '링크맘 부천점',
     # 일산점
     '베이비하우스 일산화정점':  '베이비하우스 일산점',
     # 광주점
     '광주베이비하우스':         '베이비하우스 광주점',
     '베이비하우스광주':         '베이비하우스 광주점',
-    # 베네피아 다산
+    # 베이비스토어 다산 → 베네피아 다산 (업로드 시 정규화; 표시는 베이비스토어 다산)
     '베이비스토어 다산':        '베네피아 다산',
     '베이비스토어다산':         '베네피아 다산',
-    # 베투키 (DB에는 베투키로 저장)
+    # 링크맘 부산점 = 에이블베이비 계열
+    '주식회사 에이블베이비':    '링크맘 부산점',
+    '에이블베이비':             '링크맘 부산점',
+    '에이블 부산':              '링크맘 부산점',
+    # 베투키
     '주식회사 베이비투키즈':    '베투키',
     '베이비투키즈':             '베투키',
     # 베이비스토리
     '베이비스토리':             '베이비스토리 판교점',
-    # 파주점 고객 데이터 → 삭제 대상 (업로드 시 skip)
+    # 파주점 고객 데이터 → 삭제 대상
     '베이비하우스 파주점/신성준고객': '',
 }
 
@@ -926,6 +944,21 @@ def display_seller(name):
 def is_hidden_seller(name):
     """숨겨야 할 매장인지 확인"""
     return DISPLAY_NAME.get(name) is None and name in DISPLAY_NAME
+
+def get_all_real_sellers_for(seller_name):
+    """표시명에 해당하는 모든 DB real_seller 값 반환 (하남미시→미사 등 aliases 포함)"""
+    # 표시명 → DB 저장명 역매핑
+    reverse_map = {}
+    for raw, display in DISPLAY_NAME.items():
+        if display and display != raw:
+            if display not in reverse_map:
+                reverse_map[display] = []
+            reverse_map[display].append(raw)
+    # 해당 표시명에 매핑된 모든 DB 이름
+    aliases = reverse_map.get(seller_name, [])
+    # DB 저장명이 display_seller로 변환된 결과와 일치하는 것들
+    db_names = [seller_name] + aliases
+    return db_names
 def resolve_seller(name):
     """매장명 정규화 — 별칭 매핑 + 불필요한 텍스트 제거"""
     import re as _re
@@ -1843,6 +1876,47 @@ def api_script_report():
         conn_y.close()
     except: pass
 
+    # ── 수정5: 브랜드/제품별 최근 흐름 ─────────────────
+    brand_trend_block = ''
+    try:
+        conn_bt = get_db()
+        bt_rows = conn_bt.execute("""
+            SELECT item_group, item_name, SUM(total) total, SUM(quantity) qty
+            FROM sales_data
+            WHERE real_seller=? AND sale_date LIKE ? AND sale_date!=''
+            GROUP BY item_name ORDER BY total DESC
+        """, (seller, f"{year}%")).fetchall()
+        conn_bt.close()
+
+        bt_brands = {}
+        for r in bt_rows:
+            b = remap_group(r[0], r[1])
+            if not b or b == '기타': continue
+            norm = normalize_item_name(r[1])
+            pname = norm.replace(f'[{b}]','').strip()
+            if b not in bt_brands:
+                bt_brands[b] = {'total':0, 'qty':0, 'items':{}}
+            bt_brands[b]['total'] += r[2] or 0
+            bt_brands[b]['qty']   += r[3] or 0
+            # 같은 제품명으로 합산
+            if pname not in bt_brands[b]['items']:
+                bt_brands[b]['items'][pname] = {'total':0, 'qty':0}
+            bt_brands[b]['items'][pname]['total'] += r[2] or 0
+            bt_brands[b]['items'][pname]['qty']   += r[3] or 0
+
+        yr_total = sum(v['total'] for v in bt_brands.values()) or 1
+        if bt_brands:
+            brand_trend_block = "\n  [ 브랜드·제품별 판매 상세 ]\n"
+            for b_name in BRAND_ORDER:
+                bv = bt_brands.get(b_name)
+                if not bv or not bv['total']: continue
+                b_pct = round(bv['total']/yr_total*100, 1)
+                brand_trend_block += f"  ┌ {b_name}: {w(bv['total'])}원 ({b_pct}%) · {bv['qty']}개\n"
+                for pname, pv in sorted(bt_brands[b_name]['items'].items(), key=lambda x:-x[1]['total'])[:5]:
+                    brand_trend_block += f"  │  · {pname}: {w(pv['total'])}원 / {pv['qty']}개\n"
+    except Exception as e:
+        brand_trend_block = f''  # 오류 시 조용히 스킵
+
     action_block = '\n'.join(f"  {i+1}. {a}" for i, a in enumerate(action_items)) if action_items else "  · 지속적인 관계 관리 및 정기 방문 유지"
 
     # ── 최종 보고서 ────────────────────────────────
@@ -1871,6 +1945,7 @@ def api_script_report():
   취급 브랜드 수 : {brand_cnt}개 / 취급 제품 종류 : {item_cnt}종
   타프토이즈     : {taft_pct}% ({taft_cnt_k}종 / {w(taft_total)}원)
 {yearly_comparison}
+{brand_trend_block}
 {sep3}
   [ 종합 평가 ]
   {grade_comment}
@@ -2347,12 +2422,21 @@ def export_xlsx_monthly():
     for mo in months:
         for b in BRAND_ORDER:
             if b == '타프토이즈': continue
-            prows = conn.execute("""
-                SELECT item_name, SUM(quantity) qty, SUM(total) total
-                FROM sales_data
-                WHERE sale_date LIKE ? AND item_group NOT IN ('','NULL') AND real_seller!=''
-                GROUP BY item_name
-            """, (f"{year}-{str(mo).zfill(2)}%",)).fetchall()
+            if seller:
+                prows = conn.execute("""
+                    SELECT item_name, SUM(quantity) qty, SUM(total) total
+                    FROM sales_data
+                    WHERE sale_date LIKE ? AND item_group NOT IN ('','NULL')
+                      AND real_seller=?
+                    GROUP BY item_name
+                """, (f"{year}-{str(mo).zfill(2)}%", seller)).fetchall()
+            else:
+                prows = conn.execute("""
+                    SELECT item_name, SUM(quantity) qty, SUM(total) total
+                    FROM sales_data
+                    WHERE sale_date LIKE ? AND item_group NOT IN ('','NULL') AND real_seller!=''
+                    GROUP BY item_name
+                """, (f"{year}-{str(mo).zfill(2)}%",)).fetchall()
             prod_monthly_cache[(mo, b)] = prows
 
     conn.close()
