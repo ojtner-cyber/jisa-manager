@@ -920,7 +920,7 @@ DISPLAY_NAME = {
     '베네피아 다산':                    '베이비스토어 다산',
     # 하남미시점 오타 (DB에 남아있을 경우 대비)
     '베이비하우스 하남미시점':           '베이비하우스 하남미사점',
-    # 동대전점: _발육 suffix 없이 표시
+    # 동대전점
     '베이비하우스 동대전점':             '베이비하우스 동대전점',
     '주식회사 에스엘컴퍼니':            '베이비하우스 동대전점',
     # 베투키 → 베이비 투 키즈
@@ -930,8 +930,10 @@ DISPLAY_NAME = {
     # 부천, 일산
     '베네피아 부천점':                  '링크맘 부천점',
     '베이비하우스 일산화정점':          '베이비하우스 일산점',
-    # 울산점 불필요 텍스트 포함 버전 (혹시 남아있을 경우)
+    # 울산점
     '베이비하우스 울산점  엔픽스. 타프토이즈,카오스': '베이비하우스 울산점',
+    # 베이비스토리 — DB에는 '베이비스토리 판교점'으로 저장됨
+    '베이비스토리':                     '베이비스토리 판교점',
     # 숨김 처리 (None = 표시 안 함)
     '베이비하우스 파주점/신성준고객':   None,
 }
@@ -1638,6 +1640,7 @@ def api_script_report():
 
     # ── TOP5 제품 ──────────────────────────────────
     top_table = ''
+    top_trend_block = ''
     brand_insights_short = {
         '레카로':'안전 신뢰 → 전문점 강점', '줄즈':'SNS 바이럴 + 재구매', '원더폴드':'웨건 독점 포지션',
         '엔픽스':'국내 신뢰 + 가성비', '카오스':'하이체어 프리미엄', 'ABC디자인':'유럽 감성 + 패밀리',
@@ -1652,6 +1655,69 @@ def api_script_report():
         insight = brand_insights_short.get(br,'')
         top_table += f"  {i}위. [{br}] {nm}\n"
         top_table += f"       판매 {w(qty)}개 / {w(tot)}원 / 비중 {share}% / {insight}\n\n"
+
+    # ── 수정3: 주요 판매 제품 최근 흐름 분석 ────────────
+    try:
+        conn_trend = get_db()
+        top_trend_block = "\n  [ 주요 제품 최근 흐름 분석 ]\n"
+        MONTHS_KR = {1:'1월',2:'2월',3:'3월',4:'4월',5:'5월',6:'6월',
+                     7:'7월',8:'8월',9:'9월',10:'10월',11:'11월',12:'12월'}
+        for i, r in enumerate(top5[:5], 1):
+            nm = normalize_item_name(r.get('item_name',''))
+            br = remap_group(r.get('item_group',''), r.get('item_name',''))
+            # nm에서 브랜드 제거 후 모델명만 추출
+            base_name = nm.replace(f'[{br}]','').strip().split('_')[0].strip()
+
+            # 해당 매장 + 해당 제품 월별 흐름
+            m_rows = conn_trend.execute("""
+                SELECT CAST(strftime('%m',sale_date) AS INTEGER) mo,
+                       SUM(total) total, SUM(quantity) qty
+                FROM sales_data
+                WHERE real_seller=? AND item_name LIKE ? AND sale_date LIKE ? AND sale_date!=''
+                GROUP BY mo ORDER BY mo
+            """, (seller, f'%{base_name}%', f'{year}%')).fetchall()
+
+            if not m_rows:
+                continue
+
+            monthly_vals = [row[1] for row in m_rows]
+            monthly_mos  = [row[0] for row in m_rows]
+
+            # 흐름 판단 (최근 2개월 비교)
+            if len(monthly_vals) >= 2:
+                last   = monthly_vals[-1]
+                prev   = monthly_vals[-2]
+                diff   = last - prev
+                pct_ch = round(diff / prev * 100, 1) if prev else 0
+                if pct_ch >= 10:
+                    direction = f"▲ 상승 (+{pct_ch}%)"
+                    comment   = "수요 증가 — 재고 확보 및 적극 추천 필요"
+                elif pct_ch <= -10:
+                    direction = f"▼ 하락 ({pct_ch}%)"
+                    comment   = "수요 감소 — 원인 파악 및 대체 제품 제안 검토"
+                else:
+                    direction = f"→ 안정 ({pct_ch:+}%)"
+                    comment   = "안정적 수요 — 유지 전략 지속"
+            elif len(monthly_vals) == 1:
+                direction = "— 단일 월 데이터"
+                comment   = "추세 판단을 위해 추가 데이터 필요"
+            else:
+                continue
+
+            # 월별 바 시각화
+            max_v = max(monthly_vals) or 1
+            bar_str = ''
+            for mo, mv in zip(monthly_mos, monthly_vals):
+                bar_h = int(mv / max_v * 5)
+                bar_str += f"    {MONTHS_KR[mo]:>3}: {'█'*bar_h}{'░'*(5-bar_h)}  {w(mv)}원\n"
+
+            top_trend_block += f"\n  {i}위 [{br}] {base_name} — {direction}\n"
+            top_trend_block += f"  └ {comment}\n"
+            top_trend_block += bar_str
+
+        conn_trend.close()
+    except Exception:
+        top_trend_block = ''
 
     # ── 주별 추이 + 품목 상세 ────────────────────────
     weekly_table = ''
@@ -1970,6 +2036,7 @@ def api_script_report():
 {sep1}
 
 {top_table}
+{top_trend_block}
 {sep1}
   4. 주별 판매 추이
 {sep1}
@@ -3601,12 +3668,16 @@ def api_delete_seller():
 @app.route("/api/admin/normalize-sellers", methods=["POST"])
 @login_required
 def normalize_sellers():
-    """sales_data의 real_seller 정규화
-    1. 언더바→공백
-    2. SELLER_ALIAS 적용 (대구/동대전/하남미사 등 통합)
-    3. '고객' 포함된 항목 삭제
-    4. resolve_seller로 브랜드명 제거
-    """
+    """sales_data의 real_seller 정규화 + display_record 링크맘 공백 통합"""
+    LINKMOM_SPACE_MAP = {
+        '링크맘 경기 광주점':   '링크맘 경기광주점',
+        '링크맘 대구 달성점':   '링크맘 대구달성점',
+        '링크맘 대구 성서점':   '링크맘 대구성서점',
+        '링크맘 대구 수성점':   '링크맘 대구수성점',
+        '링크맘 파주 직영점':   '링크맘 파주직영점',
+        '링크맘 의정부 민락점': '링크맘 의정부민락점',
+        '링크맘 의정부 직영점': '링크맘 의정부직영점',
+    }
     conn = get_db()
     rows = conn.execute("SELECT DISTINCT real_seller FROM sales_data WHERE real_seller != ''").fetchall()
     updated = 0
@@ -3614,25 +3685,18 @@ def normalize_sellers():
 
     for r in rows:
         old = r[0]
-
-        # '고객' 포함된 항목 삭제
         if '고객' in old:
             conn.execute("DELETE FROM sales_data WHERE real_seller=?", (old,))
-            deleted += 1
-            continue
-
-        # 언더바 → 공백
+            deleted += 1; continue
         new = old.replace('_', ' ').strip()
-        # SELLER_ALIAS 직접 적용
+        new = LINKMOM_SPACE_MAP.get(new, new)
         new = SELLER_ALIAS.get(new, new)
-        # resolve_seller로 추가 정규화
         new = resolve_seller(new)
-
         if old != new:
             conn.execute("UPDATE sales_data SET real_seller=? WHERE real_seller=?", (new, old))
             updated += 1
 
-    # display_record real_seller도 동일하게 정규화
+    # display_record — 링크맘 공백 버전을 공백없는 버전으로 통합
     disp_rows = conn.execute("SELECT DISTINCT seller_name FROM display_record WHERE seller_name!=''").fetchall()
     disp_updated = 0
     for r in disp_rows:
@@ -3640,19 +3704,31 @@ def normalize_sellers():
         if '고객' in old:
             conn.execute("DELETE FROM display_record WHERE seller_name=?", (old,))
             continue
-        new = SELLER_ALIAS.get(old.replace('_',' ').strip(), old)
+        new = old.replace('_',' ').strip()
+        # 링크맘 공백 정규화 (우선 적용)
+        new = LINKMOM_SPACE_MAP.get(new, new)
+        new = SELLER_ALIAS.get(new, new)
         new = resolve_seller(new)
         if old != new:
-            # display_record는 UNIQUE(campaign_id, seller_name, product_name) 제약
-            # 대상 통합 — 기존 record 있으면 점수 합산
-            existing = conn.execute(
-                "SELECT id, score FROM display_record WHERE seller_name=? AND campaign_id=(SELECT campaign_id FROM display_record WHERE seller_name=? LIMIT 1) AND product_name=(SELECT product_name FROM display_record WHERE seller_name=? LIMIT 1) LIMIT 1",
-                (new, old, old)).fetchone()
-            if existing:
-                conn.execute("UPDATE display_record SET score=score+(SELECT score FROM display_record WHERE seller_name=? LIMIT 1) WHERE id=?", (old, existing[0]))
-                conn.execute("DELETE FROM display_record WHERE seller_name=?", (old,))
-            else:
-                conn.execute("UPDATE display_record SET seller_name=? WHERE seller_name=?", (new, old))
+            # UNIQUE 제약 처리: 같은 캠페인+제품이면 점수 합산 후 삭제
+            conflicts = conn.execute("""
+                SELECT dr_old.id, dr_old.campaign_id, dr_old.product_name, dr_old.score
+                FROM display_record dr_old
+                WHERE dr_old.seller_name=?
+            """, (old,)).fetchall()
+            for cf in conflicts:
+                cf_id, cf_camp, cf_prod, cf_score = cf
+                existing = conn.execute("""
+                    SELECT id, score FROM display_record
+                    WHERE seller_name=? AND campaign_id=? AND product_name=?
+                """, (new, cf_camp, cf_prod)).fetchone()
+                if existing:
+                    # 더 높은 점수 유지
+                    keep_score = max(existing[1] or 0, cf_score or 0)
+                    conn.execute("UPDATE display_record SET score=? WHERE id=?", (keep_score, existing[0]))
+                    conn.execute("DELETE FROM display_record WHERE id=?", (cf_id,))
+                else:
+                    conn.execute("UPDATE display_record SET seller_name=? WHERE id=?", (new, cf_id))
             disp_updated += 1
 
     # branches 지역 자동 배정
@@ -3666,11 +3742,8 @@ def normalize_sellers():
 
     conn.commit(); conn.close()
     return jsonify({
-        "ok": True,
-        "normalized": updated,
-        "deleted": deleted,
-        "disp_updated": disp_updated,
-        "region_updated": region_updated
+        "ok": True, "normalized": updated, "deleted": deleted,
+        "disp_updated": disp_updated, "region_updated": region_updated
     })
 
 @app.route("/api/admin/merge-branches", methods=["POST"])
@@ -5293,15 +5366,24 @@ def api_display_upload():
 
     # real_seller 매핑
     # 실적용거래처명 컬럼을 그대로 사용 — 언더바만 공백으로 변환
+    # 링크맘 공백 정규화 매핑 (공백 있는 버전 → 공백 없는 버전)
+    LINKMOM_NORM = {
+        '링크맘 경기 광주점':   '링크맘 경기광주점',
+        '링크맘 대구 달성점':   '링크맘 대구달성점',
+        '링크맘 대구 성서점':   '링크맘 대구성서점',
+        '링크맘 대구 수성점':   '링크맘 대구수성점',
+        '링크맘 파주 직영점':   '링크맘 파주직영점',
+        '링크맘 의정부 민락점': '링크맘 의정부민락점',
+        '링크맘 의정부 직영점': '링크맘 의정부직영점',
+    }
+
     def clean_seller_name(raw):
         if not raw: return ''
         s = str(raw).strip()
-        # 언더바 → 공백
-        s = s.replace('_', ' ')
-        # 앞뒤 공백 제거
-        s = s.strip()
-        # 총합계/소계 등 제외
+        s = s.replace('_', ' ').strip()
         if s in ('합계', '총 합계', '총합계', '소계', ''): return ''
+        # 링크맘 공백 정규화
+        s = LINKMOM_NORM.get(s, s)
         return s
 
     total_inserted = 0

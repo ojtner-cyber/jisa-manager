@@ -3012,16 +3012,19 @@ function renderTrend(){
       ? `<span style="font-size:10px;color:${r.streak_dir==='up'?'var(--green)':'var(--red)'}">${r.streak_dir==='up'?'▲':'▼'} ${r.streak}개월 연속</span>`
       : '';
 
-    // 월별 바 차트 — 금액/막대/월 영역 완전 분리
+    // 월별 바 차트 — hover 툴팁 포함
     const barMax = Math.max(...vals) || 1;
-    const BAR_AREA_H = 40; // 막대 영역 고정 높이(px)
+    const BAR_AREA_H = 40;
     const bars = monthly.map(m => {
       const pct_bar = m.total / barMax;
       const barH = Math.max(2, Math.round(pct_bar * BAR_AREA_H));
       const barColor = m.mo === r.peak_mo ? '#16A34A' : m.mo === r.trough_mo ? '#EF4444' : '#94A3B8';
-      return `<div style="display:flex;flex-direction:column;align-items:center;gap:1px;flex:1;min-width:0">
+      const tooltip  = `${MONTHS_KR[m.mo]}: ${N(m.total)}원 (${m.qty}개)`;
+      return `<div style="display:flex;flex-direction:column;align-items:center;gap:1px;flex:1;min-width:0;position:relative"
+        title="${tooltip}">
         <div style="font-size:8px;color:var(--t-300);font-weight:500;white-space:nowrap;height:14px;display:flex;align-items:flex-end;line-height:1">${m.total>0?N_short(m.total):''}</div>
-        <div style="width:calc(100% - 2px);flex:none;background:${barColor};border-radius:2px 2px 0 0;height:${barH}px;min-height:2px;align-self:flex-end"></div>
+        <div style="width:calc(100% - 2px);flex:none;background:${barColor};border-radius:2px 2px 0 0;height:${barH}px;min-height:2px;align-self:flex-end;cursor:pointer"
+          onmouseenter="showBarTooltip(event,'${tooltip}')" onmouseleave="hideBarTooltip()"></div>
         <div style="font-size:8px;color:var(--t-400);height:12px;line-height:1;display:flex;align-items:center">${MONTHS_KR[m.mo]}</div>
       </div>`;
     }).join('');
@@ -3074,6 +3077,25 @@ function renderTrend(){
 }
 
 // 숫자 축약 표시
+// 바 차트 툴팁
+function showBarTooltip(e, text){
+  let tip = document.getElementById('bar-tooltip');
+  if(!tip){
+    tip = document.createElement('div');
+    tip.id = 'bar-tooltip';
+    tip.style.cssText = 'position:fixed;background:rgba(17,24,39,.9);color:#fff;font-size:11px;padding:5px 10px;border-radius:6px;pointer-events:none;z-index:9999;white-space:nowrap;box-shadow:0 2px 8px rgba(0,0,0,.3)';
+    document.body.appendChild(tip);
+  }
+  tip.textContent = text;
+  tip.style.display = 'block';
+  tip.style.left = (e.clientX + 10) + 'px';
+  tip.style.top  = (e.clientY - 30) + 'px';
+}
+function hideBarTooltip(){
+  const tip = document.getElementById('bar-tooltip');
+  if(tip) tip.style.display = 'none';
+}
+
 function N_short(n){
   if(!n) return '—';
   if(n >= 100000000) return (n/100000000).toFixed(0)+'억';
@@ -3083,105 +3105,179 @@ function N_short(n){
   return N(n);
 }
 
-// 최근흐름 카드 클릭 → 매장 상세 분석 슬라이드
+// 최근흐름 카드 클릭 → top5 제품 흐름 분석 슬라이드
 async function openTrendDetail(sellerName){
-  const year=document.getElementById('sales-year')?.value||new Date().getFullYear();
-  // 매장 분석 데이터 로드
-  const data = await api(`/api/script/analysis?seller=${encodeURIComponent(sellerName)}&year=${year}`);
-  if(!data) return;
+  const year = document.getElementById('sales-year')?.value || new Date().getFullYear();
+  const MKR = ['','1월','2월','3월','4월','5월','6월','7월','8월','9월','10월','11월','12월'];
+  const DIR_ICON = {up:'▲', down:'▼', stable:'→', none:'—'};
+  const DIR_COL  = {up:'#16A34A', down:'#EF4444', stable:'#2563EB', none:'#94A3B8'};
 
+  // 패널 준비
   let panel = document.getElementById('trend-detail-panel');
   if(!panel){
     panel = document.createElement('div');
-    panel.id='trend-detail-panel';
-    panel.style.cssText='position:fixed;top:0;right:0;width:min(520px,100vw);height:100vh;background:var(--paper);box-shadow:-8px 0 32px rgba(0,0,0,.15);z-index:800;overflow-y:auto;transform:translateX(100%);transition:.3s cubic-bezier(.4,0,.2,1)';
-    panel.innerHTML=`<div style="padding:20px 24px">
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px">
-        <div id="tdp-name" style="font-size:16px;font-weight:700;color:var(--t-900)"></div>
-        <button onclick="closeTrendDetail()" style="background:none;border:none;cursor:pointer;font-size:20px;color:var(--t-300)">✕</button>
-      </div>
-      <div id="tdp-body"></div>
-    </div>`;
+    panel.id = 'trend-detail-panel';
+    panel.style.cssText = 'position:fixed;top:0;right:0;width:min(560px,100vw);height:100vh;background:var(--paper);box-shadow:-8px 0 40px rgba(0,0,0,.18);z-index:800;overflow-y:auto;transform:translateX(100%);transition:.3s cubic-bezier(.4,0,.2,1)';
     document.body.appendChild(panel);
   }
-
-  document.getElementById('tdp-name').textContent=sellerName;
-
-  // 브랜드별 + 최근 흐름 분석
-  const brands={}; const MONTHS_KR2=['','1월','2월','3월','4월','5월','6월','7월','8월','9월','10월','11월','12월'];
-  (data.sold_items||[]).forEach(item=>{
-    const b=item.item_group||'기타';
-    if(!brands[b]) brands[b]={total:0,qty:0,items:[]};
-    brands[b].total+=item.total||0;
-    brands[b].qty+=item.qty||0;
-    brands[b].items.push(item);
-  });
-
-  // 판매 흐름 (월별 데이터)
-  const monthlyRows = await api(`/api/sales-by-store?seller=${encodeURIComponent(sellerName)}&year=${year}`)||[];
-
-  let html='';
-  // 월별 흐름 바
-  if(monthlyRows.length){
-    const maxT=Math.max(...monthlyRows.map(m=>m.total||0))||1;
-    html+=`<div style="margin-bottom:20px"><div style="font-size:12px;font-weight:700;color:var(--t-700);margin-bottom:10px">📈 월별 매출 흐름</div>
-    <div style="display:flex;align-items:flex-end;gap:3px;height:64px">
-    ${monthlyRows.map(m=>{
-      const h=Math.max(2,Math.round(m.total/maxT*52));
-      const pct=m.total>monthlyRows[0]?.total?'var(--green)':'var(--p)';
-      return`<div style="flex:1;display:flex;flex-direction:column;align-items:center;gap:2px">
-        <div style="font-size:8px;color:var(--t-300)">${N_short(m.total)}</div>
-        <div style="width:100%;height:${h}px;background:${pct};border-radius:2px 2px 0 0;min-height:2px"></div>
-        <div style="font-size:8px;color:var(--t-400)">${MONTHS_KR2[m.month]}</div>
-      </div>`;
-    }).join('')}
-    </div></div>`;
-  }
-
-  // 브랜드별 현황
-  html+=`<div style="font-size:12px;font-weight:700;color:var(--t-700);margin-bottom:10px">🏷 브랜드별 판매 현황</div>`;
-  const BRAND_ORDER_D=['줄즈','레카로','ABC디자인','원더폴드','카오스','엔픽스','타프토이즈'];
-  const totalSales=Object.values(brands).reduce((s,v)=>s+v.total,0)||1;
-  BRAND_ORDER_D.forEach(brand=>{
-    const bData=brands[brand]; if(!bData||!bData.total) return;
-    const pct=Math.round(bData.total/totalSales*100);
-    html+=`<div style="margin-bottom:12px">
-      <div style="display:flex;justify-content:space-between;margin-bottom:4px">
-        <span style="font-size:12px;font-weight:600;color:var(--t-900)">${brand}</span>
-        <span style="font-size:11px;color:var(--t-300)">${N(bData.total)}원 (${pct}%)</span>
+  panel.innerHTML = `<div style="padding:0">
+    <div style="position:sticky;top:0;background:var(--paper);border-bottom:1px solid var(--border);padding:16px 20px;display:flex;justify-content:space-between;align-items:center;z-index:1">
+      <div>
+        <div style="font-size:15px;font-weight:700;color:var(--t-900)">${sellerName}</div>
+        <div style="font-size:11px;color:var(--t-300);margin-top:1px">${year}년 TOP5 제품 흐름 분석</div>
       </div>
-      <div style="background:var(--border);height:4px;border-radius:4px;margin-bottom:6px">
-        <div style="background:var(--p);height:4px;border-radius:4px;width:${pct}%"></div>
-      </div>
-      ${bData.items.slice(0,4).map(it=>`
-        <div style="display:flex;justify-content:space-between;padding:3px 8px;font-size:11px;color:var(--t-500)">
-          <span>${it.item_name.replace(/^\[[^\]]+\]/,'').split('_')[0]}</span>
-          <span>${N(it.total)}원 / ${it.qty}개</span>
-        </div>`).join('')}
-    </div>`;
-  });
+      <button onclick="closeTrendDetail()" style="background:none;border:none;cursor:pointer;font-size:20px;color:var(--t-400);padding:4px 8px">✕</button>
+    </div>
+    <div id="tdp-loading" style="text-align:center;padding:48px;color:var(--t-300)">분석 중...</div>
+    <div id="tdp-body" style="padding:16px 20px"></div>
+  </div>`;
+  panel.style.transform = 'translateX(0)';
 
-  // 추천 제품 (타프 미취급)
-  if(data.unsold_taft?.length){
-    html+=`<div style="margin-top:16px;background:var(--amber-lt);border-radius:var(--r-md);padding:12px">
-      <div style="font-size:12px;font-weight:700;color:var(--amber);margin-bottom:8px">💡 추천 신규 제품 (재고 있음)</div>
-      ${data.unsold_taft.slice(0,3).map(p=>`<div style="font-size:11px;color:var(--t-700);margin-bottom:4px">• ${p.name} — ${p.desc}</div>`).join('')}
-    </div>`;
-  }
-
-  document.getElementById('tdp-body').innerHTML=html;
-  panel.style.transform='translateX(0)';
-
-  // 배경 딤
-  let dim=document.getElementById('trend-dim');
+  let dim = document.getElementById('trend-dim');
   if(!dim){
-    dim=document.createElement('div');
-    dim.id='trend-dim';
-    dim.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.3);z-index:799;display:none';
-    dim.onclick=closeTrendDetail;
+    dim = document.createElement('div');
+    dim.id = 'trend-dim';
+    dim.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.3);z-index:799';
+    dim.onclick = closeTrendDetail;
     document.body.appendChild(dim);
   }
-  dim.style.display='block';
+  dim.style.display = 'block';
+
+  // 데이터 병렬 로드
+  const [analysisData, monthlyData] = await Promise.all([
+    api(`/api/script/analysis?seller=${encodeURIComponent(sellerName)}&year=${year}`),
+    api(`/api/sales-by-store?seller=${encodeURIComponent(sellerName)}&year=${year}`)
+  ]);
+
+  const loading = document.getElementById('tdp-loading');
+  if(loading) loading.style.display = 'none';
+  const body = document.getElementById('tdp-body');
+  if(!body) return;
+
+  let html = '';
+
+  // ── 1. 월별 매출 흐름 ──────────────────────────
+  const monthlyRows = (monthlyData||[]).filter(m=>m.month);
+  if(monthlyRows.length){
+    const maxT = Math.max(...monthlyRows.map(m=>m.total||0)) || 1;
+    const trend = monthlyRows;
+    // 전체 추세
+    let overallDir = 'none', overallPct = 0;
+    if(trend.length >= 2){
+      const last = trend[trend.length-1].total;
+      const prev = trend[trend.length-2].total;
+      overallPct = prev ? Math.round((last-prev)/prev*100) : 0;
+      overallDir = overallPct>=10?'up':overallPct<=-10?'down':'stable';
+    }
+    html += `<div style="margin-bottom:20px;background:var(--bg);border-radius:var(--r-lg);padding:14px">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+        <div style="font-size:12px;font-weight:700;color:var(--t-700)">📈 월별 매출 흐름</div>
+        <span style="font-size:11px;font-weight:700;color:${DIR_COL[overallDir]}">${DIR_ICON[overallDir]} 최근 ${overallPct>0?'+':''}${overallPct}%</span>
+      </div>
+      <div style="display:flex;align-items:flex-end;gap:3px">
+      ${monthlyRows.map(m=>{
+        const h = Math.max(4, Math.round(m.total/maxT*52));
+        const isLast = m === monthlyRows[monthlyRows.length-1];
+        const col = isLast ? DIR_COL[overallDir] : '#94A3B8';
+        return `<div style="flex:1;display:flex;flex-direction:column;align-items:center;gap:2px"
+          onmouseenter="showBarTooltip(event,'${MKR[m.month]}: ${N(m.total)}원 (${m.qty}개)')"
+          onmouseleave="hideBarTooltip()">
+          <div style="font-size:7px;color:var(--t-300);white-space:nowrap">${N_short(m.total)}</div>
+          <div style="width:90%;background:${col};height:${h}px;border-radius:2px 2px 0 0;min-height:4px"></div>
+          <div style="font-size:7px;color:var(--t-400)">${MKR[m.month]}</div>
+        </div>`;
+      }).join('')}
+      </div>
+    </div>`;
+  }
+
+  // ── 2. TOP5 제품 흐름 분석 (핵심) ──────────────
+  if(analysisData?.top5?.length){
+    html += `<div style="font-size:13px;font-weight:700;color:var(--t-900);margin-bottom:12px">🏆 TOP5 제품 최근 흐름</div>`;
+
+    const BRAND_ORDER_D = ['줄즈','레카로','ABC디자인','원더폴드','카오스','엔픽스','타프토이즈'];
+    // sold_items에서 제품별 월별 집계를 위한 맵
+    const prodMap = {};
+    (analysisData.sold_items||[]).forEach(it=>{
+      const nm = it.item_name.replace(/^\[[^\]]+\]/,'').split('_')[0].trim();
+      if(!prodMap[nm]) prodMap[nm] = {total:0, qty:0, monthly:{}};
+      prodMap[nm].total += it.total||0;
+      prodMap[nm].qty   += it.qty||0;
+    });
+
+    const top5 = analysisData.top5||[];
+    for(let i=0; i<Math.min(5,top5.length); i++){
+      const item = top5[i];
+      const nm   = (item.item_name||'').replace(/^\[[^\]]+\]/,'').split('_')[0].trim();
+      const brand= item.item_group||'';
+      const tot  = item.total||0;
+      const qty  = item.qty||0;
+      const totalSales = analysisData.total || 1;
+      const share = Math.round(tot/totalSales*100);
+
+      // 이 제품의 월별 흐름은 trendData에서 찾기
+      const trendItem = trendData?.find(t=>t.seller_name===sellerName);
+      const mMonthly  = monthlyRows; // 매장 전체 월별 (제품별은 별도 API 필요)
+
+      // 영업 인사이트
+      let salesInsight = '';
+      if(share >= 40)    salesInsight = `⚠️ 집중도 높음 (${share}%) — 다양화 필요`;
+      else if(share >= 20) salesInsight = `✅ 핵심 제품 (${share}%) — 안정적 관리`;
+      else               salesInsight = `📌 보조 제품 (${share}%) — 성장 여지 있음`;
+
+      const BRAND_STRAT = {
+        '줄즈':'SNS 바이럴 → 전시 강화, 색상 다양화',
+        '레카로':'안전 신뢰 → 체험 데모 + 전문 상담',
+        '엔픽스':'국내 신뢰 + 가성비 → 비교 판매 효과적',
+        '카오스':'프리미엄 하이체어 → 장기 고객 유치',
+        '원더폴드':'웨건 독점 → 시즌 수요 공략',
+        'ABC디자인':'유럽 감성 → 인테리어 관심 고객 타겟',
+        '타프토이즈':'선물 수요 → 증정 패키지 제안',
+      };
+      const strat = BRAND_STRAT[brand] || '정기 재고 확인 및 진열 유지';
+
+      html += `<div style="border:1px solid var(--border);border-radius:var(--r-md);padding:14px;margin-bottom:12px">
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:8px">
+          <div>
+            <span style="font-size:11px;background:var(--p-lt);color:var(--p);padding:1px 7px;border-radius:10px;margin-right:6px">${i+1}위</span>
+            <span style="font-size:13px;font-weight:700;color:var(--t-900)">${nm}</span>
+            <span style="font-size:10px;color:var(--t-300);margin-left:6px">[${brand}]</span>
+          </div>
+          <div style="text-align:right;flex-shrink:0;margin-left:8px">
+            <div style="font-size:12px;font-weight:700;color:var(--p)">${N(tot)}원</div>
+            <div style="font-size:10px;color:var(--t-300)">${qty}개</div>
+          </div>
+        </div>
+        <div style="font-size:11px;color:var(--t-500);margin-bottom:6px">${salesInsight}</div>
+        <div style="font-size:11px;background:var(--bg);border-radius:6px;padding:8px;color:var(--t-600)">
+          💡 영업 전략: ${strat}
+        </div>
+      </div>`;
+    }
+  }
+
+  // ── 3. 브랜드별 비중 ──────────────────────────
+  if(analysisData?.brand_summary){
+    html += `<div style="font-size:13px;font-weight:700;color:var(--t-900);margin:16px 0 10px">🏷 브랜드별 비중</div>`;
+    const bs = Object.entries(analysisData.brand_summary||{})
+      .filter(([,v])=>v.total>0)
+      .sort((a,b)=>b[1].total-a[1].total);
+    const totalSales = bs.reduce((s,[,v])=>s+v.total,0)||1;
+    bs.forEach(([brand, bv])=>{
+      const pct = Math.round(bv.total/totalSales*100);
+      html += `<div style="margin-bottom:8px">
+        <div style="display:flex;justify-content:space-between;font-size:11px;margin-bottom:3px">
+          <span style="font-weight:600">${brand}</span>
+          <span style="color:var(--t-300)">${N(bv.total)}원 (${pct}%)</span>
+        </div>
+        <div style="background:var(--border);height:4px;border-radius:4px">
+          <div style="background:var(--p);height:4px;border-radius:4px;width:${pct}%"></div>
+        </div>
+      </div>`;
+    });
+  }
+
+  body.innerHTML = html;
 }
 
 function closeTrendDetail(){
