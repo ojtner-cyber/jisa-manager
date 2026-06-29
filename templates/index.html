@@ -984,11 +984,36 @@ td.center{text-align:center}
       </div>
     </div>
 
-    <!-- ██ 영업 에이스 포인트 ██ -->
+    <!-- ██ 영업 실행 포인트 ██ -->
     <div class="page" id="page-ace">
-      <div class="ph"><div><h2>영업 에이스 포인트</h2><p>데이터가 말하는 지금 당장 해야 할 것들</p></div>
-        <div class="ph-r"><select class="ysel" id="ace-year" onchange="loadAce()"></select></div>
+      <div class="ph"><div><h2>영업 실행 포인트</h2><p>데이터가 말하는 지금 당장 해야 할 것들</p></div>
+        <div class="ph-r" style="gap:8px;flex-wrap:wrap">
+          <select class="ysel" id="ace-year" onchange="loadAce()"></select>
+          <button class="btn btn-ghost btn-sm" id="ace-cal-btn" onclick="toggleAceCalendar()">📅 주간 일정</button>
+        </div>
       </div>
+
+      <!-- 주간 달력 패널 -->
+      <div id="ace-calendar-panel" style="display:none;background:var(--paper);border:1.5px solid var(--border);border-radius:var(--r-lg);padding:20px;margin-bottom:20px">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px">
+          <div style="font-size:14px;font-weight:700;color:var(--t-900)" id="ace-cal-title">주간 업무 플래너</div>
+          <div style="display:flex;gap:6px">
+            <button class="btn btn-xs btn-ghost" onclick="moveAceWeek(-1)">◀</button>
+            <button class="btn btn-xs btn-ghost" onclick="moveAceWeek(0)">이번 주</button>
+            <button class="btn btn-xs btn-ghost" onclick="moveAceWeek(1)">▶</button>
+          </div>
+        </div>
+        <div id="ace-cal-grid" style="display:grid;grid-template-columns:repeat(7,1fr);gap:6px"></div>
+        <div style="margin-top:14px;border-top:1px solid var(--border);padding-top:12px">
+          <div style="font-size:12px;font-weight:700;color:var(--t-700);margin-bottom:8px">📝 메모</div>
+          <textarea id="ace-cal-memo" rows="3" style="width:100%;border:1px solid var(--border-md);border-radius:var(--r-md);padding:8px 12px;font-size:12px;resize:none;font-family:inherit" placeholder="이번 주 주요 일정, 방문 예정 매장, 메모..."></textarea>
+          <div style="display:flex;justify-content:flex-end;gap:6px;margin-top:8px">
+            <button class="btn btn-ghost btn-sm" onclick="loadAceMemo()">불러오기</button>
+            <button class="btn btn-primary btn-sm" onclick="saveAceMemo()">저장</button>
+          </div>
+        </div>
+      </div>
+
       <div id="ace-content" style="display:grid;gap:16px"></div>
     </div>
   
@@ -1466,7 +1491,92 @@ async function saveCheckResult(){
   if(res&&res.ok){ document.getElementById('check-modal').style.display='none'; loadVisit(); toast('완료 처리됐습니다'); }
 }
 
-// ── 영업 에이스 포인트 ────────────────────────────
+// ── 영업 실행 포인트 달력 ──────────────────────────
+let aceCalWeekOffset = 0;
+
+function toggleAceCalendar(){
+  const panel = document.getElementById('ace-calendar-panel');
+  const show = panel.style.display === 'none';
+  panel.style.display = show ? 'block' : 'none';
+  if(show){ renderAceCalendar(); loadAceMemo(); }
+}
+
+function moveAceWeek(dir){
+  if(dir === 0) aceCalWeekOffset = 0;
+  else aceCalWeekOffset += dir;
+  renderAceCalendar();
+}
+
+function renderAceCalendar(){
+  const DAYS = ['월','화','수','목','금','토','일'];
+  const today = new Date();
+  // 이번 주 월요일 계산
+  const day = today.getDay(); // 0=일
+  const monday = new Date(today);
+  monday.setDate(today.getDate() - (day===0?6:day-1) + aceCalWeekOffset*7);
+
+  const weekDates = Array.from({length:7}, (_,i)=>{
+    const d = new Date(monday); d.setDate(monday.getDate()+i); return d;
+  });
+
+  const title = `${weekDates[0].getMonth()+1}/${weekDates[0].getDate()} ~ ${weekDates[6].getMonth()+1}/${weekDates[6].getDate()} 주간 플래너`;
+  document.getElementById('ace-cal-title').textContent = title;
+
+  const todayStr = today.toISOString().slice(0,10);
+  const savedTasks = JSON.parse(localStorage.getItem('ace_tasks')||'{}');
+
+  document.getElementById('ace-cal-grid').innerHTML = weekDates.map((d,i)=>{
+    const ds = d.toISOString().slice(0,10);
+    const isToday = ds === todayStr;
+    const tasks = savedTasks[ds] || [];
+    const isWeekend = i >= 5;
+    return `<div style="background:${isToday?'var(--p-lt)':isWeekend?'var(--bg)':'var(--paper)'};border:1.5px solid ${isToday?'var(--p)':'var(--border)'};border-radius:var(--r-md);padding:8px;min-height:90px">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+        <div style="font-size:11px;font-weight:700;color:${isToday?'var(--p)':isWeekend?'var(--red)':'var(--t-700)'}">${DAYS[i]} ${d.getDate()}</div>
+        <button onclick="addAceTask('${ds}')" style="background:none;border:none;cursor:pointer;font-size:14px;color:var(--t-300);line-height:1">+</button>
+      </div>
+      <div id="cal-tasks-${ds}">
+        ${tasks.map((t,ti)=>`<div style="display:flex;align-items:flex-start;gap:4px;margin-bottom:3px">
+          <input type="checkbox" ${t.done?'checked':''} onchange="toggleAceTask('${ds}',${ti})" style="margin-top:2px;flex-shrink:0">
+          <span style="font-size:10px;color:${t.done?'var(--t-300)':'var(--t-700)'};${t.done?'text-decoration:line-through':''};word-break:break-all">${t.text}</span>
+        </div>`).join('')}
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function addAceTask(dateStr){
+  const text = prompt(`${dateStr} 일정 추가:`);
+  if(!text) return;
+  const saved = JSON.parse(localStorage.getItem('ace_tasks')||'{}');
+  if(!saved[dateStr]) saved[dateStr] = [];
+  saved[dateStr].push({text, done:false});
+  localStorage.setItem('ace_tasks', JSON.stringify(saved));
+  renderAceCalendar();
+}
+
+function toggleAceTask(dateStr, idx){
+  const saved = JSON.parse(localStorage.getItem('ace_tasks')||'{}');
+  if(saved[dateStr] && saved[dateStr][idx]) saved[dateStr][idx].done = !saved[dateStr][idx].done;
+  localStorage.setItem('ace_tasks', JSON.stringify(saved));
+  renderAceCalendar();
+}
+
+function saveAceMemo(){
+  const memo = document.getElementById('ace-cal-memo').value;
+  const year = document.getElementById('ace-year')?.value || new Date().getFullYear();
+  localStorage.setItem(`ace_memo_${year}_w${aceCalWeekOffset}`, memo);
+  toast('주간 메모 저장됨');
+}
+
+function loadAceMemo(){
+  const year = document.getElementById('ace-year')?.value || new Date().getFullYear();
+  const memo = localStorage.getItem(`ace_memo_${year}_w${aceCalWeekOffset}`) || '';
+  const el = document.getElementById('ace-cal-memo');
+  if(el) el.value = memo;
+}
+
+// ── 영업 실행 포인트 ────────────────────────────
 async function loadAce(){
   const year=document.getElementById('ace-year')?.value||new Date().getFullYear();
   const monthSel=document.getElementById('ace-month');
@@ -1506,26 +1616,42 @@ async function loadAce(){
   }
 
   const cards=[];
+  const longNoSale=sellers.filter(s=>s.total>0 && s.total/totalAll<0.005).slice(0,5);
 
   // ── 1. 지금 당장 오늘 해야 할 것 ──────────────
   const urgent=[];
   const taftStock=Object.entries(stockMap).filter(([k,q])=>q>=10&&(k.includes('타프')||k.includes('사바나')||k.includes('어반가든')||k.includes('팝앤')));
   if(taftStock.length) urgent.push(`타프토이즈 재고 ${taftStock.length}종 — 미취급 매장 방문 필수`);
-  const longNoSale=sellers.filter(s=>s.total/totalAll<0.005&&s.total>0).slice(0,3);
   if(longNoSale.length) urgent.push(`장기 저매출 매장 ${longNoSale.length}곳 — 오늘 연락 한 통이 실적 차이`);
   if(now.getDate()<=7) urgent.push('월초: 이번 달 첫 발주 제안 타이밍 — 먼저 연락하는 사람이 선점');
   if(now.getDate()>=20) urgent.push('월말: 미달성 매장 긴급 방문 + 밀어내기 타이밍');
+
+  // 세부 가이드: 실제 매장명 포함
+  const todayGuide = ['【오늘 실행 가이드 — 매장별 솔루션】\n'];
+  if(taftStock.length){
+    todayGuide.push(`▌ 타프토이즈 재고 처리 (${taftStock.length}종 재고 있음)`);
+    taftStock.slice(0,4).forEach(([k,q])=>todayGuide.push(`  • ${k} (${q}개) → 미취급 매장에 샘플 제안`));
+    todayGuide.push('  → 방문 시 \"이미 재고 있으니 진열만 해주시면 됩니다\" 멘트 활용\n');
+  }
+  if(longNoSale.length){
+    todayGuide.push(`▌ 저매출 매장 집중 관리 (${longNoSale.length}곳)`);
+    longNoSale.forEach(s=>{
+      todayGuide.push(`  • ${s.seller_name} — ${N(s.total)}원`);
+      todayGuide.push(`    솔루션: 방문 후 진열 위치 점검 + 주력 1~2개 제품 집중 제안`);
+    });
+    todayGuide.push('');
+  }
+  if(highScoreSellers.length){
+    todayGuide.push(`▌ 진열 우수 매장 (${highScoreSellers.length}곳) — 추가 발주 제안 타이밍`);
+    highScoreSellers.slice(0,5).forEach(s=>todayGuide.push(`  • ${s} → 진열 정착됨 → 신제품/추가 라인업 제안 적기`));
+  }
+
   cards.push(card('🚨','지금 당장 — 오늘 해야 할 것',
     '이걸 안 하면 내일 후회합니다',
     urgent.length?urgent:['오늘 연락 안 한 매장 3곳에 문자 먼저'],
     '전화 > 카톡 > 이메일 순서로 연락 — 응답률 3배 차이',
     '#DC2626','#FEF2F2','🔥 TODAY',
-    `【실행 순서】
-1. 지금 바로 미연락 매장 리스트 꺼내기
-2. 상위 3개 매장에 전화 — "오늘 방문 가능한데요?" 한 마디로 시작
-3. 안 받으면 카톡으로 "안녕하세요, [이름]입니다. 이번에 새로 들어온 제품 보여드리고 싶어서요 🙏"
-4. 타프토이즈 재고 있다면 — "재고 한정이라 우선 연락드려요" 긴박감 부여
-5. 오늘 안에 최소 3개 매장 접촉 완료`));
+    todayGuide.join('\n')));
 
   // ── 2. 핵심 20% 매장 관리 ──────────────────────
   const top20=Math.ceil(activeSellers.length*0.2);
@@ -1893,36 +2019,46 @@ async function loadCampaignDetail(cid, year){
 
 function renderDisplayTable(scores, allProds){
   if(!scores.length){
-    document.getElementById('display-tbody').innerHTML=`<tr><td colspan="7" style="text-align:center;padding:32px;color:var(--t-300)">데이터가 없습니다</td></tr>`;
+    document.getElementById('display-tbody').innerHTML=`<tr><td colspan="8" style="text-align:center;padding:32px;color:var(--t-300)">데이터가 없습니다</td></tr>`;
     return;
   }
-  // 업체구분으로 그룹핑하여 표시
+
+  // 담당자 매핑 (매장명 기반)
+  function getManager(sellerName){
+    const nm = sellerName||'';
+    // 베이비하우스 → 김현우 과장, 링크맘/기타 → 전정환 실장
+    if(nm.includes('베이비하우스')) return '김현우 과장';
+    if(nm.includes('링크맘')) return '전정환 실장';
+    if(nm.includes('베이비파크')) return '전정환 실장';
+    return '전정환 실장';
+  }
+
   let prevGroup='';
   document.getElementById('display-tbody').innerHTML=scores.map((r,i)=>{
     const score=r.total_score||0;
     const sc=score>0?'var(--green)':'var(--t-300)';
     const group=sellerGroupLabel(r.seller_name);
+    const manager=getManager(r.seller_name);
+    const mgColor=manager.includes('김현우')?'var(--p)':'var(--amber)';
     let groupRow='';
     if(group!==prevGroup){
       prevGroup=group;
-      groupRow=`<tr style="background:var(--bg)"><td colspan="7" style="padding:8px 14px;font-size:11px;font-weight:700;color:var(--t-500);letter-spacing:.3px;text-transform:uppercase">${group}</td></tr>`;
+      groupRow=`<tr style="background:var(--bg)"><td colspan="8" style="padding:8px 14px;font-size:11px;font-weight:700;color:var(--t-500);letter-spacing:.3px;text-transform:uppercase">${group}</td></tr>`;
     }
     const prods=(r.products||[]).map(p=>{
       const done=p.has_display;
       const qty=p.quantity||0;
-      // 수량이 있으면 함께 표시
       const qtyStr=done&&qty>0?` (${qty}개)`:'';
       const scoreStr=done&&p.score?` +${p.score}pt`:'';
       return`<span style="display:inline-flex;align-items:center;gap:3px;background:${done?'var(--green-lt)':'var(--bg)'};color:${done?'var(--green)':'var(--t-300)'};border:1px solid ${done?'var(--green)':'var(--border)'};padding:2px 8px;border-radius:20px;font-size:10px;margin:2px">
         ${done?'✓':'○'} ${p.product_name}${qtyStr}${scoreStr}
       </span>`;
     }).join('');
-    // seller_name 이스케이프
     const safeSeller=r.seller_name.replace(/'/g,"\'").replace(/"/g,'&quot;');
     return groupRow+`<tr>
       <td style="text-align:center;color:var(--t-300);font-size:12px">${i+1}</td>
       <td style="font-size:11px;color:var(--t-300)">${group}</td>
-      <td style="font-weight:600;font-size:13px">${r.seller_name}</td>
+      <td style="font-weight:600;font-size:13px">${r.seller_name}<br><span style="font-size:10px;color:${mgColor};font-weight:500">${manager}</span></td>
       <td style="text-align:center"><span style="font-size:14px;font-weight:800;color:${sc}">${score}pt</span></td>
       <td style="white-space:normal;line-height:1.8">${prods||'<span style="color:var(--t-300);font-size:11px">—</span>'}</td>
       <td style="text-align:right;font-weight:600;color:var(--p);font-size:12px">${N(r.year_sales||0)}원</td>
@@ -3257,21 +3393,29 @@ async function openTrendDetail(sellerName){
   }
 
   // ── 3. 브랜드별 비중 ──────────────────────────
-  if(analysisData?.brand_summary){
+  const bsRaw = analysisData?.brand_summary;
+  if(bsRaw){
     html += `<div style="font-size:13px;font-weight:700;color:var(--t-900);margin:16px 0 10px">🏷 브랜드별 비중</div>`;
-    const bs = Object.entries(analysisData.brand_summary||{})
-      .filter(([,v])=>v.total>0)
-      .sort((a,b)=>b[1].total-a[1].total);
-    const totalSales = bs.reduce((s,[,v])=>s+v.total,0)||1;
-    bs.forEach(([brand, bv])=>{
-      const pct = Math.round(bv.total/totalSales*100);
+    // brand_summary가 배열인 경우([{brand, total, qty}]) vs 객체인 경우({브랜드명: {total, qty}})
+    let bsArr = [];
+    if(Array.isArray(bsRaw)){
+      bsArr = bsRaw.filter(b=>(b.total||0)>0).map(b=>([b.brand||b.item_group||String(b), b]));
+    } else {
+      bsArr = Object.entries(bsRaw).filter(([,v])=>(v.total||0)>0);
+    }
+    bsArr.sort((a,b)=>(b[1].total||0)-(a[1].total||0));
+    const totalSales2 = bsArr.reduce((s,[,v])=>s+(v.total||0),0)||1;
+    const BRAND_COLORS = {줄즈:'#2563EB',레카로:'#16A34A','ABC디자인':'#7C3AED',원더폴드:'#D97706',카오스:'#DC2626',엔픽스:'#0891B2',타프토이즈:'#9CA3AF'};
+    bsArr.forEach(([brand, bv])=>{
+      const pct = Math.round((bv.total||0)/totalSales2*100);
+      const col = BRAND_COLORS[brand]||'var(--p)';
       html += `<div style="margin-bottom:8px">
         <div style="display:flex;justify-content:space-between;font-size:11px;margin-bottom:3px">
-          <span style="font-weight:600">${brand}</span>
-          <span style="color:var(--t-300)">${N(bv.total)}원 (${pct}%)</span>
+          <span style="font-weight:600;color:${col}">${brand}</span>
+          <span style="color:var(--t-300)">${N(bv.total||0)}원 (${pct}%)</span>
         </div>
         <div style="background:var(--border);height:4px;border-radius:4px">
-          <div style="background:var(--p);height:4px;border-radius:4px;width:${pct}%"></div>
+          <div style="background:${col};height:4px;border-radius:4px;width:${pct}%"></div>
         </div>
       </div>`;
     });

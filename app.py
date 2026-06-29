@@ -880,15 +880,17 @@ SELLER_ALIAS = {
     '베이비하우스 대구':        '베이비하우스 대구점',
     # 동대전점 통합
     '주식회사 에스엘컴퍼니':   '베이비하우스 동대전점',
-    # 하남미사점 — 미시점(오타)도 미사점으로 통합
+    # 하남미사점
     '베이비하우스 하남미시점':  '베이비하우스 하남미사점',
     '베이비하우스 하남미사':    '베이비하우스 하남미사점',
-    # 군포점 → 안양점으로 표시 (업로드 시 정규화용)
-    '베이비하우스 안양점':      '베이비하우스 군포점',
-    # 동래점
-    '베이비하우스 동래':        '베이비하우스 동래점',
+    # 수정9: 부산동래점 → 동래점
     '베이비하우스 부산동래점':  '베이비하우스 동래점',
+    '베이비하우스 동래':        '베이비하우스 동래점',
     '베이비하우스동래':         '베이비하우스 동래점',
+    # 수정9: 동탄오산점 → 동탄점
+    '베이비하우스 동탄오산점':  '베이비하우스 동탄점',
+    # 군포점 (안양점 → 군포점)
+    '베이비하우스 안양점':      '베이비하우스 군포점',
     # 부천점
     '베이비하우스 부천':        '베이비하우스 부천점',
     '부천 베이비하우스':        '베이비하우스 부천점',
@@ -898,44 +900,52 @@ SELLER_ALIAS = {
     # 광주점
     '광주베이비하우스':         '베이비하우스 광주점',
     '베이비하우스광주':         '베이비하우스 광주점',
-    # 베이비스토어 다산 → 베네피아 다산 (업로드 시 정규화; 표시는 베이비스토어 다산)
+    # 다산 (DB 저장은 베네피아 다산, 표시는 베이비스토어 다산)
     '베이비스토어 다산':        '베네피아 다산',
     '베이비스토어다산':         '베네피아 다산',
-    # 링크맘 부산점 = 에이블베이비 계열
+    # 에이블베이비 → 링크맘 부산점
     '주식회사 에이블베이비':    '링크맘 부산점',
     '에이블베이비':             '링크맘 부산점',
     '에이블 부산':              '링크맘 부산점',
-    # 베투키
+    # 수정9: 베투키 (표시는 베이비 투 키즈)
     '주식회사 베이비투키즈':    '베투키',
     '베이비투키즈':             '베투키',
+    '주식회사 베이비 투 키즈': '베투키',
+    # 수정9: 베네피아 창원2호점 → 링크맘 창원2호점
+    '베네피아 창원2호점(링크맘)': '링크맘 창원2호점',
+    '베네피아 창원2호점':       '링크맘 창원2호점',
     # 베이비스토리
     '베이비스토리':             '베이비스토리 판교점',
-    # 파주점 고객 데이터 → 삭제 대상
+    # 파주점 고객 데이터 → 삭제
     '베이비하우스 파주점/신성준고객': '',
 }
 
 # 화면 표시 전용 변환 (DB 값은 그대로, 보이는 이름만 변경)
 DISPLAY_NAME = {
-    # 다산: 베네피아 다산 → 베이비스토어 다산 (같은 매장)
+    # 다산: 베네피아 다산 → 베이비스토어 다산 (표시명)
     '베네피아 다산':                    '베이비스토어 다산',
-    # 하남미시점 오타 (DB에 남아있을 경우 대비)
+    # 하남미시점 오타
     '베이비하우스 하남미시점':           '베이비하우스 하남미사점',
     # 동대전점
     '베이비하우스 동대전점':             '베이비하우스 동대전점',
     '주식회사 에스엘컴퍼니':            '베이비하우스 동대전점',
-    # 베투키 → 베이비 투 키즈
+    # 베투키 → 베이비 투 키즈 (수정9)
     '베투키':                           '베이비 투 키즈',
-    # 군포점 → 안양점으로 표시
+    # 군포점 → 안양점 표시
     '베이비하우스 군포점':              '베이비하우스 안양점',
     # 부천, 일산
     '베네피아 부천점':                  '링크맘 부천점',
     '베이비하우스 일산화정점':          '베이비하우스 일산점',
     # 울산점
     '베이비하우스 울산점  엔픽스. 타프토이즈,카오스': '베이비하우스 울산점',
-    # 베이비스토리 — DB에는 '베이비스토리 판교점'으로 저장됨
+    # 베이비스토리
     '베이비스토리':                     '베이비스토리 판교점',
-    # 숨김 처리 (None = 표시 안 함)
+    # 숨김 처리
     '베이비하우스 파주점/신성준고객':   None,
+    # 수정9: 이미 정리된 것들 (DB에 남아있을 경우 대비)
+    '베이비하우스 부산동래점':          '베이비하우스 동래점',
+    '베이비하우스 동탄오산점':          '베이비하우스 동탄점',
+    '베네피아 창원2호점(링크맘)':       '링크맘 창원2호점',
 }
 
 def display_seller(name):
@@ -1641,20 +1651,14 @@ def api_script_report():
     # ── TOP5 제품 ──────────────────────────────────
     top_table = ''
     top_trend_block = ''
-    brand_insights_short = {
-        '레카로':'안전 신뢰 → 전문점 강점', '줄즈':'SNS 바이럴 + 재구매', '원더폴드':'웨건 독점 포지션',
-        '엔픽스':'국내 신뢰 + 가성비', '카오스':'하이체어 프리미엄', 'ABC디자인':'유럽 감성 + 패밀리',
-        '타프토이즈':'완구 성장 + 선물 수요',
-    }
     for i, r in enumerate(top5[:5], 1):
         nm    = normalize_item_name(r.get('item_name',''))
         br    = remap_group(r.get('item_group',''), r.get('item_name',''))
         qty   = r.get('qty',0)
         tot   = r.get('total',0)
         share = round(tot/total*100,1) if total else 0
-        insight = brand_insights_short.get(br,'')
         top_table += f"  {i}위. [{br}] {nm}\n"
-        top_table += f"       판매 {w(qty)}개 / {w(tot)}원 / 비중 {share}% / {insight}\n\n"
+        top_table += f"       판매 {w(qty)}개 / {w(tot)}원 / 비중 {share}%\n\n"
 
     # ── 수정3: 주요 판매 제품 최근 흐름 분석 ────────────
     try:
@@ -1691,13 +1695,13 @@ def api_script_report():
                 pct_ch = round(diff / prev * 100, 1) if prev else 0
                 if pct_ch >= 10:
                     direction = f"▲ 상승 (+{pct_ch}%)"
-                    comment   = "수요 증가 — 재고 확보 및 적극 추천 필요"
+                    comment   = "증가 추세 — 재고 확보 및 적극 추천 필요"
                 elif pct_ch <= -10:
                     direction = f"▼ 하락 ({pct_ch}%)"
-                    comment   = "수요 감소 — 원인 파악 및 대체 제품 제안 검토"
+                    comment   = "감소 추세 — 원인 파악 및 대체 제품 제안 검토"
                 else:
                     direction = f"→ 안정 ({pct_ch:+}%)"
-                    comment   = "안정적 수요 — 유지 전략 지속"
+                    comment   = "안정적 흐름 — 유지 전략 지속"
             elif len(monthly_vals) == 1:
                 direction = "— 단일 월 데이터"
                 comment   = "추세 판단을 위해 추가 데이터 필요"
@@ -1831,13 +1835,27 @@ def api_script_report():
     elif grade == 'D':                                              visit_cycle = '2~4주'
     else:                                                           visit_cycle = '4주'
 
-    # 목표 매출 (현실적 수치)
-    if trend_label in ('강한 상승세','상승세'):  growth_target = 1.20
-    elif trend_label in ('완만한 상승','안정'):   growth_target = 1.10
-    elif trend_label in ('완만한 하락'):          growth_target = 1.05
-    elif trend_label in ('하락세','급격한 하락'): growth_target = 1.00
-    else:                                          growth_target = 1.10
-    target_total = int(total * growth_target)
+    # 목표 매출 — 항상 현재 대비 +, 잠재력 기반 계산
+    # 기준: 등급 + 추세 + 브랜드 다양성 + 현재 매출 수준
+    base_growth = 1.10  # 기본 10%
+    if grade == 'A':
+        if trend_label in ('강한 상승세',): base_growth = 1.15
+        else: base_growth = 1.10
+    elif grade == 'B':
+        if trend_label in ('강한 상승세','상승세'): base_growth = 1.20
+        else: base_growth = 1.15
+    elif grade == 'C':
+        if trend_label in ('강한 상승세','상승세'): base_growth = 1.25
+        else: base_growth = 1.20
+    else:  # D
+        base_growth = 1.30  # 저매출 매장은 더 큰 성장 여지
+
+    # 잠재력: 미취급 브랜드가 많으면 추가 성장 가능
+    potential_boost = min(len(missing_brs) * 0.03, 0.10)
+    growth_target = base_growth + potential_boost
+    # 항상 최소 +5% 보장
+    growth_target = max(growth_target, 1.05)
+    target_total = int(total * growth_target) if total > 0 else 0
 
     # 핵심 액션 아이템 (상황별 자동 생성)
     action_items = []
@@ -1899,47 +1917,74 @@ def api_script_report():
         if disp_scores and disp_scores[0]:
             disp_total = disp_scores[0] or 0
             disp_cnt   = disp_scores[1] or 0
-            # 전체 랭킹에서 순위 파악
             all_scores = [r[0] or 0 for r in conn_d.execute(
                 "SELECT SUM(score) FROM display_record GROUP BY seller_name ORDER BY 1 DESC"
             ).fetchall()]
             disp_rank = next((i+1 for i,s in enumerate(all_scores) if s<=disp_total), len(all_scores))
             disp_display_grade = 'A' if disp_rank<=25 else 'B' if disp_rank<=50 else 'C' if disp_rank<=75 else 'D' if disp_rank<=100 else 'E'
-            display_grade_info = f"  진열/행사 등급 : {disp_display_grade}등급  (누적점수 {disp_total}점 / 참여 {disp_cnt}건 / 전체 {disp_rank}위)"
+            # 수정8: 참여한 캠페인 목록
+            camp_list = conn_d.execute("""
+                SELECT DISTINCT dc.campaign_name, dr.product_name, dr.score
+                FROM display_record dr JOIN display_campaign dc ON dr.campaign_id=dc.id
+                WHERE dr.seller_name=? AND dr.has_display=1
+                ORDER BY dc.id DESC
+            """, (seller,)).fetchall()
+            camp_str = ''
+            if camp_list:
+                camp_str = '\n' + '\n'.join(f"    · {r[0]} / {r[1]} (+{r[2]}pt)" for r in camp_list[:6])
+            display_grade_info = f"  진열/행사 등급 : {disp_display_grade}등급  (누적점수 {disp_total}점 / 참여 {disp_cnt}건 / 전체 {disp_rank}위){camp_str}"
         conn_d.close()
     except: pass
 
-    # ── 수정5: 연도별 매출 비교 ──────────────────────
+    # ── 수정2: 연도별 동기 비교 ──────────────────────
     yearly_comparison = ''
     try:
         conn_y = get_db()
-        seller_raw_y = data.get('seller_raw', seller)
-        years_data = conn_y.execute("""
-            SELECT strftime('%Y', sale_date) yr, SUM(total) total, SUM(quantity) qty
-            FROM sales_data
-            WHERE (real_seller=? OR real_seller=?) AND sale_date!=''
-            GROUP BY yr ORDER BY yr
-        """, (seller, seller_raw_y)).fetchall()
-        if years_data and len(years_data) >= 1:
-            yearly_comparison = "\n  [ 연도별 매출 비교 ]\n"
-            prev_total = None
-            for yr_row in years_data:
-                yr_name = yr_row[0]; yr_total = yr_row[1] or 0; yr_qty = yr_row[2] or 0
-                if prev_total and prev_total > 0:
-                    yr_chg = (yr_total - prev_total) / prev_total * 100
-                    chg_str = f"  ▲ +{yr_chg:.1f}%" if yr_chg > 0 else f"  ▼ {yr_chg:.1f}%"
-                else:
-                    chg_str = '  (기준)'
-                yearly_comparison += f"  {yr_name}년  {w(yr_total)}원  ({yr_qty}개){chg_str}\n"
-                prev_total = yr_total
-            # 최근 2년 비교 요약
-            if len(years_data) >= 2:
-                y1, y2 = years_data[-2], years_data[-1]
-                diff = (y2[1] or 0) - (y1[1] or 0)
-                diff_pct = diff / (y1[1] or 1) * 100
-                arrow = '↑' if diff > 0 else '↓'
-                yearly_comparison += f"\n  {y1[0]}→{y2[0]} 변화: {arrow} {abs(diff_pct):.1f}%  ({w(abs(diff))}원 {'증가' if diff>0 else '감소'})\n"
+        now_m = dt2.now()
+        cur_month = now_m.month  # 현재 달까지만 비교
+        cur_year  = int(year)
+        prev_year = cur_year - 1
+
+        # 현재 연도 — 1월~현재월
+        cur_total = conn_y.execute("""
+            SELECT SUM(total), SUM(quantity) FROM sales_data
+            WHERE real_seller=? AND sale_date LIKE ? AND sale_date!=''
+              AND CAST(strftime('%m',sale_date) AS INTEGER) <= ?
+        """, (seller, f"{cur_year}%", cur_month)).fetchone()
+        cur_t = cur_total[0] or 0; cur_q = cur_total[1] or 0
+
+        # 전년도 — 동기 (1월~현재월)
+        prev_total = conn_y.execute("""
+            SELECT SUM(total), SUM(quantity) FROM sales_data
+            WHERE real_seller=? AND sale_date LIKE ? AND sale_date!=''
+              AND CAST(strftime('%m',sale_date) AS INTEGER) <= ?
+        """, (seller, f"{prev_year}%", cur_month)).fetchone()
+        prev_t = prev_total[0] or 0; prev_q = prev_total[1] or 0
+
+        # 전년도 전체
+        prev_full = conn_y.execute("""
+            SELECT SUM(total), SUM(quantity) FROM sales_data
+            WHERE real_seller=? AND sale_date LIKE ? AND sale_date!=''
+        """, (seller, f"{prev_year}%")).fetchone()
+        prev_full_t = prev_full[0] or 0
+
         conn_y.close()
+
+        period_label = f"1~{cur_month}월"
+        if cur_t or prev_t:
+            yearly_comparison = f"\n  [ 연도별 동기 비교 — {period_label} 기준 ]\n"
+            if prev_t:
+                diff = cur_t - prev_t
+                pct  = diff / prev_t * 100
+                arrow = '▲' if diff >= 0 else '▼'
+                chg_str = f"{arrow} {abs(pct):.1f}% ({'증가' if diff>=0 else '감소'})"
+            else:
+                chg_str = '  (전년 데이터 없음)'
+
+            yearly_comparison += f"  {prev_year}년 {period_label}: {w(prev_t)}원  ({prev_q}개)\n"
+            yearly_comparison += f"  {cur_year}년 {period_label}: {w(cur_t)}원  ({cur_q}개)  {chg_str}\n"
+            if prev_full_t:
+                yearly_comparison += f"\n  {prev_year}년 연간 전체: {w(prev_full_t)}원\n"
     except: pass
 
     # ── 수정5: 브랜드/제품별 최근 흐름 ─────────────────
@@ -2009,7 +2054,6 @@ def api_script_report():
   판매 수량      : {w(total_qty)}개
   건당 평균 매출 : {w(avg_per_tx)}원
   취급 브랜드 수 : {brand_cnt}개 / 취급 제품 종류 : {item_cnt}종
-  타프토이즈     : {taft_pct}% ({taft_cnt_k}종 / {w(taft_total)}원)
 {yearly_comparison}
 {brand_trend_block}
 {sep3}
@@ -2057,7 +2101,7 @@ def api_script_report():
   {mgmt_comment}
 
   방문 권고 주기  : {visit_cycle}
-  연간 목표 매출  : {w(target_total)}원  (현재 대비 +{int((growth_target-1)*100)}%)
+  연간 목표 매출  : {w(target_total)}원  (현재 대비 +{int((growth_target-1)*100)}%  |  {grade}등급 잠재력 반영)
 
   핵심 실행 항목:
 {action_block}
