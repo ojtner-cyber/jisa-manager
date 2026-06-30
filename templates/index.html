@@ -1097,11 +1097,10 @@ td.center{text-align:center}
           <table><thead><tr>
             <th style="width:4%">#</th>
             <th style="width:8%">구분</th>
-            <th style="width:18%">매장명</th>
-            <th style="width:8%;text-align:center">점수</th>
-            <th style="width:40%">제품별 진열 현황</th>
-            <th style="width:12%;text-align:right">연매출</th>
-            <th style="width:7%;text-align:center">수정</th>
+            <th style="width:20%">매장명</th>
+            <th style="width:48%">제품별 진열 현황</th>
+            <th style="width:10%;text-align:center">발주 수량</th>
+            <th style="width:10%;text-align:center">수정</th>
           </tr></thead>
           <tbody id="display-tbody"></tbody>
         </table></div>
@@ -2019,31 +2018,20 @@ async function loadCampaignDetail(cid, year){
 
 function renderDisplayTable(scores, allProds){
   if(!scores.length){
-    document.getElementById('display-tbody').innerHTML=`<tr><td colspan="8" style="text-align:center;padding:32px;color:var(--t-300)">데이터가 없습니다</td></tr>`;
+    document.getElementById('display-tbody').innerHTML=`<tr><td colspan="6" style="text-align:center;padding:32px;color:var(--t-300)">데이터가 없습니다</td></tr>`;
     return;
-  }
-
-  // 담당자 매핑 (매장명 기반)
-  function getManager(sellerName){
-    const nm = sellerName||'';
-    // 베이비하우스 → 김현우 과장, 링크맘/기타 → 전정환 실장
-    if(nm.includes('베이비하우스')) return '김현우 과장';
-    if(nm.includes('링크맘')) return '전정환 실장';
-    if(nm.includes('베이비파크')) return '전정환 실장';
-    return '전정환 실장';
   }
 
   let prevGroup='';
   document.getElementById('display-tbody').innerHTML=scores.map((r,i)=>{
-    const score=r.total_score||0;
-    const sc=score>0?'var(--green)':'var(--t-300)';
     const group=sellerGroupLabel(r.seller_name);
-    const manager=getManager(r.seller_name);
-    const mgColor=manager.includes('김현우')?'var(--p)':'var(--amber)';
+    const manager=r.manager||'';
+    const mgColor=manager.includes('김현우')?'var(--p)':manager?'var(--amber)':'var(--t-300)';
+    const totalQty=r.total_qty||0;
     let groupRow='';
     if(group!==prevGroup){
       prevGroup=group;
-      groupRow=`<tr style="background:var(--bg)"><td colspan="8" style="padding:8px 14px;font-size:11px;font-weight:700;color:var(--t-500);letter-spacing:.3px;text-transform:uppercase">${group}</td></tr>`;
+      groupRow=`<tr style="background:var(--bg)"><td colspan="6" style="padding:8px 14px;font-size:11px;font-weight:700;color:var(--t-500);letter-spacing:.3px;text-transform:uppercase">${group}</td></tr>`;
     }
     const prods=(r.products||[]).map(p=>{
       const done=p.has_display;
@@ -2058,10 +2046,9 @@ function renderDisplayTable(scores, allProds){
     return groupRow+`<tr>
       <td style="text-align:center;color:var(--t-300);font-size:12px">${i+1}</td>
       <td style="font-size:11px;color:var(--t-300)">${group}</td>
-      <td style="font-weight:600;font-size:13px">${r.seller_name}<br><span style="font-size:10px;color:${mgColor};font-weight:500">${manager}</span></td>
-      <td style="text-align:center"><span style="font-size:14px;font-weight:800;color:${sc}">${score}pt</span></td>
+      <td style="font-weight:600;font-size:13px">${r.seller_name}${manager?`<br><span style="font-size:10px;color:${mgColor};font-weight:500">${manager}</span>`:''}</td>
       <td style="white-space:normal;line-height:1.8">${prods||'<span style="color:var(--t-300);font-size:11px">—</span>'}</td>
-      <td style="text-align:right;font-weight:600;color:var(--p);font-size:12px">${N(r.year_sales||0)}원</td>
+      <td style="text-align:center;font-weight:700;color:var(--t-900);font-size:13px">${totalQty}개</td>
       <td style="text-align:center"><button class="btn btn-ghost btn-xs" onclick="openDisplayScoreModal('${safeSeller}')">수정</button></td>
     </tr>`;
   }).join('');

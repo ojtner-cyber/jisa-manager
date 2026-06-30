@@ -5472,13 +5472,14 @@ def api_display_upload():
         if NAME_IDX == -1: NAME_IDX = 3   # 기본값
         if SUM_IDX  == -1: SUM_IDX  = len(headers)-2
 
-        # 업로드 이력 저장
-        upload_id = conn.execute("SELECT id FROM display_upload WHERE campaign_id=? AND sheet_name=?",
-            (campaign_id, sheet_name)).fetchone()
-        if upload_id:
-            upload_id = upload_id[0]
-            conn.execute("UPDATE display_upload SET upload_seq=?,upload_date=?,upload_at=? WHERE id=?",
-                (upload_seq, today, now_str, upload_id))
+        # 업로드 이력 저장 — sheet_name이 달라도 같은 product_name(제품)이면 갱신 (Sheet1, 진열현황 등 중복 방지)
+        existing_upload = conn.execute(
+            "SELECT id FROM display_upload WHERE campaign_id=? AND product_name=?",
+            (campaign_id, sheet_clean)).fetchone()
+        if existing_upload:
+            upload_id = existing_upload[0]
+            conn.execute("UPDATE display_upload SET sheet_name=?,upload_seq=?,upload_date=?,upload_at=? WHERE id=?",
+                (sheet_name, upload_seq, today, now_str, upload_id))
         else:
             conn.execute("""INSERT INTO display_upload
                 (campaign_id, sheet_name, product_name, upload_seq, upload_date, upload_at)
@@ -5578,6 +5579,23 @@ def api_display_scores():
             if g in name: return (i, name)
         return (len(GROUP_ORDER), name)
 
+    # 판매처 관리(branches)에서 담당자 매핑 — name 정확 일치 + 공백 제거 매칭
+    branch_managers = {}
+    try:
+        for r in conn.execute("SELECT name, manager FROM branches WHERE manager IS NOT NULL AND manager!=''").fetchall():
+            branch_managers[r[0]] = r[1]
+    except Exception:
+        pass
+    branch_managers_nospace = {k.replace(' ',''): v for k, v in branch_managers.items()}
+
+    def get_manager(seller_name):
+        if seller_name in branch_managers:
+            return branch_managers[seller_name]
+        ns = seller_name.replace(' ', '')
+        if ns in branch_managers_nospace:
+            return branch_managers_nospace[ns]
+        return ''
+
     if campaign_id:
         # 특정 캠페인 점수 — id 포함
         records = [dict(r) for r in conn.execute("""
@@ -5621,14 +5639,15 @@ def api_display_scores():
         seller_map = {}
         for r in records:
             s = r['seller_name']
-            if s not in seller_map: seller_map[s] = {'products': [], 'total_score': 0}
+            if s not in seller_map: seller_map[s] = {'products': [], 'total_score': 0, 'total_qty': 0}
             seller_map[s]['products'].append(r)
             seller_map[s]['total_score'] += r['score'] or 0
+            seller_map[s]['total_qty']   += r['quantity'] or 0
 
         # 진열 레코드에 있는 매장만 사용 (판매 데이터와 무관)
         # 업체구분 순서로 정렬
 
-        result = [{'seller_name':s, **v, 'year_sales': get_sales(s)}
+        result = [{'seller_name':s, **v, 'year_sales': get_sales(s), 'manager': get_manager(s)}
                   for s,v in seller_map.items()]
         # 업체구분 정렬
         result.sort(key=lambda x: (seller_group_key(x['seller_name'])[0],
@@ -5665,6 +5684,7 @@ def api_display_scores():
                 'display_cnt':  info.get('display_cnt', 0) or 0,
                 'detail_items': detail_items,
                 'year_sales':   get_sales(s),
+                'manager':      get_manager(s),
             })
 
         # 동점 순위 계산 (dense rank — 동점 같은 순위, 다음 점수는 다음 순위)
@@ -5841,7 +5861,7 @@ def api_display_export_ranking():
 @app.route("/api/display/export/campaign")
 @login_required
 def api_display_export_campaign():
-    """특정 캠페인 매장별 점수 엑셀 다운로드"""
+    """특정 캠페인 매장별 발주 현황 엑셀 다운로드"""
     from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
     from openpyxl.utils import get_column_letter
     campaign_id = request.args.get('campaign_id')
@@ -5858,57 +5878,57 @@ def api_display_export_campaign():
     """, (campaign_id,)).fetchall()]
     products = [r[0] for r in conn.execute(
         "SELECT DISTINCT product_name FROM display_upload WHERE campaign_id=? ORDER BY upload_seq", (campaign_id,)).fetchall()]
-    sales_map = {r[0]:r[1] for r in conn.execute(
-        f"SELECT real_seller, SUM(total) FROM sales_data WHERE sale_date LIKE '{year}%' AND real_seller!='' GROUP BY real_seller"
-    ).fetchall()}
+
+    # 판매처 관리(branches)에서 담당자 매핑
+    branch_managers = {}
+    try:
+        for r in conn.execute("SELECT name, manager FROM branches WHERE manager IS NOT NULL AND manager!=''").fetchall():
+            branch_managers[r[0]] = r[1]
+    except Exception:
+        pass
+    branch_managers_nospace = {k.replace(' ',''): v for k, v in branch_managers.items()}
+    def get_manager(s):
+        return branch_managers.get(s, branch_managers_nospace.get(s.replace(' ',''), ''))
+
     conn.close()
 
-    # 수정5: 시트 제목 = 캠페인이름 (Sheet1 제거)
     camp_name = campaign.get('campaign_name','캠페인')
     score_in  = campaign.get('score_in_period',5)
-    score_out = campaign.get('score_out_period',2)
     wb = openpyxl.Workbook(); ws = wb.active
-    ws.title = (camp_name[:28] + f'+{score_in}pt')[:31]  # 엑셀 탭명 최대 31자
+    ws.title = (camp_name[:28] + f'+{score_in}pt')[:31]
 
     def mf(hex_): return PatternFill("solid", fgColor=hex_)
     thin=Side(style='thin',color='E5E7EB'); bdr=Border(left=thin,right=thin,top=thin,bottom=thin)
     ctr=Alignment(horizontal='center',vertical='center')
     left=Alignment(horizontal='left',vertical='center')
-    right_a=Alignment(horizontal='right',vertical='center')
-    col_count = 3+len(products)+2
+    col_count = 3+len(products)+1   # 구분,매장명,담당자 + 제품들 + 발주수량
 
     ws.merge_cells(f'A1:{get_column_letter(col_count)}1')
     c=ws.cell(row=1,column=1,value=f"{camp_name} ({year}년)")
     c.font=Font(bold=True,size=13,name='맑은 고딕',color='FFFFFF'); c.fill=mf('1E3A5F'); c.alignment=ctr
     ws.row_dimensions[1].height=26
 
-    period=f"기한: {campaign.get('period_start','')} ~ {campaign.get('period_end','')}  |  기한내 +{score_in}pt / 기한후 +{score_out}pt"
+    period=f"기한: {campaign.get('period_start','')} ~ {campaign.get('period_end','')}"
     ws.merge_cells(f'A2:{get_column_letter(col_count)}2')
     c=ws.cell(row=2,column=1,value=period); c.font=Font(size=9,name='맑은 고딕'); c.fill=mf('EFF6FF'); c.alignment=left
     ws.row_dimensions[2].height=14
 
-    for ci,h in enumerate(['구분','매장명','누계점수']+products+['진열수','연매출(원)'],1):
+    for ci,h in enumerate(['구분','매장명','담당자']+products+['발주 수량'],1):
         c=ws.cell(row=3,column=ci,value=h); c.font=Font(bold=True,size=9,name='맑은 고딕')
         c.fill=mf('D9E1F2'); c.border=bdr; c.alignment=ctr
     ws.row_dimensions[3].height=18
 
-    ws.column_dimensions['A'].width=12; ws.column_dimensions['B'].width=24; ws.column_dimensions['C'].width=10
+    ws.column_dimensions['A'].width=12; ws.column_dimensions['B'].width=22; ws.column_dimensions['C'].width=12
     for pi in range(len(products)):
         ws.column_dimensions[get_column_letter(4+pi)].width=max(14,len(products[pi])+2)
-    ws.column_dimensions[get_column_letter(4+len(products))].width=8
-    ws.column_dimensions[get_column_letter(5+len(products))].width=16
-
-    # 공백 제거 매칭
-    sales_nospace = {k.replace(' ',''):v for k,v in sales_map.items()}
-    def get_sales(s): return sales_map.get(s, sales_nospace.get(s.replace(' ',''), 0)) or 0
+    ws.column_dimensions[get_column_letter(4+len(products))].width=10
 
     seller_map={}
     for r in records:
         s=r['seller_name']
-        if s not in seller_map: seller_map[s]={'prods':{},'total':0,'cnt':0}
+        if s not in seller_map: seller_map[s]={'prods':{},'total_qty':0}
         seller_map[s]['prods'][r['product_name']]=r
-        seller_map[s]['total']+=r['score'] or 0
-        if r['has_display']: seller_map[s]['cnt']+=1
+        seller_map[s]['total_qty']+=r['quantity'] or 0
 
     GRPS=['베이비하우스','링크맘','베이비파크']
     def grp(n): return next((g for g in GRPS if g in n),'기타')
@@ -5922,27 +5942,26 @@ def api_display_export_campaign():
             c=ws.cell(row=ri,column=1,value=g); c.font=Font(bold=True,size=9,name='맑은 고딕',color='555555')
             c.fill=mf('F2F4F7'); c.alignment=left; c.border=bdr
             ws.row_dimensions[ri].height=13; ri+=1; prev_g=g
-        info=seller_map[seller]; sc=info['total']
-        sc_color='16A34A' if sc>=5 else 'D97706' if sc>=2 else '9CA3AF'
-        row=[g,seller,sc]
+        info=seller_map[seller]
+        manager = get_manager(seller)
+        row=[g, seller, manager]
         for p in products:
             pd=info['prods'].get(p)
             if pd and pd.get('has_display'):
                 qty=pd.get('quantity',0) or 0
-                cell_val=f"✓{qty}개 +{pd['score']}pt" if qty>0 else f"✓+{pd['score']}pt"
+                cell_val=f"✓{qty}개" if qty>0 else "✓"
             elif pd:
                 cell_val='—'
             else:
                 cell_val=''
             row.append(cell_val)
-        row+=[info['cnt'],get_sales(seller)]
+        row.append(info['total_qty'])
         for ci,v in enumerate(row,1):
             c=ws.cell(row=ri,column=ci,value=v); c.font=Font(size=9,name='맑은 고딕'); c.border=bdr
             c.alignment=ctr if ci!=2 else left
-            if ci==3 and sc>0: c.font=Font(bold=True,size=10,name='맑은 고딕',color=sc_color)
-            if ci>3 and ci<=3+len(products) and str(v).startswith('✓'): c.fill=mf('EFF6FF')  # 수정4: 흰 배경 유지
-            if ci==3+len(products)+2:  # 수정3: 연매출 쉼표 형식
-                c.number_format='#,##0'; c.alignment=right_a
+            if ci>3 and ci<=3+len(products) and str(v).startswith('✓'): c.fill=mf('EFF6FF')
+            if ci==3+len(products)+1:  # 발주 수량 강조
+                c.font=Font(bold=True,size=10,name='맑은 고딕',color='1D4ED8')
         ws.row_dimensions[ri].height=14; ri+=1
 
     ws.freeze_panes='A4'
