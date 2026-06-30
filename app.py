@@ -153,8 +153,21 @@ def init_db():
         is_manual INTEGER DEFAULT 0,
         memo TEXT DEFAULT '',
         updated_at TEXT DEFAULT '',
+        color_detail TEXT DEFAULT '',
+        visit_done INTEGER DEFAULT 0,
+        call_done INTEGER DEFAULT 0,
+        note TEXT DEFAULT '',
         UNIQUE(campaign_id, seller_name, product_name)
     )""")
+    # 마이그레이션: 기존 DB에 신규 컬럼 추가
+    try:
+        dr_cols = [r[1] for r in conn.execute("PRAGMA table_info(display_record)").fetchall()]
+        for col, typ in [('color_detail','TEXT DEFAULT \'\''), ('visit_done','INTEGER DEFAULT 0'),
+                          ('call_done','INTEGER DEFAULT 0'), ('note','TEXT DEFAULT \'\'')]:
+            if col not in dr_cols:
+                conn.execute(f"ALTER TABLE display_record ADD COLUMN {col} {typ}")
+    except Exception:
+        pass
     # 마이그레이션: 구버전 테이블도 유지 (기존 데이터 보호)
     conn.execute("""CREATE TABLE IF NOT EXISTS display_event (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -5458,6 +5471,12 @@ def api_display_upload():
 
         headers = [str(c or '').strip() for c in raw_rows[header_row_idx]]
 
+        # 색상 헤더 행 (헤더 바로 다음 줄에 색상명이 있는 구조)
+        color_row_idx = header_row_idx + 1
+        color_headers = []
+        if color_row_idx < len(raw_rows):
+            color_headers = [str(c or '').strip() for c in raw_rows[color_row_idx]]
+
         # 컬럼 인덱스 파악
         def find_col(keys, hdrs):
             for k in keys:
@@ -5471,6 +5490,13 @@ def api_display_upload():
 
         if NAME_IDX == -1: NAME_IDX = 3   # 기본값
         if SUM_IDX  == -1: SUM_IDX  = len(headers)-2
+
+        # 색상 컬럼 범위: NAME_IDX+1 ~ SUM_IDX-1 (색상명이 있는 컬럼만)
+        color_cols = []
+        for ci in range(NAME_IDX + 1, SUM_IDX):
+            cname = color_headers[ci] if ci < len(color_headers) else ''
+            if cname and cname not in ('합계','총합계'):
+                color_cols.append((ci, cname))
 
         # 업로드 이력 저장 — sheet_name이 달라도 같은 product_name(제품)이면 갱신 (Sheet1, 진열현황 등 중복 방지)
         existing_upload = conn.execute(
@@ -5505,6 +5531,16 @@ def api_display_upload():
             except:
                 qty = 0
 
+            # 색상별 수량 추출 (스누즈2 등 색상별 진열현황 표시용)
+            color_qty = {}
+            for ci, cname in color_cols:
+                if ci < len(row) and row[ci]:
+                    try:
+                        cv = int(float(str(row[ci]).replace(',','')))
+                        if cv > 0: color_qty[cname] = cv
+                    except: pass
+            color_json = json.dumps(color_qty, ensure_ascii=False) if color_qty else ''
+
             has_display = 1 if qty > 0 else 0
             seller = clean_seller_name(raw_name)
             if not seller: continue
@@ -5525,26 +5561,26 @@ def api_display_upload():
                 if ex_has == 0 and has_display == 1:
                     # 이번에 처음 진열 확인 → 점수 부여
                     conn.execute("""UPDATE display_record SET
-                        has_display=1, quantity=?, score=?, upload_id=?, upload_date=?, updated_at=?
+                        has_display=1, quantity=?, score=?, upload_id=?, upload_date=?, updated_at=?, color_detail=?
                         WHERE id=?""",
-                        (qty, base_score, upload_id, today, now_str, ex_id))
+                        (qty, base_score, upload_id, today, now_str, color_json, ex_id))
                     total_updated += 1
                 else:
                     # 수량만 업데이트
-                    conn.execute("UPDATE display_record SET quantity=?,updated_at=? WHERE id=?",
-                        (qty, now_str, ex_id))
+                    conn.execute("UPDATE display_record SET quantity=?,updated_at=?,color_detail=? WHERE id=?",
+                        (qty, now_str, color_json, ex_id))
                     skipped += 1
             else:
                 # 신규 등록
                 code = str(row[CODE_IDX]).strip() if CODE_IDX >= 0 and CODE_IDX < len(row) and row[CODE_IDX] else ''
                 conn.execute("""INSERT INTO display_record
                     (campaign_id, upload_id, seller_name, seller_code, product_name,
-                     quantity, has_display, score, upload_date, updated_at)
-                    VALUES(?,?,?,?,?,?,?,?,?,?)""",
+                     quantity, has_display, score, upload_date, updated_at, color_detail)
+                    VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
                     (campaign_id, upload_id, seller, code, sheet_clean,
                      qty, has_display,
                      base_score if has_display else 0,
-                     today, now_str))
+                     today, now_str, color_json))
                 inserted += 1
 
         total_inserted += inserted
@@ -5597,9 +5633,10 @@ def api_display_scores():
         return ''
 
     if campaign_id:
-        # 특정 캠페인 점수 — id 포함
+        # 특정 캠페인 점수 — id 포함, color_detail/visit_done/call_done/note 추가
         records = [dict(r) for r in conn.execute("""
-            SELECT id, seller_name, product_name, has_display, quantity, score, is_manual, upload_date
+            SELECT id, seller_name, product_name, has_display, quantity, score, is_manual, upload_date,
+                   color_detail, visit_done, call_done, note
             FROM display_record WHERE campaign_id=? ORDER BY seller_name, product_name
         """, (campaign_id,)).fetchall()]
     else:
@@ -5640,6 +5677,11 @@ def api_display_scores():
         for r in records:
             s = r['seller_name']
             if s not in seller_map: seller_map[s] = {'products': [], 'total_score': 0, 'total_qty': 0}
+            # color_detail JSON 파싱
+            try:
+                r['color_detail_parsed'] = json.loads(r.get('color_detail') or '{}')
+            except Exception:
+                r['color_detail_parsed'] = {}
             seller_map[s]['products'].append(r)
             seller_map[s]['total_score'] += r['score'] or 0
             seller_map[s]['total_qty']   += r['quantity'] or 0
@@ -5733,6 +5775,33 @@ def api_display_record_update():
 
     conn.commit(); conn.close()
     return jsonify({'ok': True, 'updated': updated})
+
+
+@app.route("/api/display/record/followup", methods=["POST"])
+@login_required
+def api_display_record_followup():
+    """방문/전화 체크 및 비고 업데이트 (점수와 무관, 가벼운 토글)"""
+    d = request.json or {}
+    rid = d.get('id')
+    if not rid:
+        return jsonify({'ok': False, 'msg': 'id 필요'}), 400
+    conn = get_db()
+    now = datetime.now().strftime('%Y-%m-%d %H:%M')
+    fields, params = [], []
+    if 'visit_done' in d:
+        fields.append('visit_done=?'); params.append(int(d['visit_done']))
+    if 'call_done' in d:
+        fields.append('call_done=?'); params.append(int(d['call_done']))
+    if 'note' in d:
+        fields.append('note=?'); params.append(d['note'])
+    if not fields:
+        conn.close()
+        return jsonify({'ok': False, 'msg': '변경할 필드 없음'}), 400
+    fields.append('updated_at=?'); params.append(now)
+    params.append(rid)
+    conn.execute(f"UPDATE display_record SET {','.join(fields)} WHERE id=?", params)
+    conn.commit(); conn.close()
+    return jsonify({'ok': True})
 
 
 @app.route("/api/display/export/ranking")
@@ -5861,7 +5930,7 @@ def api_display_export_ranking():
 @app.route("/api/display/export/campaign")
 @login_required
 def api_display_export_campaign():
-    """특정 캠페인 매장별 발주 현황 엑셀 다운로드"""
+    """특정 캠페인 매장별 발주 현황 엑셀 다운로드 — 색상별 상세, 방문/전화 추적, 합계 포함"""
     from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
     from openpyxl.utils import get_column_letter
     campaign_id = request.args.get('campaign_id')
@@ -5873,7 +5942,8 @@ def api_display_export_campaign():
     camp_row = conn.execute("SELECT * FROM display_campaign WHERE id=?", (campaign_id,)).fetchone()
     campaign = dict(camp_row) if camp_row else {}
     records = [dict(r) for r in conn.execute("""
-        SELECT seller_name, product_name, has_display, quantity, score, upload_date
+        SELECT seller_name, product_name, has_display, quantity, score, upload_date,
+               color_detail, visit_done, call_done, note
         FROM display_record WHERE campaign_id=? ORDER BY seller_name, product_name
     """, (campaign_id,)).fetchall()]
     products = [r[0] for r in conn.execute(
@@ -5890,6 +5960,13 @@ def api_display_export_campaign():
     def get_manager(s):
         return branch_managers.get(s, branch_managers_nospace.get(s.replace(' ',''), ''))
 
+    # 전체 매장 수 (판매처 관리 기준) — 상단 KPI용
+    total_branch_cnt = 0
+    try:
+        total_branch_cnt = conn.execute("SELECT COUNT(*) FROM branches").fetchone()[0]
+    except Exception:
+        pass
+
     conn.close()
 
     camp_name = campaign.get('campaign_name','캠페인')
@@ -5901,40 +5978,61 @@ def api_display_export_campaign():
     thin=Side(style='thin',color='E5E7EB'); bdr=Border(left=thin,right=thin,top=thin,bottom=thin)
     ctr=Alignment(horizontal='center',vertical='center')
     left=Alignment(horizontal='left',vertical='center')
-    col_count = 3+len(products)+1   # 구분,매장명,담당자 + 제품들 + 발주수량
+    # 열 구성: 구분,매장명,담당자 + 제품들 + 발주수량,방문및설명(1차),미신청후전화(2차),비고
+    EXTRA_COLS = ['발주 수량','방문 및 설명\n(1차)','미신청 후 전화\n(2차)','비고']
+    col_count = 3 + len(products) + len(EXTRA_COLS)
 
+    # 매장별 집계 (먼저 계산 — 상단 KPI에 필요)
+    seller_map={}
+    for r in records:
+        s=r['seller_name']
+        if s not in seller_map: seller_map[s]={'prods':{},'total_qty':0}
+        try:
+            r['color_detail_parsed'] = json.loads(r.get('color_detail') or '{}')
+        except Exception:
+            r['color_detail_parsed'] = {}
+        seller_map[s]['prods'][r['product_name']]=r
+        seller_map[s]['total_qty']+=r['quantity'] or 0
+
+    participating_cnt = sum(1 for v in seller_map.values() if v['total_qty']>0)
+    total_seller_cnt  = max(len(seller_map), total_branch_cnt)
+    total_qty_sum     = sum(v['total_qty'] for v in seller_map.values())
+
+    # ── 상단 타이틀 + KPI ──────────────────────
     ws.merge_cells(f'A1:{get_column_letter(col_count)}1')
-    c=ws.cell(row=1,column=1,value=f"{camp_name} ({year}년)")
-    c.font=Font(bold=True,size=13,name='맑은 고딕',color='FFFFFF'); c.fill=mf('1E3A5F'); c.alignment=ctr
-    ws.row_dimensions[1].height=26
+    kpi_text = f"{camp_name} ({year}년)   |   전체 {total_seller_cnt}개 매장 중 {participating_cnt}개 매장 진열 신청   |   총 발주수량 {total_qty_sum:,}개"
+    c=ws.cell(row=1,column=1,value=kpi_text)
+    c.font=Font(bold=True,size=12,name='맑은 고딕',color='FFFFFF'); c.fill=mf('1E3A5F'); c.alignment=ctr
+    ws.row_dimensions[1].height=28
 
     period=f"기한: {campaign.get('period_start','')} ~ {campaign.get('period_end','')}"
     ws.merge_cells(f'A2:{get_column_letter(col_count)}2')
     c=ws.cell(row=2,column=1,value=period); c.font=Font(size=9,name='맑은 고딕'); c.fill=mf('EFF6FF'); c.alignment=left
     ws.row_dimensions[2].height=14
 
-    for ci,h in enumerate(['구분','매장명','담당자']+products+['발주 수량'],1):
+    # ── 헤더 ──────────────────────────────────
+    headers = ['구분','매장명','담당자'] + products + EXTRA_COLS
+    for ci,h in enumerate(headers,1):
         c=ws.cell(row=3,column=ci,value=h); c.font=Font(bold=True,size=9,name='맑은 고딕')
         c.fill=mf('D9E1F2'); c.border=bdr; c.alignment=ctr
-    ws.row_dimensions[3].height=18
+        c.alignment=Alignment(horizontal='center',vertical='center',wrap_text=True)
+    ws.row_dimensions[3].height=30
 
     ws.column_dimensions['A'].width=12; ws.column_dimensions['B'].width=22; ws.column_dimensions['C'].width=12
     for pi in range(len(products)):
-        ws.column_dimensions[get_column_letter(4+pi)].width=max(14,len(products[pi])+2)
-    ws.column_dimensions[get_column_letter(4+len(products))].width=10
-
-    seller_map={}
-    for r in records:
-        s=r['seller_name']
-        if s not in seller_map: seller_map[s]={'prods':{},'total_qty':0}
-        seller_map[s]['prods'][r['product_name']]=r
-        seller_map[s]['total_qty']+=r['quantity'] or 0
+        ws.column_dimensions[get_column_letter(4+pi)].width=max(16,len(products[pi])+4)
+    extra_start = 4+len(products)
+    ws.column_dimensions[get_column_letter(extra_start)].width=10     # 발주수량
+    ws.column_dimensions[get_column_letter(extra_start+1)].width=14   # 방문(1차)
+    ws.column_dimensions[get_column_letter(extra_start+2)].width=14   # 전화(2차)
+    ws.column_dimensions[get_column_letter(extra_start+3)].width=20   # 비고
 
     GRPS=['베이비하우스','링크맘','베이비파크']
     def grp(n): return next((g for g in GRPS if g in n),'기타')
     sellers=sorted(seller_map.keys(),key=lambda s:(GRPS.index(grp(s)) if grp(s) in GRPS else 99,s))
 
     ri=4; prev_g=''
+    grp_total_qty = {}
     for seller in sellers:
         g=grp(seller)
         if g!=prev_g:
@@ -5945,24 +6043,70 @@ def api_display_export_campaign():
         info=seller_map[seller]
         manager = get_manager(seller)
         row=[g, seller, manager]
+        visit_done = call_done = 0; note_val = ''
         for p in products:
             pd=info['prods'].get(p)
             if pd and pd.get('has_display'):
-                qty=pd.get('quantity',0) or 0
-                cell_val=f"✓{qty}개" if qty>0 else "✓"
+                # 색상별 상세 표시 (예: "갈란트그레이 3개, 와우핑크 2개")
+                colors = pd.get('color_detail_parsed') or {}
+                if colors:
+                    cell_val = ', '.join(f"{c_}:{q_}개" for c_, q_ in colors.items())
+                else:
+                    qty=pd.get('quantity',0) or 0
+                    cell_val=f"✓{qty}개" if qty>0 else "✓"
             elif pd:
                 cell_val='—'
             else:
                 cell_val=''
             row.append(cell_val)
+            if pd:
+                visit_done = visit_done or pd.get('visit_done',0)
+                call_done  = call_done  or pd.get('call_done',0)
+                if pd.get('note'): note_val = pd.get('note')
         row.append(info['total_qty'])
+        row.append('✓' if visit_done else '')
+        row.append('✓' if call_done else '')
+        row.append(note_val)
+
         for ci,v in enumerate(row,1):
             c=ws.cell(row=ri,column=ci,value=v); c.font=Font(size=9,name='맑은 고딕'); c.border=bdr
             c.alignment=ctr if ci!=2 else left
-            if ci>3 and ci<=3+len(products) and str(v).startswith('✓'): c.fill=mf('EFF6FF')
-            if ci==3+len(products)+1:  # 발주 수량 강조
+            if 3<ci<=3+len(products) and v and v not in ('','—'): c.fill=mf('EFF6FF')
+            if ci==extra_start:
                 c.font=Font(bold=True,size=10,name='맑은 고딕',color='1D4ED8')
+            if ci in (extra_start+1, extra_start+2) and v=='✓':
+                c.font=Font(bold=True,size=10,name='맑은 고딕',color='16A34A')
         ws.row_dimensions[ri].height=14; ri+=1
+        grp_total_qty[g] = grp_total_qty.get(g,0) + info['total_qty']
+
+    # ── 하단 합계 ──────────────────────────────
+    grand_qty = sum(grp_total_qty.values()) or 1
+    ws.merge_cells(f'A{ri}:C{ri}')
+    c=ws.cell(row=ri,column=1,value='합계'); c.font=Font(bold=True,size=10,name='맑은 고딕',color='FFFFFF')
+    c.fill=mf('1E3A5F'); c.alignment=ctr; c.border=bdr
+    for ci in range(4, 4+len(products)):
+        c=ws.cell(row=ri,column=ci,value=''); c.fill=mf('1E3A5F'); c.border=bdr
+    c=ws.cell(row=ri,column=extra_start,value=grand_qty)
+    c.font=Font(bold=True,size=10,name='맑은 고딕',color='FFFFFF'); c.fill=mf('1E3A5F'); c.alignment=ctr; c.border=bdr
+    pct_text = '100%'
+    ws.merge_cells(f'{get_column_letter(extra_start+1)}{ri}:{get_column_letter(col_count)}{ri}')
+    c=ws.cell(row=ri,column=extra_start+1,value=f'발주수량 비율 {pct_text} ({grand_qty:,}개)')
+    c.font=Font(bold=True,size=9,name='맑은 고딕',color='FFFFFF'); c.fill=mf('1E3A5F'); c.alignment=left; c.border=bdr
+    ws.row_dimensions[ri].height=20
+    ri += 1
+
+    # 업체구분별 비율 표
+    if len(grp_total_qty) > 1:
+        ws.merge_cells(f'A{ri}:C{ri}')
+        c=ws.cell(row=ri,column=1,value='구분별 비중'); c.font=Font(bold=True,size=9,name='맑은 고딕',color='666666')
+        c.fill=mf('F9FAFB'); c.alignment=left
+        ri += 1
+        for g_name, g_qty in sorted(grp_total_qty.items(), key=lambda x:-x[1]):
+            pct = round(g_qty/grand_qty*100,1)
+            ws.merge_cells(f'A{ri}:C{ri}')
+            c=ws.cell(row=ri,column=1,value=f'  {g_name}: {g_qty:,}개 ({pct}%)')
+            c.font=Font(size=9,name='맑은 고딕',color='666666'); c.alignment=left
+            ri += 1
 
     ws.freeze_panes='A4'
     buf=io.BytesIO(); wb.save(buf); buf.seek(0)
