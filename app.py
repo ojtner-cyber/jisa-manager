@@ -891,6 +891,8 @@ SELLER_ALIAS = {
     '위드에이컴퍼니':          '베이비하우스 관악점',
     # 대구점 통합
     '베이비하우스 대구':        '베이비하우스 대구점',
+    # 대전점 → 동대전점 통합
+    '베이비하우스 대전점':      '베이비하우스 동대전점',
     # 동대전점 통합
     '주식회사 에스엘컴퍼니':   '베이비하우스 동대전점',
     # 하남미사점
@@ -5930,7 +5932,7 @@ def api_display_export_ranking():
 @app.route("/api/display/export/campaign")
 @login_required
 def api_display_export_campaign():
-    """특정 캠페인 매장별 발주 현황 엑셀 다운로드 — 색상별 상세, 방문/전화 추적, 합계 포함"""
+    """특정 캠페인 매장별 발주 현황 엑셀 다운로드 — 깔끔한 보고용 디자인"""
     from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
     from openpyxl.utils import get_column_letter
     campaign_id = request.args.get('campaign_id')
@@ -5960,13 +5962,6 @@ def api_display_export_campaign():
     def get_manager(s):
         return branch_managers.get(s, branch_managers_nospace.get(s.replace(' ',''), ''))
 
-    # 전체 매장 수 (판매처 관리 기준) — 상단 KPI용
-    total_branch_cnt = 0
-    try:
-        total_branch_cnt = conn.execute("SELECT COUNT(*) FROM branches").fetchone()[0]
-    except Exception:
-        pass
-
     conn.close()
 
     camp_name = campaign.get('campaign_name','캠페인')
@@ -5974,15 +5969,21 @@ def api_display_export_campaign():
     wb = openpyxl.Workbook(); ws = wb.active
     ws.title = (camp_name[:28] + f'+{score_in}pt')[:31]
 
+    # ── 절제된 컬러 팔레트 (보고용) ──────────────
     def mf(hex_): return PatternFill("solid", fgColor=hex_)
-    thin=Side(style='thin',color='E5E7EB'); bdr=Border(left=thin,right=thin,top=thin,bottom=thin)
+    NAVY    = '1F2937'   # 헤더 타이틀 (진한 회색-네이비, 과하지 않게)
+    LGRAY   = 'F3F4F6'   # 그룹 구분 행
+    HGRAY   = 'E5E7EB'   # 헤더 배경
+    BORDERC = 'D1D5DB'
+    thin=Side(style='thin',color=BORDERC); bdr=Border(left=thin,right=thin,top=thin,bottom=thin)
     ctr=Alignment(horizontal='center',vertical='center')
     left=Alignment(horizontal='left',vertical='center')
-    # 열 구성: 구분,매장명,담당자 + 제품들 + 발주수량,방문및설명(1차),미신청후전화(2차),비고
+    FNAME='맑은 고딕'
+
     EXTRA_COLS = ['발주 수량','방문 및 설명\n(1차)','미신청 후 전화\n(2차)','비고']
     col_count = 3 + len(products) + len(EXTRA_COLS)
 
-    # 매장별 집계 (먼저 계산 — 상단 KPI에 필요)
+    # 매장별 집계
     seller_map={}
     for r in records:
         s=r['seller_name']
@@ -5994,27 +5995,29 @@ def api_display_export_campaign():
         seller_map[s]['prods'][r['product_name']]=r
         seller_map[s]['total_qty']+=r['quantity'] or 0
 
+    # 수정: 전체 매장 = 업로드된(엑셀에 있는) 매장 수만 기준
+    total_seller_cnt  = len(seller_map)
     participating_cnt = sum(1 for v in seller_map.values() if v['total_qty']>0)
-    total_seller_cnt  = max(len(seller_map), total_branch_cnt)
     total_qty_sum     = sum(v['total_qty'] for v in seller_map.values())
 
-    # ── 상단 타이틀 + KPI ──────────────────────
+    # ── 상단 타이틀 + KPI (절제된 색상) ─────────
     ws.merge_cells(f'A1:{get_column_letter(col_count)}1')
-    kpi_text = f"{camp_name} ({year}년)   |   전체 {total_seller_cnt}개 매장 중 {participating_cnt}개 매장 진열 신청   |   총 발주수량 {total_qty_sum:,}개"
+    kpi_text = f"{camp_name} ({year}년)   ·   전체 {total_seller_cnt}개 매장 중 {participating_cnt}개 매장 진열 신청   ·   총 발주수량 {total_qty_sum:,}개"
     c=ws.cell(row=1,column=1,value=kpi_text)
-    c.font=Font(bold=True,size=12,name='맑은 고딕',color='FFFFFF'); c.fill=mf('1E3A5F'); c.alignment=ctr
+    c.font=Font(bold=True,size=12,name=FNAME,color='FFFFFF'); c.fill=mf(NAVY); c.alignment=ctr
     ws.row_dimensions[1].height=28
 
     period=f"기한: {campaign.get('period_start','')} ~ {campaign.get('period_end','')}"
     ws.merge_cells(f'A2:{get_column_letter(col_count)}2')
-    c=ws.cell(row=2,column=1,value=period); c.font=Font(size=9,name='맑은 고딕'); c.fill=mf('EFF6FF'); c.alignment=left
-    ws.row_dimensions[2].height=14
+    c=ws.cell(row=2,column=1,value=period); c.font=Font(size=9,name=FNAME,color='6B7280'); c.alignment=left
+    ws.row_dimensions[2].height=16
 
     # ── 헤더 ──────────────────────────────────
     headers = ['구분','매장명','담당자'] + products + EXTRA_COLS
     for ci,h in enumerate(headers,1):
-        c=ws.cell(row=3,column=ci,value=h); c.font=Font(bold=True,size=9,name='맑은 고딕')
-        c.fill=mf('D9E1F2'); c.border=bdr; c.alignment=ctr
+        c=ws.cell(row=3,column=ci,value=h)
+        c.font=Font(bold=True,size=9,name=FNAME,color='374151')
+        c.fill=mf(HGRAY); c.border=bdr
         c.alignment=Alignment(horizontal='center',vertical='center',wrap_text=True)
     ws.row_dimensions[3].height=30
 
@@ -6022,10 +6025,10 @@ def api_display_export_campaign():
     for pi in range(len(products)):
         ws.column_dimensions[get_column_letter(4+pi)].width=max(16,len(products[pi])+4)
     extra_start = 4+len(products)
-    ws.column_dimensions[get_column_letter(extra_start)].width=10     # 발주수량
-    ws.column_dimensions[get_column_letter(extra_start+1)].width=14   # 방문(1차)
-    ws.column_dimensions[get_column_letter(extra_start+2)].width=14   # 전화(2차)
-    ws.column_dimensions[get_column_letter(extra_start+3)].width=20   # 비고
+    ws.column_dimensions[get_column_letter(extra_start)].width=10
+    ws.column_dimensions[get_column_letter(extra_start+1)].width=14
+    ws.column_dimensions[get_column_letter(extra_start+2)].width=14
+    ws.column_dimensions[get_column_letter(extra_start+3)].width=20
 
     GRPS=['베이비하우스','링크맘','베이비파크']
     def grp(n): return next((g for g in GRPS if g in n),'기타')
@@ -6035,25 +6038,23 @@ def api_display_export_campaign():
     grp_total_qty = {}
     for seller in sellers:
         g=grp(seller)
-        if g!=prev_g:
-            ws.merge_cells(f'A{ri}:{get_column_letter(col_count)}{ri}')
-            c=ws.cell(row=ri,column=1,value=g); c.font=Font(bold=True,size=9,name='맑은 고딕',color='555555')
-            c.fill=mf('F2F4F7'); c.alignment=left; c.border=bdr
-            ws.row_dimensions[ri].height=13; ri+=1; prev_g=g
+        first_in_group = (g != prev_g)
+        if first_in_group:
+            prev_g=g
         info=seller_map[seller]
         manager = get_manager(seller)
-        row=[g, seller, manager]
+        # 구분: 그룹 첫 매장에만 표시 (반복 제거)
+        row=[g if first_in_group else '', seller, manager]
         visit_done = call_done = 0; note_val = ''
         for p in products:
             pd=info['prods'].get(p)
             if pd and pd.get('has_display'):
-                # 색상별 상세 표시 (예: "갈란트그레이 3개, 와우핑크 2개")
                 colors = pd.get('color_detail_parsed') or {}
                 if colors:
-                    cell_val = ', '.join(f"{c_}:{q_}개" for c_, q_ in colors.items())
+                    cell_val = ', '.join(f"{c_} {q_}개" for c_, q_ in colors.items())
                 else:
                     qty=pd.get('quantity',0) or 0
-                    cell_val=f"✓{qty}개" if qty>0 else "✓"
+                    cell_val=f"{qty}개" if qty>0 else "진열"
             elif pd:
                 cell_val='—'
             else:
@@ -6064,48 +6065,46 @@ def api_display_export_campaign():
                 call_done  = call_done  or pd.get('call_done',0)
                 if pd.get('note'): note_val = pd.get('note')
         row.append(info['total_qty'])
-        row.append('✓' if visit_done else '')
-        row.append('✓' if call_done else '')
+        row.append('완료' if visit_done else '')
+        row.append('완료' if call_done else '')
         row.append(note_val)
 
         for ci,v in enumerate(row,1):
-            c=ws.cell(row=ri,column=ci,value=v); c.font=Font(size=9,name='맑은 고딕'); c.border=bdr
+            c=ws.cell(row=ri,column=ci,value=v); c.font=Font(size=9,name=FNAME,color='1F2937'); c.border=bdr
             c.alignment=ctr if ci!=2 else left
-            if 3<ci<=3+len(products) and v and v not in ('','—'): c.fill=mf('EFF6FF')
-            if ci==extra_start:
-                c.font=Font(bold=True,size=10,name='맑은 고딕',color='1D4ED8')
-            if ci in (extra_start+1, extra_start+2) and v=='✓':
-                c.font=Font(bold=True,size=10,name='맑은 고딕',color='16A34A')
-        ws.row_dimensions[ri].height=14; ri+=1
+            if ci==1 and v:  # 구분 강조 (그룹 첫 행)
+                c.font=Font(bold=True,size=9,name=FNAME,color='374151')
+            if ci==extra_start:  # 발주 수량만 약하게 강조
+                c.font=Font(bold=True,size=9,name=FNAME,color='1F2937')
+        ws.row_dimensions[ri].height=15; ri+=1
         grp_total_qty[g] = grp_total_qty.get(g,0) + info['total_qty']
 
-    # ── 하단 합계 ──────────────────────────────
+    # ── 하단 합계 (절제된 디자인) ────────────────
     grand_qty = sum(grp_total_qty.values()) or 1
     ws.merge_cells(f'A{ri}:C{ri}')
-    c=ws.cell(row=ri,column=1,value='합계'); c.font=Font(bold=True,size=10,name='맑은 고딕',color='FFFFFF')
-    c.fill=mf('1E3A5F'); c.alignment=ctr; c.border=bdr
+    c=ws.cell(row=ri,column=1,value='합계'); c.font=Font(bold=True,size=10,name=FNAME,color='374151')
+    c.fill=mf(LGRAY); c.alignment=ctr; c.border=bdr
     for ci in range(4, 4+len(products)):
-        c=ws.cell(row=ri,column=ci,value=''); c.fill=mf('1E3A5F'); c.border=bdr
+        c=ws.cell(row=ri,column=ci,value=''); c.fill=mf(LGRAY); c.border=bdr
     c=ws.cell(row=ri,column=extra_start,value=grand_qty)
-    c.font=Font(bold=True,size=10,name='맑은 고딕',color='FFFFFF'); c.fill=mf('1E3A5F'); c.alignment=ctr; c.border=bdr
-    pct_text = '100%'
+    c.font=Font(bold=True,size=10,name=FNAME,color='374151'); c.fill=mf(LGRAY); c.alignment=ctr; c.border=bdr
     ws.merge_cells(f'{get_column_letter(extra_start+1)}{ri}:{get_column_letter(col_count)}{ri}')
-    c=ws.cell(row=ri,column=extra_start+1,value=f'발주수량 비율 {pct_text} ({grand_qty:,}개)')
-    c.font=Font(bold=True,size=9,name='맑은 고딕',color='FFFFFF'); c.fill=mf('1E3A5F'); c.alignment=left; c.border=bdr
+    c=ws.cell(row=ri,column=extra_start+1,value=f'발주수량 100%  ({grand_qty:,}개)')
+    c.font=Font(bold=True,size=9,name=FNAME,color='6B7280'); c.fill=mf(LGRAY); c.alignment=left; c.border=bdr
     ws.row_dimensions[ri].height=20
     ri += 1
 
     # 업체구분별 비율 표
     if len(grp_total_qty) > 1:
         ws.merge_cells(f'A{ri}:C{ri}')
-        c=ws.cell(row=ri,column=1,value='구분별 비중'); c.font=Font(bold=True,size=9,name='맑은 고딕',color='666666')
-        c.fill=mf('F9FAFB'); c.alignment=left
+        c=ws.cell(row=ri,column=1,value='구분별 비중'); c.font=Font(bold=True,size=9,name=FNAME,color='9CA3AF')
+        c.alignment=left
         ri += 1
         for g_name, g_qty in sorted(grp_total_qty.items(), key=lambda x:-x[1]):
             pct = round(g_qty/grand_qty*100,1)
             ws.merge_cells(f'A{ri}:C{ri}')
-            c=ws.cell(row=ri,column=1,value=f'  {g_name}: {g_qty:,}개 ({pct}%)')
-            c.font=Font(size=9,name='맑은 고딕',color='666666'); c.alignment=left
+            c=ws.cell(row=ri,column=1,value=f'  {g_name}   {g_qty:,}개 ({pct}%)')
+            c.font=Font(size=9,name=FNAME,color='9CA3AF'); c.alignment=left
             ri += 1
 
     ws.freeze_panes='A4'

@@ -859,7 +859,7 @@ td.center{text-align:center}
         <div class="ph-r">
           <select class="ysel" id="sns-year" onchange="loadSNS()"></select>
           <input type="text" id="sns-search-input" placeholder="매장명 검색..." style="padding:7px 12px;border:1.5px solid var(--ink-100);border-radius:var(--r-md);font-size:13px;width:160px" oninput="filterSNS()">
-          <button class="btn btn-dark btn-sm" onclick="startBlogSearch()" id="sns-auto-btn">🔍 전체 블로그 분석</button>
+          <button class="btn btn-dark btn-sm" onclick="startBlogSearch()" id="sns-auto-btn">🔍 전체 분석</button>
         </div>
       </div>
 
@@ -2462,7 +2462,7 @@ async function startBlogSearch(){
   bar.style.background='#16A34A';
   label.textContent=`✅ 완료! ${totalUpdated}개 매장 분석 완료`;
   await loadSNS();
-  btn.disabled=false; btn.textContent='🔍 전체 블로그 분석';
+  btn.disabled=false; btn.textContent='🔍 전체 분석';
   toast(`네이버 블로그 분석 완료 — ${total}개 매장`);
 }
 
