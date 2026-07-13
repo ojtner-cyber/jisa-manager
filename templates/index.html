@@ -409,7 +409,9 @@ td.center{text-align:center}
       <div class="ph">
         <div><h2>판매처 관리</h2><p>판매처 정보 등록 · 수정 · 조회 (판매현황과 자동 연동)</p></div>
         <div class="ph-r">
-          <button class="btn btn-ghost btn-sm" onclick="exportBranchesXlsx()" title="거래처별 브랜드 입점 리스트 형식으로 내보내기">📥 거래처 리스트 내보내기</button>
+          <select class="ysel" id="sellers-year" onchange="" style="margin-right:4px"></select>
+          <button class="btn btn-primary btn-sm" onclick="downloadSellersXlsx()" title="지역별 판매처 현황 엑셀">📥 판매처 현황 엑셀</button>
+          <button class="btn btn-ghost btn-sm" onclick="exportBranchesXlsx()" title="거래처별 브랜드 입점 리스트 형식으로 내보내기">📥 거래처 리스트</button>
           <button class="btn btn-ghost btn-sm" onclick="document.getElementById('store-xlsx-input').click()" title="지역·담당자·전화번호가 담긴 xlsx 업로드">매장정보 xlsx 업로드</button>
           <input type="file" id="store-xlsx-input" accept=".xlsx" style="display:none" onchange="uploadStoreInfo(event)">
           <button class="btn btn-ghost btn-sm" onclick="importFromXlsx()" title="업로드된 판매현황에서 판매처 자동 등록">판매현황에서 가져오기</button>
@@ -423,6 +425,11 @@ td.center{text-align:center}
         <select class="fs" id="b-region" onchange="loadBranches()">
           <option value="">전체</option>
           {% for r in regions %}<option>{{r}}</option>{% endfor %}
+          <option>서울</option><option>경기</option><option>인천</option>
+          <option>부산</option><option>대구</option><option>광주</option>
+          <option>대전</option><option>울산</option><option>강원</option>
+          <option>충북</option><option>충남</option><option>전북</option>
+          <option>전남</option><option>경북</option><option>경남</option><option>제주</option>
         </select>
         <div class="fdiv"></div>
         <span class="flbl">상태</span>
@@ -1333,7 +1340,7 @@ async function api(url,opts={}){
 }
 function initYears(){
   const y=TY(),yrs=Array.from({length:5},(_,i)=>y-i);
-  ['dash-year','sales-year','ex-year','prod-year','sd-year','script-year','sns-year','ace-year','visit-year','display-year'].forEach(id=>{
+  ['dash-year','sales-year','ex-year','prod-year','sd-year','script-year','sns-year','ace-year','visit-year','display-year','sellers-year'].forEach(id=>{
     const s=document.getElementById(id);
     if(s)s.innerHTML=yrs.map(yr=>`<option${yr===y?' selected':''}>${yr}</option>`).join('');
   });
@@ -2937,6 +2944,12 @@ async function loadBranches(){
       </td>
     </tr>`;
   }).join('');
+}
+
+function downloadSellersXlsx(){
+  const year = document.getElementById('sellers-year')?.value || new Date().getFullYear();
+  window.location.href = `/api/export/xlsx/sellers?year=${year}`;
+  toast('판매처 현황 엑셀 다운로드 중...');
 }
 
 function exportBranchesXlsx(){

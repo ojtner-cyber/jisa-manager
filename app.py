@@ -935,6 +935,12 @@ SELLER_ALIAS = {
     # 수정9: 베네피아 창원2호점 → 링크맘 창원2호점
     '베네피아 창원2호점(링크맘)': '링크맘 창원2호점',
     '베네피아 창원2호점':       '링크맘 창원2호점',
+    # 수정3-13: 베네피아 창원점 → 링크맘 창원점
+    '베네피아 창원점':          '링크맘 창원점',
+    # 수정3-14: 링크맘 하남초일점 → 링크맘 하남점
+    '링크맘 하남초일점':        '링크맘 하남점',
+    # 수정3-9: 베이비하우스 도봉 → 베이비하우스 도봉점
+    '베이비하우스 도봉':        '베이비하우스 도봉점',
     # 베이비스토리
     '베이비스토리':             '베이비스토리 판교점',
     # 파주점 고객 데이터 → 삭제
@@ -966,6 +972,12 @@ DISPLAY_NAME = {
     '베이비하우스 울산점  엔픽스. 타프토이즈,카오스': '베이비하우스 울산점',
     # 베이비스토리
     '베이비스토리':                     '베이비스토리 판교점',
+    # 수정3-13: 베네피아 창원점 → 링크맘 창원점
+    '베네피아 창원점':                  '링크맘 창원점',
+    # 수정3-14: 링크맘 하남초일점 → 링크맘 하남점
+    '링크맘 하남초일점':                '링크맘 하남점',
+    # 수정3-9: 도봉
+    '베이비하우스 도봉':                '베이비하우스 도봉점',
     # 숨김 처리
     '베이비하우스 파주점/신성준고객':   None,
     # 수정9: 이미 정리된 것들 (DB에 남아있을 경우 대비)
@@ -3168,6 +3180,179 @@ def api_product_by_seller():
         merged[nm]['total'] += r['total']
         merged[nm]['cnt']   += r['cnt']
     return jsonify(sorted(merged.values(), key=lambda x: -x['total']))
+
+@app.route("/api/export/xlsx/sellers")
+@login_required
+def api_export_sellers_xlsx():
+    """판매처 관리 엑셀 — 지역별 분류, 심플 보고용"""
+    from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
+    from openpyxl.utils import get_column_letter
+    year = request.args.get('year', str(datetime.now().year))
+
+    conn = get_db()
+    # 판매처 관리: real_seller 기준, 담당자 포함
+    rows = conn.execute("""
+        SELECT real_seller,
+               COUNT(*) cnt,
+               SUM(total) total,
+               SUM(quantity) qty,
+               MIN(sale_date) first_date,
+               MAX(sale_date) last_date
+        FROM sales_data
+        WHERE real_seller != '' AND sale_date LIKE ?
+        GROUP BY real_seller
+        ORDER BY real_seller
+    """, (f"{year}%",)).fetchall()
+
+    # 담당자 매핑
+    branch_managers = {}
+    try:
+        for r in conn.execute("SELECT name, manager FROM branches WHERE manager IS NOT NULL AND manager!=''").fetchall():
+            branch_managers[r[0]] = r[1]
+    except Exception:
+        pass
+    conn.close()
+
+    # display_seller 변환 + 지역 분류
+    seller_data = []
+    for r in rows:
+        raw_name = r[0]
+        disp_name = display_seller(raw_name)
+        if is_hidden_seller(raw_name): continue
+        region = detect_region_from_name(disp_name or raw_name)
+        mgr = branch_managers.get(raw_name, branch_managers.get(disp_name, ''))
+        seller_data.append({
+            'raw':   raw_name,
+            'name':  disp_name or raw_name,
+            'region': region or '기타',
+            'manager': mgr,
+            'cnt':   r[1],
+            'total': r[2] or 0,
+            'qty':   r[3] or 0,
+            'first': r[4] or '',
+            'last':  r[5] or '',
+        })
+
+    # 지역 우선순위
+    REGION_ORDER = ['서울','경기','인천','부산','대구','광주','대전','울산','세종',
+                    '강원','충북','충남','전북','전남','경북','경남','제주','기타']
+    seller_data.sort(key=lambda x: (
+        REGION_ORDER.index(x['region']) if x['region'] in REGION_ORDER else 99,
+        x['name']
+    ))
+
+    # 엑셀 생성
+    wb = openpyxl.Workbook()
+    ws = wb.active; ws.title = f'판매처현황_{year}'
+
+    FNAME = '맑은 고딕'
+    def mf(h): return PatternFill("solid", fgColor=h)
+    thin = Side(style='thin', color='E5E7EB')
+    bdr  = Border(left=thin, right=thin, top=thin, bottom=thin)
+    ctr  = Alignment(horizontal='center', vertical='center')
+    left = Alignment(horizontal='left', vertical='center')
+    rgt  = Alignment(horizontal='right', vertical='center')
+
+    # 타이틀
+    ws.merge_cells('A1:H1')
+    c = ws.cell(row=1, column=1, value=f'판매처 현황  ({year}년)   총 {len(seller_data)}개 매장')
+    c.font=Font(bold=True, size=13, name=FNAME, color='FFFFFF'); c.fill=mf('1F2937'); c.alignment=ctr
+    ws.row_dimensions[1].height = 28
+
+    # 헤더
+    hdrs = ['지역','매장명','담당자','판매금액(원)','판매건수','판매수량','첫 거래일','최근 거래일']
+    widths = [10, 28, 14, 18, 10, 10, 14, 14]
+    for ci, (h, w) in enumerate(zip(hdrs, widths), 1):
+        c = ws.cell(row=2, column=ci, value=h)
+        c.font=Font(bold=True, size=9, name=FNAME, color='374151')
+        c.fill=mf('F3F4F6'); c.border=bdr; c.alignment=ctr
+        ws.column_dimensions[get_column_letter(ci)].width = w
+    ws.row_dimensions[2].height = 20
+
+    # 지역별 소계용
+    region_totals = {}
+
+    ri = 3
+    prev_region = ''
+    for s in seller_data:
+        region = s['region']
+
+        # 지역 변경 시 구분 행
+        if region != prev_region:
+            if prev_region and prev_region in region_totals:
+                # 이전 지역 소계 행
+                rt = region_totals[prev_region]
+                ws.merge_cells(f'A{ri}:C{ri}')
+                c = ws.cell(row=ri, column=1, value=f'{prev_region} 소계  ({rt["cnt"]}개 매장)')
+                c.font=Font(bold=True, size=9, name=FNAME, color='6B7280')
+                c.fill=mf('F9FAFB'); c.alignment=left; c.border=bdr
+                c2 = ws.cell(row=ri, column=4, value=rt['total'])
+                c2.font=Font(bold=True, size=9, name=FNAME, color='6B7280')
+                c2.fill=mf('F9FAFB'); c2.border=bdr; c2.alignment=rgt; c2.number_format='#,##0'
+                ws.cell(row=ri, column=5, value=rt['stores']).fill=mf('F9FAFB')
+                ws.cell(row=ri, column=5).border=bdr; ws.cell(row=ri, column=5).alignment=ctr
+                for ci in [6,7,8]: ws.cell(row=ri, column=ci).fill=mf('F9FAFB'); ws.cell(row=ri, column=ci).border=bdr
+                ws.row_dimensions[ri].height=14; ri+=1
+
+            # 지역 헤더
+            ws.merge_cells(f'A{ri}:H{ri}')
+            c = ws.cell(row=ri, column=1, value=f'▌ {region}')
+            c.font=Font(bold=True, size=10, name=FNAME, color='1F2937')
+            c.fill=mf('E5E7EB'); c.alignment=left
+            ws.row_dimensions[ri].height = 18; ri += 1
+            prev_region = region
+            if region not in region_totals:
+                region_totals[region] = {'total':0,'cnt':0,'stores':0}
+
+        # 데이터 행
+        row_vals = [region, s['name'], s['manager'],
+                    s['total'], s['cnt'], s['qty'],
+                    s['first'][:10] if s['first'] else '',
+                    s['last'][:10] if s['last'] else '']
+        for ci, v in enumerate(row_vals, 1):
+            c = ws.cell(row=ri, column=ci, value=v); c.border=bdr
+            c.font=Font(size=9, name=FNAME, color='1F2937')
+            if ci == 1: c.alignment=ctr; c.font=Font(size=9, name=FNAME, color='9CA3AF')
+            elif ci == 2: c.alignment=left
+            elif ci == 3: c.alignment=ctr
+            elif ci == 4: c.alignment=rgt; c.number_format='#,##0'
+            elif ci in (5,6): c.alignment=ctr
+            else: c.alignment=ctr; c.font=Font(size=8, name=FNAME, color='9CA3AF')
+        ws.row_dimensions[ri].height = 15; ri += 1
+
+        region_totals[region]['total'] += s['total']
+        region_totals[region]['cnt']   += s['cnt']
+        region_totals[region]['stores'] += 1
+
+    # 마지막 지역 소계
+    if prev_region and prev_region in region_totals:
+        rt = region_totals[prev_region]
+        ws.merge_cells(f'A{ri}:C{ri}')
+        c = ws.cell(row=ri, column=1, value=f'{prev_region} 소계  ({rt["stores"]}개 매장)')
+        c.font=Font(bold=True, size=9, name=FNAME, color='6B7280')
+        c.fill=mf('F9FAFB'); c.alignment=left; c.border=bdr
+        c2 = ws.cell(row=ri, column=4, value=rt['total'])
+        c2.font=Font(bold=True, size=9, name=FNAME, color='6B7280')
+        c2.fill=mf('F9FAFB'); c2.border=bdr; c2.alignment=rgt; c2.number_format='#,##0'
+        ws.cell(row=ri, column=5, value=rt['stores']); ws.cell(row=ri, column=5).fill=mf('F9FAFB'); ws.cell(row=ri, column=5).border=bdr; ws.cell(row=ri, column=5).alignment=ctr
+        for ci in [6,7,8]: ws.cell(row=ri, column=ci).fill=mf('F9FAFB'); ws.cell(row=ri, column=ci).border=bdr
+        ws.row_dimensions[ri].height=14; ri+=1
+
+    # 전체 합계
+    grand_total = sum(s['total'] for s in seller_data)
+    ws.merge_cells(f'A{ri}:C{ri}')
+    c = ws.cell(row=ri, column=1, value=f'전체 합계  ({len(seller_data)}개 매장)')
+    c.font=Font(bold=True, size=10, name=FNAME, color='FFFFFF'); c.fill=mf('1F2937'); c.alignment=left; c.border=bdr
+    c2 = ws.cell(row=ri, column=4, value=grand_total)
+    c2.font=Font(bold=True, size=10, name=FNAME, color='FFFFFF'); c2.fill=mf('1F2937'); c2.alignment=rgt; c2.border=bdr; c2.number_format='#,##0'
+    for ci in [5,6,7,8]: ws.cell(row=ri,column=ci).fill=mf('1F2937'); ws.cell(row=ri,column=ci).border=bdr
+    ws.row_dimensions[ri].height=20
+
+    ws.freeze_panes = 'A3'
+    buf = io.BytesIO(); wb.save(buf); buf.seek(0)
+    return send_file(buf, mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        as_attachment=True, download_name=f'판매처현황_{year}.xlsx')
+
 
 @app.route("/api/export/xlsx/branches")
 @login_required
