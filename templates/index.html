@@ -360,6 +360,7 @@ td.center{text-align:center}
       <a onclick="showPage('salesdata')" id="nav-salesdata"><span class="ni">★</span>판매현황</a>
       <a onclick="showPage('products')" id="nav-products"><span class="ni">⊞</span>제품별 관리</a>
       <a onclick="showPage('script')" id="nav-script"><span class="ni">💬</span>매장 분석</a>
+      <a onclick="showPage('comm')" id="nav-comm"><span class="ni">✉</span>매장과의 소통</a>
       <a onclick="showPage('sns')" id="nav-sns"><span class="ni">◆</span>SNS 활용 매장</a>
       <a onclick="showPage('ace')" id="nav-ace"><span class="ni">▶</span>영업 실행 포인트</a>
       <a onclick="showPage('stock')" id="nav-stock"><span class="ni">◻</span>재고 현황</a>
@@ -859,6 +860,63 @@ td.center{text-align:center}
       </div>
     </div>
 
+    <!-- ██ 매장과의 소통 ██ -->
+    <div class="page" id="page-comm">
+      <div class="ph">
+        <div><h2>매장과의 소통</h2><p>매장 방문·통화·메모를 날짜별로 기록 · 보고서 형식으로 정리</p></div>
+        <div class="ph-r">
+          <select class="ysel" id="comm-year" onchange="loadComm()"></select>
+          <button class="btn btn-primary btn-sm" onclick="downloadCommXlsx()">📥 소통 기록 엑셀</button>
+          <button class="btn btn-dark" onclick="openCommModal()">+ 소통 기록 추가</button>
+        </div>
+      </div>
+
+      <div class="fb" style="margin-bottom:16px">
+        <span class="flbl">매장</span>
+        <input class="fs" list="comm-seller-list" id="comm-seller-filter" placeholder="전체 매장" style="width:220px" onchange="loadCommHistory()">
+        <datalist id="comm-seller-list"></datalist>
+      </div>
+
+      <div style="display:grid;grid-template-columns:1.1fr 1.4fr;gap:20px;align-items:start">
+        <!-- 좌측: 소통 기록 목록 -->
+        <div class="cc">
+          <div class="cc-t">소통 기록</div>
+          <div id="comm-list" style="max-height:640px;overflow-y:auto"></div>
+        </div>
+
+        <!-- 우측: 선택 매장 보고서 -->
+        <div class="cc">
+          <div class="cc-t" id="comm-report-title">매장을 선택하면 보고서가 표시됩니다</div>
+          <div id="comm-report-body"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 소통 기록 추가 모달 -->
+    <div class="modal-overlay" id="comm-modal-overlay" style="display:none">
+      <div class="modal" style="max-width:480px">
+        <div class="modal-h"><h3>소통 기록 추가</h3><button onclick="closeCommModal()">✕</button></div>
+        <div class="modal-b">
+          <div class="mr"><label>매장명 *</label>
+            <input class="mi" list="comm-seller-list" id="cm-seller" placeholder="매장명 입력 또는 선택">
+          </div>
+          <div class="mr"><label>날짜 *</label><input class="mi" type="date" id="cm-date"></div>
+          <div class="mr"><label>유형</label>
+            <select class="mi" id="cm-type">
+              <option>방문</option><option>전화</option><option>카톡/문자</option><option>이메일</option><option>기타</option>
+            </select>
+          </div>
+          <div class="mr"><label>메모 *</label>
+            <textarea class="mi" id="cm-memo" rows="6" placeholder="오늘 나눈 대화, 요청사항, 특이사항 등을 자유롭게 기록하세요"></textarea>
+          </div>
+        </div>
+        <div class="modal-f">
+          <button class="btn btn-ghost" onclick="closeCommModal()">취소</button>
+          <button class="btn btn-dark" onclick="saveComm()">저장</button>
+        </div>
+      </div>
+    </div>
+
     <!-- ██ SNS 활용 매장 ██ -->
     <div class="page" id="page-sns">
       <div class="ph">
@@ -1340,7 +1398,7 @@ async function api(url,opts={}){
 }
 function initYears(){
   const y=TY(),yrs=Array.from({length:5},(_,i)=>y-i);
-  ['dash-year','sales-year','ex-year','prod-year','sd-year','script-year','sns-year','ace-year','visit-year','display-year','sellers-year'].forEach(id=>{
+  ['dash-year','sales-year','ex-year','prod-year','sd-year','script-year','sns-year','ace-year','visit-year','display-year','sellers-year','comm-year'].forEach(id=>{
     const s=document.getElementById(id);
     if(s)s.innerHTML=yrs.map(yr=>`<option${yr===y?' selected':''}>${yr}</option>`).join('');
   });
@@ -1352,7 +1410,8 @@ function showPage(n){
   if(pg) pg.classList.add('active'); if(nav) nav.classList.add('active');
   ({dashboard:loadDash,branches:loadBranches,sales:loadSalesPage,
     users:loadUsers,salesdata:loadSalesData,products:loadProducts,
-    script:initScriptPage,sns:loadSNS,stock:loadStock,display:loadDisplay,ace:loadAce}[n]||function(){})();
+    script:initScriptPage,sns:loadSNS,stock:loadStock,display:loadDisplay,ace:loadAce,
+    comm:loadComm}[n]||function(){})();
   if(n==='upload') cancelUpload();
 }
 
@@ -1495,6 +1554,180 @@ async function saveCheckResult(){
             status:'completed',reason:r.reason,check_points:r.check_points,result_memo:memo};
   const res=await api('/api/visit/save',{method:'POST',body:d});
   if(res&&res.ok){ document.getElementById('check-modal').style.display='none'; loadVisit(); toast('완료 처리됐습니다'); }
+}
+
+// ── 매장과의 소통 ────────────────────────────────
+let commData = [], commAllSellers = [], commSelectedSeller = '';
+
+async function loadComm(){
+  const year = document.getElementById('comm-year')?.value || new Date().getFullYear();
+  // 매장 목록 채우기 (판매실적 기준)
+  if(!commAllSellers.length){
+    const sales = await api(`/api/sales-by-store?year=${year}`) || [];
+    commAllSellers = [...new Set(sales.map(s=>s.seller_name))].sort();
+    document.getElementById('comm-seller-list').innerHTML =
+      commAllSellers.map(s=>`<option value="${s}">`).join('');
+  }
+  await loadCommHistory();
+}
+
+async function loadCommHistory(){
+  const seller = document.getElementById('comm-seller-filter')?.value.trim() || '';
+  const rows = await api(`/api/communication${seller?'?seller='+encodeURIComponent(seller):''}`);
+  commData = rows || [];
+  renderCommList();
+  if(seller){
+    commSelectedSeller = seller;
+    loadCommReport(seller);
+  }
+}
+
+function renderCommList(){
+  const el = document.getElementById('comm-list');
+  if(!commData.length){
+    el.innerHTML = `<div style="text-align:center;padding:40px;color:var(--t-300);font-size:13px">소통 기록이 없습니다</div>`;
+    return;
+  }
+  const TYPE_ICON = {'방문':'🚗','전화':'📞','카톡/문자':'💬','이메일':'✉️','기타':'📝'};
+  el.innerHTML = commData.map(r=>{
+    const safe = r.seller_name.replace(/'/g,"\\'");
+    return `<div style="padding:12px 14px;border-bottom:1px solid var(--border);cursor:pointer;transition:.15s"
+      onclick="selectCommSeller('${safe}')"
+      onmouseenter="this.style.background='var(--bg)'" onmouseleave="this.style.background='none'">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
+        <div style="font-size:13px;font-weight:700;color:var(--t-900)">${TYPE_ICON[r.comm_type]||'📝'} ${r.seller_name}</div>
+        <div style="font-size:11px;color:var(--t-300)">${r.comm_date}</div>
+      </div>
+      <div style="font-size:12px;color:var(--t-500);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${(r.memo||'').slice(0,50)}</div>
+      <div style="display:flex;justify-content:space-between;margin-top:4px">
+        <span style="font-size:10px;color:var(--t-300)">${r.created_by||''}</span>
+        <button onclick="event.stopPropagation();deleteComm(${r.id})" style="background:none;border:none;color:var(--red);font-size:10px;cursor:pointer">삭제</button>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function selectCommSeller(seller){
+  commSelectedSeller = seller;
+  document.getElementById('comm-seller-filter').value = seller;
+  loadCommReport(seller);
+}
+
+async function loadCommReport(seller){
+  const year = document.getElementById('comm-year')?.value || new Date().getFullYear();
+  const d = await api(`/api/communication/report?seller=${encodeURIComponent(seller)}&year=${year}`);
+  if(!d || !d.ok) return;
+
+  document.getElementById('comm-report-title').textContent = `${seller} — 소통 보고서 (${year}년)`;
+
+  const MKR = ['','1월','2월','3월','4월','5월','6월','7월','8월','9월','10월','11월','12월'];
+  const DIR_COLOR = {'상승':'var(--green)','하락':'var(--red)','안정':'var(--p)','데이터 부족':'var(--t-300)'};
+
+  let html = '';
+
+  // 매출 요약
+  html += `<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:16px">
+    <div style="background:var(--bg);border-radius:var(--r-md);padding:12px;text-align:center">
+      <div style="font-size:10px;color:var(--t-300);margin-bottom:4px">연간 매출</div>
+      <div style="font-size:14px;font-weight:700;color:var(--t-900)">${N(d.year_total)}원</div>
+    </div>
+    <div style="background:var(--bg);border-radius:var(--r-md);padding:12px;text-align:center">
+      <div style="font-size:10px;color:var(--t-300);margin-bottom:4px">최근 추세</div>
+      <div style="font-size:14px;font-weight:700;color:${DIR_COLOR[d.trend_direction]}">${d.trend_direction} ${d.trend_pct?(d.trend_pct>0?'+':'')+d.trend_pct+'%':''}</div>
+    </div>
+    <div style="background:var(--bg);border-radius:var(--r-md);padding:12px;text-align:center">
+      <div style="font-size:10px;color:var(--t-300);margin-bottom:4px">소통 횟수</div>
+      <div style="font-size:14px;font-weight:700;color:var(--t-900)">${d.comm_history.length}회</div>
+    </div>
+  </div>`;
+
+  // 월별 흐름 미니 차트
+  if(d.monthly?.length){
+    const maxV = Math.max(...d.monthly.map(m=>m.total)) || 1;
+    html += `<div style="margin-bottom:16px">
+      <div style="font-size:12px;font-weight:700;color:var(--t-700);margin-bottom:8px">📈 월별 매출 흐름</div>
+      <div style="display:flex;align-items:flex-end;gap:3px;height:50px">
+        ${d.monthly.map(m=>{
+          const h = Math.max(3, Math.round(m.total/maxV*44));
+          return `<div style="flex:1;display:flex;flex-direction:column;align-items:center;gap:2px" title="${MKR[m.mo]}: ${N(m.total)}원">
+            <div style="width:100%;background:var(--p);height:${h}px;border-radius:2px 2px 0 0"></div>
+            <div style="font-size:8px;color:var(--t-400)">${MKR[m.mo]}</div>
+          </div>`;
+        }).join('')}
+      </div>
+    </div>`;
+  }
+
+  // TOP5 제품
+  if(d.top5?.length){
+    html += `<div style="margin-bottom:16px">
+      <div style="font-size:12px;font-weight:700;color:var(--t-700);margin-bottom:8px">🏆 최근 판매 제품 TOP5</div>
+      ${d.top5.map((it,i)=>`<div style="display:flex;justify-content:space-between;padding:5px 0;border-bottom:1px solid var(--border);font-size:12px">
+        <span><span style="color:var(--t-300);margin-right:6px">${i+1}</span>${it.name} <span style="color:var(--t-300);font-size:10px">[${it.brand}]</span></span>
+        <span style="font-weight:600">${N(it.total)}원 · ${it.qty}개</span>
+      </div>`).join('')}
+    </div>`;
+  }
+
+  // 소통 이력 타임라인
+  html += `<div><div style="font-size:12px;font-weight:700;color:var(--t-700);margin-bottom:8px">📋 소통 이력 (${d.comm_history.length}건)</div>`;
+  if(d.comm_history.length){
+    html += d.comm_history.map(h=>`
+      <div style="border-left:2px solid var(--p);padding:8px 0 8px 12px;margin-bottom:4px">
+        <div style="display:flex;justify-content:space-between">
+          <span style="font-size:11px;font-weight:700;color:var(--t-900)">${h.comm_date} · ${h.comm_type}</span>
+          <span style="font-size:10px;color:var(--t-300)">${h.created_by||''}</span>
+        </div>
+        <div style="font-size:12px;color:var(--t-600);margin-top:3px;white-space:pre-wrap">${h.memo||''}</div>
+      </div>`).join('');
+  } else {
+    html += `<div style="text-align:center;padding:20px;color:var(--t-300);font-size:12px">소통 기록이 없습니다</div>`;
+  }
+  html += `</div>`;
+
+  document.getElementById('comm-report-body').innerHTML = html;
+}
+
+async function deleteComm(id){
+  if(!confirm('이 소통 기록을 삭제하시겠습니까?')) return;
+  const r = await api(`/api/communication/${id}`, {method:'DELETE'});
+  if(r?.ok){ toast('삭제되었습니다'); loadCommHistory(); }
+}
+
+function openCommModal(){
+  document.getElementById('cm-seller').value = commSelectedSeller || '';
+  document.getElementById('cm-date').value = new Date().toISOString().slice(0,10);
+  document.getElementById('cm-type').value = '방문';
+  document.getElementById('cm-memo').value = '';
+  document.getElementById('comm-modal-overlay').style.display = 'flex';
+}
+function closeCommModal(){
+  document.getElementById('comm-modal-overlay').style.display = 'none';
+}
+
+async function saveComm(){
+  const seller = document.getElementById('cm-seller').value.trim();
+  const date = document.getElementById('cm-date').value;
+  const type = document.getElementById('cm-type').value;
+  const memo = document.getElementById('cm-memo').value.trim();
+  if(!seller || !date){ toast('매장명과 날짜를 입력해주세요', false); return; }
+  if(!memo){ toast('메모를 입력해주세요', false); return; }
+  const r = await api('/api/communication', {method:'POST', body:{seller_name: seller, comm_date: date, comm_type: type, memo}});
+  if(r?.ok){
+    toast('소통 기록이 저장되었습니다');
+    closeCommModal();
+    document.getElementById('comm-seller-filter').value = seller;
+    commSelectedSeller = seller;
+    loadCommHistory();
+  }
+}
+
+function downloadCommXlsx(){
+  const year = document.getElementById('comm-year')?.value || new Date().getFullYear();
+  const seller = document.getElementById('comm-seller-filter')?.value.trim() || '';
+  const q = seller ? `?seller=${encodeURIComponent(seller)}&year=${year}` : `?year=${year}`;
+  window.location.href = `/api/export/xlsx/communication${q}`;
+  toast('소통 기록 엑셀 다운로드 중...');
 }
 
 // ── 영업 실행 포인트 달력 ──────────────────────────
@@ -3073,12 +3306,21 @@ const DISPLAY_NAME_MAP = {
   '베이비하우스 하남미시점':           '베이비하우스 하남미사점',
   '베이비하우스 동대전점':             '베이비하우스 동대전점',
   '주식회사 에스엘컴퍼니':            '베이비하우스 동대전점',
-  '베투키':                           '베이비 투 키즈',
+  '베투키':                           '베이비 투 키즈',  // 혹시 남아있을 경우
   '베이비하우스 군포점':              '베이비하우스 안양점',
   '베네피아 부천점':                  '링크맘 부천점',
   '베이비하우스 일산화정점':          '베이비하우스 일산점',
   '베이비하우스 울산점  엔픽스. 타프토이즈,카오스': '베이비하우스 울산점',
+  '베이비하우스 울산점 엔픽스. 타프토이즈,카오스':  '베이비하우스 울산점',
   '베이비하우스 파주점/신성준고객':   null,
+  '링크맘 하남초일점':                '링크맘 하남점',
+  '베네피아 창원점':                  '링크맘 창원점',
+  '베이비하우스 도봉':                '베이비하우스 도봉점',
+  '베이비하우스 동탄오산점':          '베이비하우스 동탄점',
+  '베이비하우스 부산동래점':          '베이비하우스 동래점',
+  '베이비하우스 대전점':              '베이비하우스 대전세종점',
+  '베네피아 창원2호점(링크맘)':       '링크맘 창원2호점',
+  '베네피아 창원2호점':              '링크맘 창원2호점',
 };
 function DS(name){ // Display Seller name
   if(!name) return name;

@@ -223,6 +223,15 @@ def init_db():
         uploaded_at TEXT DEFAULT ''
     )""")
     # SNS 정보 테이블 (블로그 중심)
+    conn.execute("""CREATE TABLE IF NOT EXISTS store_communication (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        seller_name TEXT NOT NULL,
+        comm_date TEXT NOT NULL,
+        comm_type TEXT DEFAULT '방문',
+        memo TEXT DEFAULT '',
+        created_by TEXT DEFAULT '',
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP
+    )""")
     conn.execute("""CREATE TABLE IF NOT EXISTS sns_info (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         seller_name TEXT UNIQUE,
@@ -928,10 +937,11 @@ SELLER_ALIAS = {
     '주식회사 에이블베이비':    '링크맘 부산점',
     '에이블베이비':             '링크맘 부산점',
     '에이블 부산':              '링크맘 부산점',
-    # 수정9: 베투키 (표시는 베이비 투 키즈)
-    '주식회사 베이비투키즈':    '베투키',
-    '베이비투키즈':             '베투키',
-    '주식회사 베이비 투 키즈': '베투키',
+    # 수정9: 베투키 (DB에서 이미 '베이비 투 키즈'로 통합 완료)
+    '주식회사 베이비투키즈':    '베이비 투 키즈',
+    '베이비투키즈':             '베이비 투 키즈',
+    '주식회사 베이비 투 키즈': '베이비 투 키즈',
+    '베투키':                   '베이비 투 키즈',
     # 수정9: 베네피아 창원2호점 → 링크맘 창원2호점
     '베네피아 창원2호점(링크맘)': '링크맘 창원2호점',
     '베네피아 창원2호점':       '링크맘 창원2호점',
@@ -939,6 +949,9 @@ SELLER_ALIAS = {
     '베네피아 창원점':          '링크맘 창원점',
     # 수정3-14: 링크맘 하남초일점 → 링크맘 하남점
     '링크맘 하남초일점':        '링크맘 하남점',
+    # 은평점 (베이비파크 은평 = 베이비하우스 은평점, 같은 매장)
+    '베이비파크 은평':          '베이비하우스 은평점',
+    '베이비파크 은평점':        '베이비하우스 은평점',
     # 수정3-9: 베이비하우스 도봉 → 베이비하우스 도봉점
     '베이비하우스 도봉':        '베이비하우스 도봉점',
     # 베이비스토리
@@ -960,8 +973,6 @@ DISPLAY_NAME = {
     # 대전점 → 대전세종점 (동대전점과 별개)
     '베이비하우스 대전점':              '베이비하우스 대전세종점',
     '베이비하우스_대전점':              '베이비하우스 대전세종점',
-    # 베투키 → 베이비 투 키즈
-    '베투키':                           '베이비 투 키즈',
     # 군포점 → 안양점 표시
     '베이비하우스 군포점':              '베이비하우스 안양점',
     # 부천, 일산
@@ -3186,67 +3197,110 @@ def api_product_by_seller():
 @app.route("/api/export/xlsx/sellers")
 @login_required
 def api_export_sellers_xlsx():
-    """판매처 관리 엑셀 — 지역별 분류, 심플 보고용"""
+    """판매처 관리 엑셀 — 지역별 분류 + 대표자/주소/연락처 + 전년대비 + 취급브랜드"""
     from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
     from openpyxl.utils import get_column_letter
     year = request.args.get('year', str(datetime.now().year))
+    prev_year = str(int(year) - 1)
 
     conn = get_db()
-    # 판매처 관리: real_seller 기준, 담당자 포함
     rows = conn.execute("""
-        SELECT real_seller,
-               COUNT(*) cnt,
-               SUM(total) total,
-               SUM(quantity) qty,
-               MIN(sale_date) first_date,
-               MAX(sale_date) last_date
-        FROM sales_data
-        WHERE real_seller != '' AND sale_date LIKE ?
-        GROUP BY real_seller
-        ORDER BY real_seller
+        SELECT real_seller, COUNT(*) cnt, SUM(total) total, SUM(quantity) qty, MAX(sale_date) last_date
+        FROM sales_data WHERE real_seller != '' AND sale_date LIKE ?
+        GROUP BY real_seller ORDER BY real_seller
     """, (f"{year}%",)).fetchall()
 
-    # 담당자 매핑
-    branch_managers = {}
+    # 전년 동일 매장 매출 (YoY 비교용)
+    prev_totals = {r[0]: r[1] or 0 for r in conn.execute("""
+        SELECT real_seller, SUM(total) FROM sales_data
+        WHERE real_seller != '' AND sale_date LIKE ? GROUP BY real_seller
+    """, (f"{prev_year}%",)).fetchall()}
+
+    # 판매처 상세정보 (대표자/주소/연락처/담당자)
+    branch_info = {}
     try:
-        for r in conn.execute("SELECT name, manager FROM branches WHERE manager IS NOT NULL AND manager!=''").fetchall():
-            branch_managers[r[0]] = r[1]
+        for r in conn.execute("SELECT name, ceo, ceo_phone, address, manager, phone FROM branches").fetchall():
+            branch_info[r[0]] = {'ceo': r[1] or '', 'ceo_phone': r[2] or '',
+                                  'address': r[3] or '', 'manager': r[4] or '', 'phone': r[5] or ''}
     except Exception:
         pass
+
+    # 매장별 브랜드+제품명 취급 현황 (item_group, item_name 조합)
+    brand_items = {}  # seller -> {brand: set(item_names)}
+    for r in conn.execute("""
+        SELECT real_seller, item_group, item_name FROM sales_data
+        WHERE real_seller != '' AND sale_date LIKE ? AND item_group != ''
+        GROUP BY real_seller, item_group, item_name
+    """, (f"{year}%",)).fetchall():
+        seller, grp, iname = r[0], r[1], r[2]
+        brand = remap_group(grp, iname)
+        if seller not in brand_items: brand_items[seller] = {}
+        if brand not in brand_items[seller]: brand_items[seller][brand] = set()
+        brand_items[seller][brand].add(normalize_item_name(iname))
+
     conn.close()
 
-    # display_seller 변환 + 지역 분류
+    MANUAL_REGION = {
+        '링크맘 중랑점': '서울', '링크맘 평촌점': '경기', '베이비 투 키즈': '서울',
+        '베이비하우스 검단점': '경기', '베이비하우스 뚝섬점': '서울',
+        '베이비하우스 위례점': '경기', '베이비하우스 청라점': '경기', '베이비하우스 향남점': '경기',
+    }
+    BRANDS_ORDER = ['줄즈','카오스','원더폴드','레카로','엔픽스','타프토이즈','ABC디자인']
+
+    def wonderfold_grade(items):
+        """원더폴드 취급 제품에서 등급(프리미엄/일반/슈퍼프리미엄) 추출"""
+        grades = set()
+        for it in items:
+            if '슈퍼프리미엄' in it or '슈퍼 프리미엄' in it: grades.add('슈퍼프리미엄')
+            elif '프리미엄' in it: grades.add('프리미엄')
+            elif '일반' in it: grades.add('일반')
+        return ', '.join(sorted(grades)) if grades else 'O'
+
     seller_data = []
     for r in rows:
         raw_name = r[0]
-        disp_name = display_seller(raw_name)
         if is_hidden_seller(raw_name): continue
-        region = detect_region_from_name(disp_name or raw_name)
-        mgr = branch_managers.get(raw_name, branch_managers.get(disp_name, ''))
+        disp_name = display_seller(raw_name) or raw_name
+        region = MANUAL_REGION.get(disp_name) or MANUAL_REGION.get(raw_name) or detect_region_from_name(disp_name) or '기타'
+        info = branch_info.get(raw_name, branch_info.get(disp_name, {}))
+
+        cur_total = r[2] or 0
+        prev_total = prev_totals.get(raw_name, 0)
+        if prev_total > 0:
+            yoy_pct = round((cur_total - prev_total) / prev_total * 100, 1)
+        else:
+            yoy_pct = None
+
+        items_by_brand = brand_items.get(raw_name, {})
+        brand_marks = {}
+        for b in BRANDS_ORDER:
+            items = items_by_brand.get(b)
+            if not items:
+                brand_marks[b] = ''
+            elif b == '원더폴드':
+                brand_marks[b] = wonderfold_grade(items)
+            elif b == '카오스':
+                # 카오스는 엑셀(제품명)에 적힌 그대로 표시
+                brand_marks[b] = ', '.join(sorted(items))[:40]
+            else:
+                brand_marks[b] = 'O'
+
         seller_data.append({
-            'raw':   raw_name,
-            'name':  disp_name or raw_name,
-            'region': region or '기타',
-            'manager': mgr,
-            'cnt':   r[1],
-            'total': r[2] or 0,
-            'qty':   r[3] or 0,
-            'first': r[4] or '',
-            'last':  r[5] or '',
+            'name': disp_name, 'region': region,
+            'ceo': info.get('ceo',''), 'ceo_phone': info.get('ceo_phone',''),
+            'address': info.get('address',''), 'manager': info.get('manager',''),
+            'cnt': r[1], 'total': cur_total, 'qty': r[3] or 0,
+            'last': (r[4] or '')[:10], 'yoy': yoy_pct, 'prev_total': prev_total,
+            'brands': brand_marks,
         })
 
-    # 지역 우선순위
     REGION_ORDER = ['서울','경기','인천','부산','대구','광주','대전','울산','세종',
                     '강원','충북','충남','전북','전남','경북','경남','제주','기타']
     seller_data.sort(key=lambda x: (
-        REGION_ORDER.index(x['region']) if x['region'] in REGION_ORDER else 99,
-        x['name']
-    ))
+        REGION_ORDER.index(x['region']) if x['region'] in REGION_ORDER else 99, x['name']))
 
-    # 엑셀 생성
     wb = openpyxl.Workbook()
     ws = wb.active; ws.title = f'판매처현황_{year}'
-
     FNAME = '맑은 고딕'
     def mf(h): return PatternFill("solid", fgColor=h)
     thin = Side(style='thin', color='E5E7EB')
@@ -3255,15 +3309,17 @@ def api_export_sellers_xlsx():
     left = Alignment(horizontal='left', vertical='center')
     rgt  = Alignment(horizontal='right', vertical='center')
 
-    # 타이틀
-    ws.merge_cells('A1:H1')
-    c = ws.cell(row=1, column=1, value=f'판매처 현황  ({year}년)   총 {len(seller_data)}개 매장')
-    c.font=Font(bold=True, size=13, name=FNAME, color='FFFFFF'); c.fill=mf('1F2937'); c.alignment=ctr
-    ws.row_dimensions[1].height = 28
+    hdrs = ['지역','매장명','대표자','대표자 연락처','주소','담당자',
+            f'{year}년 매출(원)', f'{prev_year}년 매출(원)', '전년대비',
+            '판매건수','판매수량','최근 거래일'] + BRANDS_ORDER
+    widths = [8, 24, 10, 14, 32, 12, 16, 16, 10, 9, 9, 12] + [12]*len(BRANDS_ORDER)
+    NCOL = len(hdrs)
 
-    # 헤더
-    hdrs = ['지역','매장명','담당자','판매금액(원)','판매건수','판매수량','첫 거래일','최근 거래일']
-    widths = [10, 28, 14, 18, 10, 10, 14, 14]
+    ws.merge_cells(f'A1:{get_column_letter(NCOL)}1')
+    c = ws.cell(row=1, column=1, value=f'판매처 현황  ({year}년)   총 {len(seller_data)}개 매장')
+    c.font=Font(bold=True, size=13, name=FNAME, color='1F2937'); c.fill=mf('FFFFFF'); c.alignment=ctr
+    ws.row_dimensions[1].height = 26
+
     for ci, (h, w) in enumerate(zip(hdrs, widths), 1):
         c = ws.cell(row=2, column=ci, value=h)
         c.font=Font(bold=True, size=9, name=FNAME, color='374151')
@@ -3271,86 +3327,72 @@ def api_export_sellers_xlsx():
         ws.column_dimensions[get_column_letter(ci)].width = w
     ws.row_dimensions[2].height = 20
 
-    # 지역별 소계용
-    region_totals = {}
+    BRAND_COL_START = 13  # M열부터 브랜드 컬럼
 
-    ri = 3
-    prev_region = ''
+    region_totals = {}
+    ri = 3; prev_region = ''
+
+    def write_subtotal(ri, region_name, rt):
+        ws.merge_cells(f'A{ri}:{get_column_letter(NCOL)}{ri}')
+        c = ws.cell(row=ri, column=1,
+            value=f'{region_name} 소계  ({rt["stores"]}개 매장  /  {rt["total"]:,}원)')
+        c.font=Font(bold=True, size=9, name=FNAME, color='6B7280')
+        c.fill=mf('F9FAFB'); c.alignment=left; c.border=bdr
+        ws.row_dimensions[ri].height = 14
+
     for s in seller_data:
         region = s['region']
-
-        # 지역 변경 시 구분 행
         if region != prev_region:
             if prev_region and prev_region in region_totals:
-                # 이전 지역 소계 행
-                rt = region_totals[prev_region]
-                ws.merge_cells(f'A{ri}:C{ri}')
-                c = ws.cell(row=ri, column=1, value=f'{prev_region} 소계  ({rt["cnt"]}개 매장)')
-                c.font=Font(bold=True, size=9, name=FNAME, color='6B7280')
-                c.fill=mf('F9FAFB'); c.alignment=left; c.border=bdr
-                c2 = ws.cell(row=ri, column=4, value=rt['total'])
-                c2.font=Font(bold=True, size=9, name=FNAME, color='6B7280')
-                c2.fill=mf('F9FAFB'); c2.border=bdr; c2.alignment=rgt; c2.number_format='#,##0'
-                ws.cell(row=ri, column=5, value=rt['stores']).fill=mf('F9FAFB')
-                ws.cell(row=ri, column=5).border=bdr; ws.cell(row=ri, column=5).alignment=ctr
-                for ci in [6,7,8]: ws.cell(row=ri, column=ci).fill=mf('F9FAFB'); ws.cell(row=ri, column=ci).border=bdr
-                ws.row_dimensions[ri].height=14; ri+=1
-
-            # 지역 헤더
-            ws.merge_cells(f'A{ri}:H{ri}')
+                write_subtotal(ri, prev_region, region_totals[prev_region]); ri += 1
+            ws.merge_cells(f'A{ri}:{get_column_letter(NCOL)}{ri}')
             c = ws.cell(row=ri, column=1, value=f'▌ {region}')
             c.font=Font(bold=True, size=10, name=FNAME, color='1F2937')
             c.fill=mf('E5E7EB'); c.alignment=left
             ws.row_dimensions[ri].height = 18; ri += 1
             prev_region = region
             if region not in region_totals:
-                region_totals[region] = {'total':0,'cnt':0,'stores':0}
+                region_totals[region] = {'total': 0, 'stores': 0}
 
-        # 데이터 행
-        row_vals = [region, s['name'], s['manager'],
-                    s['total'], s['cnt'], s['qty'],
-                    s['first'][:10] if s['first'] else '',
-                    s['last'][:10] if s['last'] else '']
+        yoy_str = f"{'+' if s['yoy']>=0 else ''}{s['yoy']}%" if s['yoy'] is not None else '—'
+        row_vals = [region, s['name'], s['ceo'], s['ceo_phone'], s['address'], s['manager'],
+                    s['total'], s['prev_total'], yoy_str, s['cnt'], s['qty'], s['last']]
+        row_vals += [s['brands'][b] for b in BRANDS_ORDER]
+
         for ci, v in enumerate(row_vals, 1):
             c = ws.cell(row=ri, column=ci, value=v); c.border=bdr
             c.font=Font(size=9, name=FNAME, color='1F2937')
-            if ci == 1: c.alignment=ctr; c.font=Font(size=9, name=FNAME, color='9CA3AF')
+            if   ci == 1: c.alignment=ctr; c.font=Font(size=9, name=FNAME, color='9CA3AF')
             elif ci == 2: c.alignment=left
-            elif ci == 3: c.alignment=ctr
-            elif ci == 4: c.alignment=rgt; c.number_format='#,##0'
-            elif ci in (5,6): c.alignment=ctr
-            else: c.alignment=ctr; c.font=Font(size=8, name=FNAME, color='9CA3AF')
+            elif ci in (3,6): c.alignment=ctr
+            elif ci == 4: c.alignment=ctr; c.font=Font(size=8, name=FNAME, color='6B7280')
+            elif ci == 5: c.alignment=left; c.font=Font(size=8, name=FNAME, color='6B7280')
+            elif ci in (7,8): c.alignment=rgt; c.number_format='#,##0'
+            elif ci == 9:
+                c.alignment=ctr
+                if s['yoy'] is not None:
+                    c.font=Font(size=9, name=FNAME, bold=True,
+                                color='16A34A' if s['yoy']>=0 else 'DC2626')
+            elif ci in (10,11): c.alignment=ctr
+            elif ci == 12: c.alignment=ctr; c.font=Font(size=8, name=FNAME, color='9CA3AF')
+            elif ci >= BRAND_COL_START: c.alignment=ctr
         ws.row_dimensions[ri].height = 15; ri += 1
 
-        region_totals[region]['total'] += s['total']
-        region_totals[region]['cnt']   += s['cnt']
+        region_totals[region]['total']  += s['total']
         region_totals[region]['stores'] += 1
 
-    # 마지막 지역 소계
     if prev_region and prev_region in region_totals:
-        rt = region_totals[prev_region]
-        ws.merge_cells(f'A{ri}:C{ri}')
-        c = ws.cell(row=ri, column=1, value=f'{prev_region} 소계  ({rt["stores"]}개 매장)')
-        c.font=Font(bold=True, size=9, name=FNAME, color='6B7280')
-        c.fill=mf('F9FAFB'); c.alignment=left; c.border=bdr
-        c2 = ws.cell(row=ri, column=4, value=rt['total'])
-        c2.font=Font(bold=True, size=9, name=FNAME, color='6B7280')
-        c2.fill=mf('F9FAFB'); c2.border=bdr; c2.alignment=rgt; c2.number_format='#,##0'
-        ws.cell(row=ri, column=5, value=rt['stores']); ws.cell(row=ri, column=5).fill=mf('F9FAFB'); ws.cell(row=ri, column=5).border=bdr; ws.cell(row=ri, column=5).alignment=ctr
-        for ci in [6,7,8]: ws.cell(row=ri, column=ci).fill=mf('F9FAFB'); ws.cell(row=ri, column=ci).border=bdr
-        ws.row_dimensions[ri].height=14; ri+=1
+        write_subtotal(ri, prev_region, region_totals[prev_region]); ri += 1
 
-    # 전체 합계
     grand_total = sum(s['total'] for s in seller_data)
-    ws.merge_cells(f'A{ri}:C{ri}')
-    c = ws.cell(row=ri, column=1, value=f'전체 합계  ({len(seller_data)}개 매장)')
-    c.font=Font(bold=True, size=10, name=FNAME, color='FFFFFF'); c.fill=mf('1F2937'); c.alignment=left; c.border=bdr
-    c2 = ws.cell(row=ri, column=4, value=grand_total)
-    c2.font=Font(bold=True, size=10, name=FNAME, color='FFFFFF'); c2.fill=mf('1F2937'); c2.alignment=rgt; c2.border=bdr; c2.number_format='#,##0'
-    for ci in [5,6,7,8]: ws.cell(row=ri,column=ci).fill=mf('1F2937'); ws.cell(row=ri,column=ci).border=bdr
-    ws.row_dimensions[ri].height=20
+    ws.merge_cells(f'A{ri}:{get_column_letter(NCOL)}{ri}')
+    c = ws.cell(row=ri, column=1,
+        value=f'전체 합계  ({len(seller_data)}개 매장)     {grand_total:,}원')
+    c.font=Font(bold=True, size=10, name=FNAME, color='1F2937')
+    c.fill=mf('F3F4F6'); c.alignment=left; c.border=bdr
+    ws.row_dimensions[ri].height = 22
 
-    ws.freeze_panes = 'A3'
+    ws.freeze_panes = 'C3'
     buf = io.BytesIO(); wb.save(buf); buf.seek(0)
     return send_file(buf, mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
         as_attachment=True, download_name=f'판매처현황_{year}.xlsx')
@@ -4342,6 +4384,272 @@ def upload_sales_commit():
                 (r["branch_id"], r["year"], m["month"], m["target"], m["actual"]))
     conn.commit(); conn.close()
     return jsonify({"ok": True, "total": len(rows)})
+
+# ── 매장과의 소통 API ────────────────────────────────
+@app.route("/api/communication")
+@login_required
+def api_communication_list():
+    """전체 소통 기록 또는 특정 매장의 소통 기록 조회"""
+    seller = request.args.get('seller', '').strip()
+    conn = get_db()
+    if seller:
+        rows = [dict(r) for r in conn.execute("""
+            SELECT * FROM store_communication WHERE seller_name=? ORDER BY comm_date DESC, id DESC
+        """, (seller,)).fetchall()]
+    else:
+        rows = [dict(r) for r in conn.execute("""
+            SELECT * FROM store_communication ORDER BY comm_date DESC, id DESC LIMIT 200
+        """).fetchall()]
+    conn.close()
+    return jsonify(rows)
+
+
+@app.route("/api/communication", methods=["POST"])
+@login_required
+def api_communication_add():
+    """소통 기록 추가"""
+    d = request.json or {}
+    seller = d.get('seller_name', '').strip()
+    comm_date = d.get('comm_date', '').strip()
+    if not seller or not comm_date:
+        return jsonify({'ok': False, 'msg': '매장명과 날짜는 필수입니다'}), 400
+    conn = get_db()
+    user_name = session.get('user', {}).get('name', '')
+    conn.execute("""INSERT INTO store_communication
+        (seller_name, comm_date, comm_type, memo, created_by, created_at)
+        VALUES(?,?,?,?,?,?)""",
+        (seller, comm_date, d.get('comm_type','방문'), d.get('memo',''),
+         user_name, datetime.now().strftime('%Y-%m-%d %H:%M')))
+    conn.commit()
+    new_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+    conn.close()
+    return jsonify({'ok': True, 'id': new_id})
+
+
+@app.route("/api/communication/<int:cid>", methods=["DELETE"])
+@login_required
+def api_communication_delete(cid):
+    conn = get_db()
+    conn.execute("DELETE FROM store_communication WHERE id=?", (cid,))
+    conn.commit(); conn.close()
+    return jsonify({'ok': True})
+
+
+@app.route("/api/communication/<int:cid>", methods=["PUT"])
+@login_required
+def api_communication_update(cid):
+    d = request.json or {}
+    conn = get_db()
+    conn.execute("""UPDATE store_communication SET comm_date=?, comm_type=?, memo=? WHERE id=?""",
+        (d.get('comm_date',''), d.get('comm_type','방문'), d.get('memo',''), cid))
+    conn.commit(); conn.close()
+    return jsonify({'ok': True})
+
+
+@app.route("/api/communication/report")
+@login_required
+def api_communication_report():
+    """특정 매장의 소통 보고서 — 매출/최근흐름/소통이력 종합"""
+    seller = request.args.get('seller', '').strip()
+    year = request.args.get('year', str(datetime.now().year))
+    if not seller:
+        return jsonify({'ok': False, 'msg': '매장명 필요'}), 400
+
+    conn = get_db()
+
+    # 소통 이력
+    comm_history = [dict(r) for r in conn.execute("""
+        SELECT * FROM store_communication WHERE seller_name=? ORDER BY comm_date DESC
+    """, (seller,)).fetchall()]
+
+    # 연간 매출
+    total_row = conn.execute("""
+        SELECT SUM(total), SUM(quantity), COUNT(*) FROM sales_data
+        WHERE real_seller=? AND sale_date LIKE ? AND sale_date!=''
+    """, (seller, f"{year}%")).fetchone()
+    year_total = total_row[0] or 0
+    year_qty   = total_row[1] or 0
+    year_cnt   = total_row[2] or 0
+
+    # 월별 흐름
+    monthly = [dict(mo=r[0], total=r[1] or 0, qty=r[2] or 0) for r in conn.execute("""
+        SELECT CAST(strftime('%m',sale_date) AS INTEGER) mo, SUM(total), SUM(quantity)
+        FROM sales_data WHERE real_seller=? AND sale_date LIKE ? AND sale_date!=''
+        GROUP BY mo ORDER BY mo
+    """, (seller, f"{year}%")).fetchall()]
+
+    # 최근 판매 제품 TOP5 (최근 판매일 기준)
+    top_items = [dict(name=normalize_item_name(r[0]), group=r[1], total=r[2] or 0, qty=r[3] or 0, last=r[4])
+                 for r in conn.execute("""
+        SELECT item_name, item_group, SUM(total), SUM(quantity), MAX(sale_date)
+        FROM sales_data WHERE real_seller=? AND sale_date LIKE ? AND sale_date!=''
+        GROUP BY item_name ORDER BY SUM(total) DESC LIMIT 8
+    """, (seller, f"{year}%")).fetchall()]
+    # 브랜드 정규화 + 같은 제품 합산
+    merged_items = {}
+    for it in top_items:
+        b = remap_group(it['group'], '')
+        key = it['name']
+        if key not in merged_items:
+            merged_items[key] = {'name': key, 'brand': b, 'total': 0, 'qty': 0, 'last': it['last']}
+        merged_items[key]['total'] += it['total']
+        merged_items[key]['qty']   += it['qty']
+    top5 = sorted(merged_items.values(), key=lambda x: -x['total'])[:5]
+
+    # 추세 계산
+    vals = [m['total'] for m in monthly]
+    if len(vals) >= 2:
+        pct = round((vals[-1]-vals[-2])/vals[-2]*100, 1) if vals[-2] else 0
+        direction = '상승' if pct >= 10 else '하락' if pct <= -10 else '안정'
+    else:
+        pct = 0; direction = '데이터 부족'
+
+    conn.close()
+    return jsonify({
+        'ok': True,
+        'seller': seller,
+        'year': year,
+        'comm_history': comm_history,
+        'year_total': year_total, 'year_qty': year_qty, 'year_cnt': year_cnt,
+        'monthly': monthly, 'top5': top5,
+        'trend_pct': pct, 'trend_direction': direction,
+    })
+
+
+@app.route("/api/export/xlsx/communication")
+@login_required
+def api_export_communication_xlsx():
+    """매장과의 소통 엑셀 — 소통이력 + 매출/최근흐름 포함, 심플 보고용"""
+    from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
+    from openpyxl.utils import get_column_letter
+    seller = request.args.get('seller', '').strip()
+    year = request.args.get('year', str(datetime.now().year))
+
+    conn = get_db()
+    if seller:
+        sellers_to_export = [seller]
+    else:
+        sellers_to_export = [r[0] for r in conn.execute(
+            "SELECT DISTINCT seller_name FROM store_communication ORDER BY seller_name").fetchall()]
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    FNAME = '맑은 고딕'
+    def mf(h): return PatternFill("solid", fgColor=h)
+    thin = Side(style='thin', color='E5E7EB')
+    bdr  = Border(left=thin, right=thin, top=thin, bottom=thin)
+    ctr  = Alignment(horizontal='center', vertical='center')
+    left = Alignment(horizontal='left', vertical='center', wrap_text=True)
+    rgt  = Alignment(horizontal='right', vertical='center')
+
+    first_sheet = True
+    for s_name in sellers_to_export:
+        if not s_name: continue
+        if first_sheet:
+            ws.title = s_name[:28]
+            first_sheet = False
+        else:
+            ws = wb.create_sheet(title=s_name[:28])
+
+        # 매장 매출 정보
+        total_row = conn.execute("""
+            SELECT SUM(total), SUM(quantity), COUNT(*) FROM sales_data
+            WHERE real_seller=? AND sale_date LIKE ? AND sale_date!=''
+        """, (s_name, f"{year}%")).fetchone()
+        year_total = total_row[0] or 0; year_qty = total_row[1] or 0
+
+        monthly = conn.execute("""
+            SELECT CAST(strftime('%m',sale_date) AS INTEGER) mo, SUM(total), SUM(quantity)
+            FROM sales_data WHERE real_seller=? AND sale_date LIKE ? AND sale_date!=''
+            GROUP BY mo ORDER BY mo
+        """, (s_name, f"{year}%")).fetchall()
+
+        top_rows = conn.execute("""
+            SELECT item_name, item_group, SUM(total) t, SUM(quantity) q
+            FROM sales_data WHERE real_seller=? AND sale_date LIKE ? AND sale_date!=''
+            GROUP BY item_name ORDER BY t DESC LIMIT 10
+        """, (s_name, f"{year}%")).fetchall()
+        merged = {}
+        for r in top_rows:
+            nm = normalize_item_name(r[0]); b = remap_group(r[1], '')
+            if nm not in merged: merged[nm] = {'brand': b, 'total': 0, 'qty': 0}
+            merged[nm]['total'] += r[2] or 0; merged[nm]['qty'] += r[3] or 0
+        top5 = sorted(merged.items(), key=lambda x: -x[1]['total'])[:5]
+
+        comm_rows = conn.execute("""
+            SELECT comm_date, comm_type, memo, created_by FROM store_communication
+            WHERE seller_name=? ORDER BY comm_date DESC
+        """, (s_name,)).fetchall()
+
+        # ── 타이틀 ──
+        ws.merge_cells('A1:E1')
+        c = ws.cell(row=1, column=1, value=f'{s_name}  —  매장 소통 보고서 ({year}년)')
+        c.font=Font(bold=True, size=13, name=FNAME, color='1F2937'); c.alignment=ctr
+        ws.row_dimensions[1].height = 26
+        ri = 3
+
+        # ── 매출 요약 ──
+        c = ws.cell(row=ri, column=1, value='■ 매출 요약'); c.font=Font(bold=True, size=11, name=FNAME); ri += 1
+        summary = [('연간 매출', f'{year_total:,}원'), ('연간 판매수량', f'{year_qty:,}개')]
+        for label, val in summary:
+            ws.cell(row=ri, column=1, value=label).font=Font(size=9, name=FNAME, color='6B7280')
+            ws.cell(row=ri, column=2, value=val).font=Font(bold=True, size=10, name=FNAME)
+            ri += 1
+        ri += 1
+
+        # ── 월별 흐름 ──
+        c = ws.cell(row=ri, column=1, value='■ 월별 매출 흐름'); c.font=Font(bold=True, size=11, name=FNAME); ri += 1
+        for ci, h in enumerate(['월','매출(원)','수량'], 1):
+            c = ws.cell(row=ri, column=ci, value=h); c.font=Font(bold=True, size=9, name=FNAME, color='374151')
+            c.fill=mf('F3F4F6'); c.border=bdr; c.alignment=ctr
+        ri += 1
+        for m in monthly:
+            ws.cell(row=ri, column=1, value=f"{m[0]}월").alignment=ctr
+            c2 = ws.cell(row=ri, column=2, value=m[1] or 0); c2.number_format='#,##0'; c2.alignment=rgt
+            ws.cell(row=ri, column=3, value=m[2] or 0).alignment=ctr
+            for ci in range(1,4): ws.cell(row=ri, column=ci).border=bdr
+            ri += 1
+        ri += 1
+
+        # ── TOP5 제품 ──
+        c = ws.cell(row=ri, column=1, value='■ 최근 판매 제품 TOP5'); c.font=Font(bold=True, size=11, name=FNAME); ri += 1
+        for ci, h in enumerate(['제품명','브랜드','매출(원)','수량'], 1):
+            c = ws.cell(row=ri, column=ci, value=h); c.font=Font(bold=True, size=9, name=FNAME, color='374151')
+            c.fill=mf('F3F4F6'); c.border=bdr; c.alignment=ctr
+        ri += 1
+        for nm, v in top5:
+            ws.cell(row=ri, column=1, value=nm).alignment=left
+            ws.cell(row=ri, column=2, value=v['brand']).alignment=ctr
+            c3 = ws.cell(row=ri, column=3, value=v['total']); c3.number_format='#,##0'; c3.alignment=rgt
+            ws.cell(row=ri, column=4, value=v['qty']).alignment=ctr
+            for ci in range(1,5): ws.cell(row=ri, column=ci).border=bdr
+            ri += 1
+        ri += 1
+
+        # ── 소통 이력 ──
+        c = ws.cell(row=ri, column=1, value=f'■ 소통 이력 ({len(comm_rows)}건)'); c.font=Font(bold=True, size=11, name=FNAME); ri += 1
+        for ci, h in enumerate(['날짜','유형','메모','작성자'], 1):
+            c = ws.cell(row=ri, column=ci, value=h); c.font=Font(bold=True, size=9, name=FNAME, color='374151')
+            c.fill=mf('F3F4F6'); c.border=bdr; c.alignment=ctr
+        ri += 1
+        for cr in comm_rows:
+            ws.cell(row=ri, column=1, value=cr[0]).alignment=ctr
+            ws.cell(row=ri, column=2, value=cr[1]).alignment=ctr
+            c3 = ws.cell(row=ri, column=3, value=cr[2]); c3.alignment=left
+            ws.cell(row=ri, column=4, value=cr[3]).alignment=ctr
+            for ci in range(1,5): ws.cell(row=ri, column=ci).border=bdr
+            ws.row_dimensions[ri].height = 26
+            ri += 1
+
+        for col, w in zip('ABCDE', [16, 14, 42, 12, 10]):
+            ws.column_dimensions[col].width = w
+
+    conn.close()
+    buf = io.BytesIO(); wb.save(buf); buf.seek(0)
+    fname = f'매장소통_{seller}_{year}.xlsx' if seller else f'매장소통_전체_{year}.xlsx'
+    return send_file(buf, mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        as_attachment=True, download_name=fname)
+
 
 # ── SNS 활용 매장 API ────────────────────────────────
 @app.route("/api/sns/search", methods=["POST"])
