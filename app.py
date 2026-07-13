@@ -484,6 +484,9 @@ def parse_region_from_address(addr):
 def detect_region_from_name(name):
     """매장명에서 지역 자동 추출"""
     name = name or ''
+    # 경기광주(경기도 광주시)는 광주광역시와 다르므로 최우선 체크
+    if '경기광주' in name or '경기 광주' in name:
+        return '경기'
     region_keywords = [
         # 특별시/광역시
         ('서울', '서울'), ('강남', '서울'), ('강북', '서울'), ('강서', '서울'),
@@ -3203,6 +3206,16 @@ def api_product_by_seller():
         merged[nm]['cnt']   += r['cnt']
     return jsonify(sorted(merged.values(), key=lambda x: -x['total']))
 
+def strip_honorific(name):
+    """대표자명 뒤의 호칭(님, 사장님, 대표님, 이사님, 점장님 등) 제거"""
+    import re as _re4
+    if not name: return name
+    n = name.strip()
+    n = _re4.sub(r'(사장|대표|이사|점장|원장|실장|부장|팀장)?님\s*$', '', n).strip()
+    n = _re4.sub(r'(사장|대표|이사|점장|원장)\s*$', '', n).strip()
+    return n or name
+
+
 @app.route("/api/export/xlsx/sellers")
 @login_required
 def api_export_sellers_xlsx():
@@ -3309,7 +3322,7 @@ def api_export_sellers_xlsx():
 
         seller_data.append({
             'name': disp_name, 'region': region,
-            'ceo': info.get('ceo',''), 'ceo_phone': info.get('ceo_phone',''),
+            'ceo': strip_honorific(info.get('ceo','')), 'ceo_phone': info.get('ceo_phone',''),
             'address': info.get('address',''), 'manager': info.get('manager',''),
             'cnt': r[1], 'total': cur_total, 'qty': r[3] or 0,
             'last': (r[4] or '')[:10], 'yoy': yoy_pct,
@@ -6064,6 +6077,13 @@ def api_display_upload():
             continue
 
         headers = [str(c or '').strip() for c in raw_rows[header_row_idx]]
+
+        # "Sheet1" 같은 일반 시트명이면, 헤더 행의 실제 제품명 컬럼으로 대체
+        if _re.match(r'^(sheet|시트)\s*\d*$', sheet_clean, _re.IGNORECASE):
+            for h in headers:
+                if h and h not in ('업체구분','거래처코드','거래처명','실적용거래처명','합계','No','번호'):
+                    sheet_clean = h
+                    break
 
         # 색상 헤더 행 (헤더 바로 다음 줄에 색상명이 있는 구조)
         color_row_idx = header_row_idx + 1
