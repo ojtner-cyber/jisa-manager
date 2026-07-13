@@ -157,13 +157,15 @@ def init_db():
         visit_done INTEGER DEFAULT 0,
         call_done INTEGER DEFAULT 0,
         note TEXT DEFAULT '',
+        applied_date TEXT DEFAULT '',
         UNIQUE(campaign_id, seller_name, product_name)
     )""")
     # 마이그레이션: 기존 DB에 신규 컬럼 추가
     try:
         dr_cols = [r[1] for r in conn.execute("PRAGMA table_info(display_record)").fetchall()]
         for col, typ in [('color_detail','TEXT DEFAULT \'\''), ('visit_done','INTEGER DEFAULT 0'),
-                          ('call_done','INTEGER DEFAULT 0'), ('note','TEXT DEFAULT \'\'')]:
+                          ('call_done','INTEGER DEFAULT 0'), ('note','TEXT DEFAULT \'\''),
+                          ('applied_date','TEXT DEFAULT \'\'')]:
             if col not in dr_cols:
                 conn.execute(f"ALTER TABLE display_record ADD COLUMN {col} {typ}")
     except Exception:
@@ -229,9 +231,16 @@ def init_db():
         comm_date TEXT NOT NULL,
         comm_type TEXT DEFAULT '방문',
         memo TEXT DEFAULT '',
+        raw_memo TEXT DEFAULT '',
         created_by TEXT DEFAULT '',
         created_at TEXT DEFAULT CURRENT_TIMESTAMP
     )""")
+    try:
+        sc_cols = [r[1] for r in conn.execute("PRAGMA table_info(store_communication)").fetchall()]
+        if 'raw_memo' not in sc_cols:
+            conn.execute("ALTER TABLE store_communication ADD COLUMN raw_memo TEXT DEFAULT ''")
+    except Exception:
+        pass
     conn.execute("""CREATE TABLE IF NOT EXISTS sns_info (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         seller_name TEXT UNIQUE,
@@ -3197,24 +3206,36 @@ def api_product_by_seller():
 @app.route("/api/export/xlsx/sellers")
 @login_required
 def api_export_sellers_xlsx():
-    """판매처 관리 엑셀 — 지역별 분류 + 대표자/주소/연락처 + 전년대비 + 취급브랜드"""
+    """판매처 관리 엑셀 — 지역별 분류 + 대표자/주소/연락처 + 전년동기대비 + 취급브랜드"""
     from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
     from openpyxl.utils import get_column_letter
     year = request.args.get('year', str(datetime.now().year))
     prev_year = str(int(year) - 1)
+    cur_month = datetime.now().month  # 현재 월까지만 비교 (전년 동기)
 
     conn = get_db()
+    # 올해 매출: 연간 전체 표시용
     rows = conn.execute("""
         SELECT real_seller, COUNT(*) cnt, SUM(total) total, SUM(quantity) qty, MAX(sale_date) last_date
         FROM sales_data WHERE real_seller != '' AND sale_date LIKE ?
         GROUP BY real_seller ORDER BY real_seller
     """, (f"{year}%",)).fetchall()
 
-    # 전년 동일 매장 매출 (YoY 비교용)
+    # 올해 동기(1월~현재월) 매출
+    cur_period_totals = {r[0]: r[1] or 0 for r in conn.execute("""
+        SELECT real_seller, SUM(total) FROM sales_data
+        WHERE real_seller != '' AND sale_date LIKE ?
+          AND CAST(strftime('%m',sale_date) AS INTEGER) <= ?
+        GROUP BY real_seller
+    """, (f"{year}%", cur_month)).fetchall()}
+
+    # 전년 동기(1월~현재월) 매출 — 전년 동기 대비 비교용
     prev_totals = {r[0]: r[1] or 0 for r in conn.execute("""
         SELECT real_seller, SUM(total) FROM sales_data
-        WHERE real_seller != '' AND sale_date LIKE ? GROUP BY real_seller
-    """, (f"{prev_year}%",)).fetchall()}
+        WHERE real_seller != '' AND sale_date LIKE ?
+          AND CAST(strftime('%m',sale_date) AS INTEGER) <= ?
+        GROUP BY real_seller
+    """, (f"{prev_year}%", cur_month)).fetchall()}
 
     # 판매처 상세정보 (대표자/주소/연락처/담당자)
     branch_info = {}
@@ -3265,9 +3286,10 @@ def api_export_sellers_xlsx():
         info = branch_info.get(raw_name, branch_info.get(disp_name, {}))
 
         cur_total = r[2] or 0
-        prev_total = prev_totals.get(raw_name, 0)
-        if prev_total > 0:
-            yoy_pct = round((cur_total - prev_total) / prev_total * 100, 1)
+        cur_period_total  = cur_period_totals.get(raw_name, 0)
+        prev_period_total = prev_totals.get(raw_name, 0)
+        if prev_period_total > 0:
+            yoy_pct = round((cur_period_total - prev_period_total) / prev_period_total * 100, 1)
         else:
             yoy_pct = None
 
@@ -3290,7 +3312,8 @@ def api_export_sellers_xlsx():
             'ceo': info.get('ceo',''), 'ceo_phone': info.get('ceo_phone',''),
             'address': info.get('address',''), 'manager': info.get('manager',''),
             'cnt': r[1], 'total': cur_total, 'qty': r[3] or 0,
-            'last': (r[4] or '')[:10], 'yoy': yoy_pct, 'prev_total': prev_total,
+            'last': (r[4] or '')[:10], 'yoy': yoy_pct,
+            'cur_period_total': cur_period_total, 'prev_period_total': prev_period_total,
             'brands': brand_marks,
         })
 
@@ -3309,14 +3332,16 @@ def api_export_sellers_xlsx():
     left = Alignment(horizontal='left', vertical='center')
     rgt  = Alignment(horizontal='right', vertical='center')
 
+    period_label = f'1~{cur_month}월'
     hdrs = ['지역','매장명','대표자','대표자 연락처','주소','담당자',
-            f'{year}년 매출(원)', f'{prev_year}년 매출(원)', '전년대비',
+            f'{year}년 매출(원)', f'{year}년 {period_label}', f'{prev_year}년 {period_label}', '전년동기대비',
             '판매건수','판매수량','최근 거래일'] + BRANDS_ORDER
-    widths = [8, 24, 10, 14, 32, 12, 16, 16, 10, 9, 9, 12] + [12]*len(BRANDS_ORDER)
+    widths = [8, 24, 10, 14, 32, 12, 16, 15, 15, 11, 9, 9, 12] + [12]*len(BRANDS_ORDER)
     NCOL = len(hdrs)
 
     ws.merge_cells(f'A1:{get_column_letter(NCOL)}1')
-    c = ws.cell(row=1, column=1, value=f'판매처 현황  ({year}년)   총 {len(seller_data)}개 매장')
+    c = ws.cell(row=1, column=1,
+        value=f'판매처 현황  ({year}년)   총 {len(seller_data)}개 매장   ·   전년동기대비 기준: {period_label}')
     c.font=Font(bold=True, size=13, name=FNAME, color='1F2937'); c.fill=mf('FFFFFF'); c.alignment=ctr
     ws.row_dimensions[1].height = 26
 
@@ -3327,7 +3352,7 @@ def api_export_sellers_xlsx():
         ws.column_dimensions[get_column_letter(ci)].width = w
     ws.row_dimensions[2].height = 20
 
-    BRAND_COL_START = 13  # M열부터 브랜드 컬럼
+    BRAND_COL_START = 14  # N열부터 브랜드 컬럼
 
     region_totals = {}
     ri = 3; prev_region = ''
@@ -3356,7 +3381,8 @@ def api_export_sellers_xlsx():
 
         yoy_str = f"{'+' if s['yoy']>=0 else ''}{s['yoy']}%" if s['yoy'] is not None else '—'
         row_vals = [region, s['name'], s['ceo'], s['ceo_phone'], s['address'], s['manager'],
-                    s['total'], s['prev_total'], yoy_str, s['cnt'], s['qty'], s['last']]
+                    s['total'], s['cur_period_total'], s['prev_period_total'], yoy_str,
+                    s['cnt'], s['qty'], s['last']]
         row_vals += [s['brands'][b] for b in BRANDS_ORDER]
 
         for ci, v in enumerate(row_vals, 1):
@@ -3367,14 +3393,14 @@ def api_export_sellers_xlsx():
             elif ci in (3,6): c.alignment=ctr
             elif ci == 4: c.alignment=ctr; c.font=Font(size=8, name=FNAME, color='6B7280')
             elif ci == 5: c.alignment=left; c.font=Font(size=8, name=FNAME, color='6B7280')
-            elif ci in (7,8): c.alignment=rgt; c.number_format='#,##0'
-            elif ci == 9:
+            elif ci in (7,8,9): c.alignment=rgt; c.number_format='#,##0'
+            elif ci == 10:
                 c.alignment=ctr
                 if s['yoy'] is not None:
                     c.font=Font(size=9, name=FNAME, bold=True,
                                 color='16A34A' if s['yoy']>=0 else 'DC2626')
-            elif ci in (10,11): c.alignment=ctr
-            elif ci == 12: c.alignment=ctr; c.font=Font(size=8, name=FNAME, color='9CA3AF')
+            elif ci in (11,12): c.alignment=ctr
+            elif ci == 13: c.alignment=ctr; c.font=Font(size=8, name=FNAME, color='9CA3AF')
             elif ci >= BRAND_COL_START: c.alignment=ctr
         ws.row_dimensions[ri].height = 15; ri += 1
 
@@ -4404,26 +4430,86 @@ def api_communication_list():
     return jsonify(rows)
 
 
+def polish_memo(raw_text, seller_name='', comm_type='방문'):
+    """대충 적은 메모를 영업 전문가 문체의 보고서 형식으로 다듬기 (Claude API 사용, 실패 시 원문 유지)"""
+    raw_text = (raw_text or '').strip()
+    if not raw_text:
+        return raw_text
+    api_key = os.environ.get('ANTHROPIC_API_KEY', '')
+    if not api_key:
+        return raw_text
+    try:
+        import requests
+        prompt = f"""다음은 영업 담당자가 매장 방문/통화 후 대충 적은 메모입니다.
+이 내용을 절대 과장하거나 없는 사실을 추가하지 말고, 있는 내용 그대로 영업 보고서에 어울리는
+정중하고 간결한 문어체로 다듬어주세요. 불필요한 수식어나 인사말은 넣지 말고, 2~4문장 이내로 작성하세요.
+결과는 다듬어진 메모 텍스트만 출력하세요 (설명, 따옴표, 접두사 없이).
+
+매장명: {seller_name}
+소통 유형: {comm_type}
+원본 메모: {raw_text}"""
+        resp = requests.post(
+            "https://api.anthropic.com/v1/messages",
+            headers={
+                "x-api-key": api_key,
+                "anthropic-version": "2023-06-01",
+                "content-type": "application/json",
+            },
+            json={
+                "model": "claude-sonnet-4-6",
+                "max_tokens": 300,
+                "messages": [{"role": "user", "content": prompt}],
+            },
+            timeout=10,
+        )
+        if resp.status_code == 200:
+            data = resp.json()
+            text_blocks = [b.get('text','') for b in data.get('content',[]) if b.get('type')=='text']
+            polished = ''.join(text_blocks).strip()
+            if polished:
+                return polished
+    except Exception:
+        pass
+    return raw_text
+
+
+@app.route("/api/communication/polish", methods=["POST"])
+@login_required
+def api_communication_polish_preview():
+    """메모 다듬기 미리보기 (저장 전 확인용)"""
+    d = request.json or {}
+    raw_memo = d.get('memo', '').strip()
+    seller = d.get('seller_name', '')
+    comm_type = d.get('comm_type', '방문')
+    if not raw_memo:
+        return jsonify({'ok': False, 'msg': '메모를 입력해주세요'}), 400
+    polished = polish_memo(raw_memo, seller, comm_type)
+    return jsonify({'ok': True, 'polished': polished, 'changed': polished != raw_memo})
+
+
 @app.route("/api/communication", methods=["POST"])
 @login_required
 def api_communication_add():
-    """소통 기록 추가"""
+    """소통 기록 추가 — 메모는 자동으로 영업 보고서 문체로 다듬어 저장"""
     d = request.json or {}
     seller = d.get('seller_name', '').strip()
     comm_date = d.get('comm_date', '').strip()
+    raw_memo = d.get('memo', '').strip()
     if not seller or not comm_date:
         return jsonify({'ok': False, 'msg': '매장명과 날짜는 필수입니다'}), 400
+    comm_type = d.get('comm_type','방문')
+    polished = polish_memo(raw_memo, seller, comm_type)
     conn = get_db()
     user_name = session.get('user', {}).get('name', '')
     conn.execute("""INSERT INTO store_communication
-        (seller_name, comm_date, comm_type, memo, created_by, created_at)
-        VALUES(?,?,?,?,?,?)""",
-        (seller, comm_date, d.get('comm_type','방문'), d.get('memo',''),
+        (seller_name, comm_date, comm_type, memo, raw_memo, created_by, created_at)
+        VALUES(?,?,?,?,?,?,?)""",
+        (seller, comm_date, comm_type, polished, raw_memo,
          user_name, datetime.now().strftime('%Y-%m-%d %H:%M')))
     conn.commit()
     new_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
     conn.close()
-    return jsonify({'ok': True, 'id': new_id})
+    return jsonify({'ok': True, 'id': new_id, 'polished_memo': polished})
 
 
 @app.route("/api/communication/<int:cid>", methods=["DELETE"])
@@ -6067,28 +6153,30 @@ def api_display_upload():
                     skipped += 1  # 이미 진열 완료인데 이번에 0이면 유지
                     continue
                 if ex_has == 0 and has_display == 1:
-                    # 이번에 처음 진열 확인 → 점수 부여
+                    # 이번에 처음 진열 확인 → 점수 부여 + 신청일 기록 (기존 신청일 없을 때만)
                     conn.execute("""UPDATE display_record SET
-                        has_display=1, quantity=?, score=?, upload_id=?, upload_date=?, updated_at=?, color_detail=?
+                        has_display=1, quantity=?, score=?, upload_id=?, upload_date=?, updated_at=?, color_detail=?,
+                        applied_date=CASE WHEN applied_date='' OR applied_date IS NULL THEN ? ELSE applied_date END
                         WHERE id=?""",
-                        (qty, base_score, upload_id, today, now_str, color_json, ex_id))
+                        (qty, base_score, upload_id, today, now_str, color_json, today, ex_id))
                     total_updated += 1
                 else:
-                    # 수량만 업데이트
+                    # 수량만 업데이트 (신청일 등 다른 정보는 건드리지 않음)
                     conn.execute("UPDATE display_record SET quantity=?,updated_at=?,color_detail=? WHERE id=?",
                         (qty, now_str, color_json, ex_id))
                     skipped += 1
             else:
-                # 신규 등록
+                # 신규 등록 — 진열 확인된 경우에만 신청일 기록
                 code = str(row[CODE_IDX]).strip() if CODE_IDX >= 0 and CODE_IDX < len(row) and row[CODE_IDX] else ''
                 conn.execute("""INSERT INTO display_record
                     (campaign_id, upload_id, seller_name, seller_code, product_name,
-                     quantity, has_display, score, upload_date, updated_at, color_detail)
-                    VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
+                     quantity, has_display, score, upload_date, updated_at, color_detail, applied_date)
+                    VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
                     (campaign_id, upload_id, seller, code, sheet_clean,
                      qty, has_display,
                      base_score if has_display else 0,
-                     today, now_str, color_json))
+                     today, now_str, color_json,
+                     today if has_display else ''))
                 inserted += 1
 
         total_inserted += inserted
@@ -6141,10 +6229,10 @@ def api_display_scores():
         return ''
 
     if campaign_id:
-        # 특정 캠페인 점수 — id 포함, color_detail/visit_done/call_done/note 추가
+        # 특정 캠페인 점수 — id 포함, color_detail/visit_done/call_done/note/applied_date 추가
         records = [dict(r) for r in conn.execute("""
             SELECT id, seller_name, product_name, has_display, quantity, score, is_manual, upload_date,
-                   color_detail, visit_done, call_done, note
+                   color_detail, visit_done, call_done, note, applied_date
             FROM display_record WHERE campaign_id=? ORDER BY seller_name, product_name
         """, (campaign_id,)).fetchall()]
     else:
