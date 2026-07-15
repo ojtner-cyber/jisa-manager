@@ -2012,6 +2012,22 @@ async function runCompetitorCompare(){
   const ourLabel = `${compOurSelected.brand} ${compOurSelected.name}`;
   const compLabel = `${compCompetitorBrand} ${compCompetitorSelected.product_name}`;
 
+  // "[태그] 내용" 형식을 배지+텍스트로 분리 렌더링
+  function renderTaggedItem(item){
+    const m = String(item).match(/^\[([^\]]+)\]\s*(.*)$/);
+    if(m){
+      return `<div style="display:flex;gap:7px;align-items:flex-start;margin-bottom:7px">
+        <span style="flex-shrink:0;font-size:9.5px;font-weight:700;color:var(--t-400);background:var(--bg);border:1px solid var(--border);padding:1.5px 6px;border-radius:5px;white-space:nowrap;margin-top:1px">${m[1]}</span>
+        <span style="font-size:12px;color:var(--t-700);line-height:1.65">${m[2]}</span>
+      </div>`;
+    }
+    return `<div style="font-size:12px;color:var(--t-700);line-height:1.7;margin-bottom:5px">· ${item}</div>`;
+  }
+  function renderTaggedList(items){
+    if(!items || !items.length) return '<span style="color:var(--t-300);font-size:11.5px">확인된 정보 없음</span>';
+    return items.map(renderTaggedItem).join('');
+  }
+
   resultEl.innerHTML = `
     <div style="border:1px solid var(--border);border-radius:12px;overflow:hidden">
       <!-- 리포트 헤더 -->
@@ -2028,21 +2044,21 @@ async function runCompetitorCompare(){
         <table style="width:100%;border-collapse:collapse;margin-bottom:20px">
           <thead>
             <tr>
-              <th style="width:16%"></th>
+              <th style="width:14%"></th>
               <th style="text-align:left;padding:8px 10px;font-size:11px;font-weight:700;color:var(--t-500);border-bottom:1.5px solid var(--border)">${ourLabel}</th>
               <th style="text-align:left;padding:8px 10px;font-size:11px;font-weight:700;color:var(--t-500);border-bottom:1.5px solid var(--border)">${compLabel}</th>
             </tr>
           </thead>
           <tbody>
             <tr>
-              <td style="padding:10px;font-size:11px;font-weight:700;color:var(--green);vertical-align:top;border-bottom:1px solid var(--border)">장점</td>
-              <td style="padding:10px;font-size:12px;color:var(--t-700);line-height:1.8;vertical-align:top;border-bottom:1px solid var(--border)">${(comp.our_pros||[]).map(p=>`· ${p}`).join('<br>')}</td>
-              <td style="padding:10px;font-size:12px;color:var(--t-700);line-height:1.8;vertical-align:top;border-bottom:1px solid var(--border)">${(comp.competitor_pros||[]).map(p=>`· ${p}`).join('<br>')}</td>
+              <td style="padding:12px 10px;font-size:11px;font-weight:700;color:var(--green);vertical-align:top;border-bottom:1px solid var(--border)">장점</td>
+              <td style="padding:12px 10px;vertical-align:top;border-bottom:1px solid var(--border)">${renderTaggedList(comp.our_pros)}</td>
+              <td style="padding:12px 10px;vertical-align:top;border-bottom:1px solid var(--border)">${renderTaggedList(comp.competitor_pros)}</td>
             </tr>
             <tr>
-              <td style="padding:10px;font-size:11px;font-weight:700;color:var(--red);vertical-align:top">단점</td>
-              <td style="padding:10px;font-size:12px;color:var(--t-700);line-height:1.8;vertical-align:top">${(comp.our_cons||[]).map(p=>`· ${p}`).join('<br>')||'<span style="color:var(--t-300)">—</span>'}</td>
-              <td style="padding:10px;font-size:12px;color:var(--t-700);line-height:1.8;vertical-align:top">${(comp.competitor_cons||[]).map(p=>`· ${p}`).join('<br>')}</td>
+              <td style="padding:12px 10px;font-size:11px;font-weight:700;color:var(--red);vertical-align:top">단점</td>
+              <td style="padding:12px 10px;vertical-align:top">${renderTaggedList(comp.our_cons)}</td>
+              <td style="padding:12px 10px;vertical-align:top">${renderTaggedList(comp.competitor_cons)}</td>
             </tr>
           </tbody>
         </table>

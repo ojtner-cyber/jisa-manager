@@ -4859,10 +4859,20 @@ def api_competitor_our_products():
         rows = []
     conn.close()
 
+    # 카테고리별 제외 키워드 (구형/오분류/타 카테고리 제품)
+    EXCLUDE_KEYWORDS = {
+        '카시트': ['하이브리드'],
+        '유모차': ['원더폴드', '허브2', '허브+', '허브플러스', '에어cot', '에어Cot', 'AIRCOT', '이지라이프'],
+    }
+    exclude_kw = EXCLUDE_KEYWORDS.get(category, [])
+
     products = []
     for r in rows:
-        brand = remap_group(r[1], r[0])
-        norm = normalize_item_name(r[0])
+        item_name = r[0] or ''
+        if any(kw.lower() in item_name.lower() for kw in exclude_kw):
+            continue
+        brand = remap_group(r[1], item_name)
+        norm = normalize_item_name(item_name)
         pname = _re.sub(r'^\[[^\]]+\]', '', norm).split('_')[0].strip()
         products.append({'name': pname, 'brand': brand, 'full_name': norm,
                           'total': r[2] or 0, 'qty': r[3] or 0})
@@ -4899,10 +4909,18 @@ def api_competitor_product_candidates():
     conn.close()
 
     candidates = set()
+    # 완전 제외 대상 키워드 (판매채널/부가서비스/이벤트성 문구 — 제품명이 아님)
+    NOISE_WORDS = ['네이버', '단독', '대여', '렌탈', '렌트', '제주', '무료', '후방거울', '후방미러',
+                   '발판', '스텝', '본사', '판매', '직영', '배송', '무이자', '할부', '사은품',
+                   '이벤트', '특가', '쿠폰', '적립', '스토어', '공식몰', '카카오', '톡딜',
+                   '로켓배송', '당일발송', '무료배송', '전국', '설치', 'AS', '보증']
     try:
         shop = _naver_search('shop', f"{brand} {category}", display=20, sort='sim')
         for item in shop.get('items', []):
             title = _strip_tags(item.get('title',''))
+            # 노이즈 단어가 포함된 제목은 통째로 건너뜀 (판매채널 홍보 문구일 가능성 높음)
+            if any(nw in title for nw in NOISE_WORDS):
+                continue
             # 브랜드명 뒤에 오는 모델명 추출 (예: "실버크로스 니아 유모차" -> "니아")
             t = title.replace(brand, '').strip()
             # 흔한 잡단어 제거
@@ -4913,7 +4931,7 @@ def api_competitor_product_candidates():
             words = [w for w in t.split() if len(w) >= 2][:2]
             if words:
                 model = ' '.join(words)
-                if 1 < len(model) <= 20:
+                if 1 < len(model) <= 20 and not any(nw in model for nw in NOISE_WORDS):
                     candidates.add(model)
     except Exception:
         pass
@@ -4926,13 +4944,14 @@ def api_competitor_product_candidates():
 
 
 def _research_product(side, category, brand, product_name):
-    """특정 제품(자사/타사 공용)의 리뷰+설명을 검색해 장단점/가격/설명 축적"""
+    """특정 제품(자사/타사 공용)의 리뷰+설명을 다각도로 검색해 장단점/가격/설명 심층 축적"""
     query_base = f"{brand} {product_name}".strip()
-    titles, urls, prices, review_snippets, desc_snippets = [], [], [], [], []
+    titles, urls, prices = [], [], []
+    review_snippets, con_snippets, pro_snippets, official_snippets = [], [], [], []
 
     try:
-        shop = _naver_search('shop', f"{query_base} {category}", display=8, sort='sim')
-        for item in shop.get('items', [])[:8]:
+        shop = _naver_search('shop', f"{query_base} {category}", display=10, sort='sim')
+        for item in shop.get('items', [])[:10]:
             t = _strip_tags(item.get('title',''))
             titles.append(t); urls.append(item.get('link',''))
             price = item.get('lprice','')
@@ -4942,23 +4961,44 @@ def _research_product(side, category, brand, product_name):
     except Exception:
         pass
 
+    # 일반 후기 (사용감, 실사용 경험 위주)
     try:
-        blog = _naver_search('blog', f"{query_base} 리뷰", display=8, sort='sim')
+        blog = _naver_search('blog', f"{query_base} 후기", display=8, sort='sim')
         for item in blog.get('items', [])[:8]:
             desc = _strip_tags(item.get('description',''))
             if desc: review_snippets.append(desc)
     except Exception:
         pass
 
+    # 장점 특화 검색
     try:
-        blog2 = _naver_search('blog', f"{query_base} 장단점", display=5, sort='sim')
-        for item in blog2.get('items', [])[:5]:
+        blog_pro = _naver_search('blog', f"{query_base} 장점 추천이유", display=6, sort='sim')
+        for item in blog_pro.get('items', [])[:6]:
             desc = _strip_tags(item.get('description',''))
-            if desc: desc_snippets.append(desc)
+            if desc: pro_snippets.append(desc)
     except Exception:
         pass
 
-    if not titles and not review_snippets and not desc_snippets:
+    # 단점 특화 검색 (불편, 아쉬운점, 단점)
+    try:
+        blog_con = _naver_search('blog', f"{query_base} 단점 아쉬운점 불편", display=6, sort='sim')
+        for item in blog_con.get('items', [])[:6]:
+            desc = _strip_tags(item.get('description',''))
+            if desc: con_snippets.append(desc)
+    except Exception:
+        pass
+
+    # 공식 소개/스펙 정보 (브랜드가 내세우는 특징)
+    try:
+        blog_official = _naver_search('blog', f"{query_base} 특징 스펙 소재", display=6, sort='sim')
+        for item in blog_official.get('items', [])[:6]:
+            desc = _strip_tags(item.get('description',''))
+            if desc: official_snippets.append(desc)
+    except Exception:
+        pass
+
+    total_snippets = review_snippets + pro_snippets + con_snippets + official_snippets
+    if not titles and not total_snippets:
         return None
 
     price_text = ''
@@ -4968,44 +5008,70 @@ def _research_product(side, category, brand, product_name):
         price_text = f"약 {lo:,}원" if lo == hi else f"약 {lo:,}원 ~ {hi:,}원"
 
     pros, cons, description = _extract_pros_cons(
-        brand, product_name, category, titles, review_snippets + desc_snippets)
+        brand, product_name, category, titles,
+        review_snippets, pro_snippets, con_snippets, official_snippets)
 
     return {
         'product_name': product_name, 'price_text': price_text,
         'pros': pros, 'cons': cons, 'description': description,
-        'review_snippets': (review_snippets + desc_snippets)[:8],
+        'review_snippets': total_snippets[:12],
         'source_titles': titles[:6], 'source_urls': urls[:6],
     }
 
 
-def _extract_pros_cons(brand, product_name, category, titles, snippets):
-    """수집된 검색결과에서 장점/단점/설명을 구조화 (Claude API 우선, 실패 시 규칙 기반)"""
-    combined = ' / '.join((titles[:6] + snippets[:8]))
-    combined = combined.strip()
-    if not combined:
+def _extract_pros_cons(brand, product_name, category, titles,
+                         review_snippets=None, pro_snippets=None, con_snippets=None, official_snippets=None):
+    """수집된 검색결과(후기/장점/단점/공식정보 각각 분리)에서 세밀한 장단점을 구조화
+    (Claude API 우선 — 카테고리별 검색결과를 구분해서 제공해 정밀도 향상, 실패 시 규칙 기반)"""
+    review_snippets = review_snippets or []
+    pro_snippets = pro_snippets or []
+    con_snippets = con_snippets or []
+    official_snippets = official_snippets or []
+
+    all_snippets = titles + review_snippets + pro_snippets + con_snippets + official_snippets
+    if not any(all_snippets):
         return [], [], ''
 
     api_key = os.environ.get('ANTHROPIC_API_KEY', '')
     if api_key:
         try:
             import requests
-            prompt = f"""아래는 유아용품 '{brand} {product_name}' ({category})에 대해 인터넷에서 수집한 검색 결과(쇼핑 제목, 블로그 리뷰 일부)입니다.
-이 정보만을 근거로, 절대 사실을 지어내지 말고 실제 언급된 내용 위주로 분석해주세요.
+            prompt = f"""당신은 유아용품 업계 15년차 상품기획/영업 전문가입니다.
+'{brand} {product_name}' ({category})에 대해 인터넷에서 실제 수집한 정보를 분야별로 드립니다. 이를 근거로 세밀하고 구체적인 장단점 분석을 작성해주세요.
+
+[제품/판매 정보]
+{' / '.join(titles[:8])}
+
+[일반 사용후기에서 발견된 내용]
+{' / '.join(review_snippets[:6]) or '(수집된 후기 없음)'}
+
+[장점/추천이유 관련 검색결과]
+{' / '.join(pro_snippets[:5]) or '(수집된 정보 없음)'}
+
+[단점/아쉬운점/불편 관련 검색결과]
+{' / '.join(con_snippets[:5]) or '(수집된 정보 없음)'}
+
+[제품 특징/스펙/소재 관련 검색결과]
+{' / '.join(official_snippets[:5]) or '(수집된 정보 없음)'}
+
+작성 원칙:
+- 절대 사실을 지어내지 마세요. 위 정보에 실제 언급된 내용을 최우선으로 반영하세요.
+- 뭉뚱그린 표현("품질이 좋다", "인기가 많다") 대신, 구체적 사실(소재, 무게, 크기, 접이식 여부, 회전 기능, 통기성, 가격대, A/S 등)을 짚어주세요.
+- 장점과 단점을 각각 명확히 구분되는 별개의 포인트로 작성하세요 (겹치는 내용 금지).
+- 단점 정보가 검색결과에 부족하면, 이 카테고리 제품군에서 해당 가격대/타입 제품이 일반적으로 갖는 한계를 전문가 관점에서 신중하게 짚어주세요 (예: 프리미엄 제품이면 "가격대가 높다", 회전형 카시트면 "무게가 무겁다" 등 업계 통념 수준).
 
 다음 JSON 형식으로만 답하세요 (설명 없이 JSON만):
 {{
-  "pros": ["실제 리뷰/설명에서 확인되는 장점 2~4개, 구체적으로"],
-  "cons": ["실제 언급되거나 일반적으로 알려진 단점/아쉬운 점 1~3개. 확실하지 않으면 카테고리 특성상 흔한 단점을 신중하게 언급"],
-  "description": "제품의 특징을 1~2문장으로 요약"
-}}
-
-수집된 정보: {combined[:1800]}"""
+  "pros": ["구체적 장점 3~5개"],
+  "cons": ["구체적 단점 2~4개"],
+  "description": "제품 특징을 압축한 1~2문장"
+}}"""
             resp = requests.post(
                 "https://api.anthropic.com/v1/messages",
                 headers={"x-api-key": api_key, "anthropic-version": "2023-06-01", "content-type": "application/json"},
-                json={"model": "claude-sonnet-4-6", "max_tokens": 600,
+                json={"model": "claude-sonnet-4-6", "max_tokens": 700,
                       "messages": [{"role": "user", "content": prompt}]},
-                timeout=15,
+                timeout=18,
             )
             if resp.status_code == 200:
                 data = resp.json()
@@ -5016,10 +5082,10 @@ def _extract_pros_cons(brand, product_name, category, titles, snippets):
         except Exception:
             pass
 
-    # Fallback: 원문 제목/스니펫 그대로 노출 (가공 없이)
-    pros = [f"검색 결과: {t}" for t in titles[:2]]
-    cons = []
-    description = snippets[0][:150] if snippets else (titles[0] if titles else '')
+    # Fallback: 원문 스니펫 그대로 노출 (가공 없이, 출처 구분)
+    pros = [f"{s[:80]}" for s in (pro_snippets[:2] or review_snippets[:2])]
+    cons = [f"{s[:80]}" for s in con_snippets[:2]]
+    description = official_snippets[0][:150] if official_snippets else (review_snippets[0][:150] if review_snippets else (titles[0] if titles else ''))
     return pros, cons, description
 
 
@@ -5181,7 +5247,7 @@ def api_competitor_compare():
 
 def generate_comparison(category, our_brand, our_product, our_data,
                           competitor_brand, competitor_product, comp_data):
-    """축적된 상세 리서치 데이터를 기반으로 제품 단위 비교 분석 생성"""
+    """축적된 상세 리서치 데이터를 기반으로 제품 단위 심층 비교 분석 생성"""
     api_key = os.environ.get('ANTHROPIC_API_KEY', '')
 
     try: our_pros_raw = json.loads(our_data.get('pros') or '[]')
@@ -5192,44 +5258,56 @@ def generate_comparison(category, our_brand, our_product, our_data,
     except: comp_pros_raw = []
     try: comp_cons_raw = json.loads(comp_data.get('cons') or '[]')
     except: comp_cons_raw = []
+    try: our_reviews = json.loads(our_data.get('review_snippets') or '[]')
+    except: our_reviews = []
+    try: comp_reviews = json.loads(comp_data.get('review_snippets') or '[]')
+    except: comp_reviews = []
 
     fallback_strength = OUR_BRAND_STRENGTHS.get(our_brand, '국내 유통망과 사후관리 대응력')
 
     if api_key:
         try:
             import requests
-            prompt = f"""당신은 유아용품 B2B 영업 전문가입니다. 실제 수집된 데이터를 근거로 두 제품을 심층 비교해주세요.
-사실을 지어내지 말고, 주어진 데이터에 있는 내용을 우선 활용하되 부족한 부분은 업계 일반 지식 수준에서 신중하게 보완하세요.
+            prompt = f"""당신은 유아용품 업계 15년차 상품기획/영업 전문가입니다. 아래 실제 수집된 데이터를 근거로 두 제품을 심층 비교 분석해주세요.
+정형화된 뻔한 비교("A/S가 좋다", "국내 유통이 강점이다" 같은 상투적 표현 금지)가 아니라, 실제 데이터에 기반한 구체적이고 날카로운 비교를 원합니다.
 
 [품목] {category}
 
 [자사 제품] {our_brand} {our_product}
 - 가격: {our_data.get('price_text','정보 없음')}
 - 설명: {our_data.get('description','')}
-- 확인된 장점: {our_pros_raw}
-- 확인된 단점: {our_cons_raw}
+- 기존 분석 장점: {our_pros_raw}
+- 기존 분석 단점: {our_cons_raw}
+- 원본 리뷰 조각: {' / '.join(our_reviews[:5])[:600]}
 
 [경쟁 제품] {competitor_brand} {competitor_product}
 - 가격: {comp_data.get('price_text','정보 없음')}
 - 설명: {comp_data.get('description','')}
-- 확인된 장점: {comp_pros_raw}
-- 확인된 단점: {comp_cons_raw}
+- 기존 분석 장점: {comp_pros_raw}
+- 기존 분석 단점: {comp_cons_raw}
+- 원본 리뷰 조각: {' / '.join(comp_reviews[:5])[:600]}
+
+작성 원칙:
+1. 장점/단점은 카테고리 태그를 붙여 작성하세요. 태그 예시: [가격] [소재/디자인] [기능성] [무게/휴대성] [안전성] [A/S] [내구성] [편의성]
+2. 같은 항목을 자사/경쟁사 양쪽에서 비교 가능하도록 서술하되, 실제 데이터에 없는 내용은 지어내지 마세요.
+3. 영업 포인트는 반드시 위에서 도출한 구체적 장단점을 근거로 작성하세요 (일반론 금지). "경쟁사는 A인데 우리는 B다" 식의 대비 구조를 활용하세요.
+4. 가격 비교는 실제 숫자가 있으면 구체적으로 비교하고, 없으면 정직하게 "가격 정보 확인 필요"라고 쓰세요.
 
 다음 JSON 형식으로만 답하세요 (설명 없이 JSON만):
 {{
-  "price_comparison": "가격 비교 한 문장 (데이터 없으면 '가격 정보 확인 필요'라고 표기)",
-  "competitor_pros": ["경쟁제품 장점 2~4개, 구체적으로"],
-  "competitor_cons": ["경쟁제품 단점/약점 2~3개"],
-  "our_pros": ["자사제품 장점 2~4개, 구체적으로"],
-  "our_cons": ["자사제품이 보완할 점 1~2개, 정직하게"],
-  "selling_points": ["매장에서 바로 쓸 수 있는 실전 영업 멘트 3~4개, 구체적 수치나 특징 인용"]
+  "price_comparison": "가격 비교 한 문장",
+  "competitor_pros": ["[태그] 구체적 장점", "..."],
+  "competitor_cons": ["[태그] 구체적 단점", "..."],
+  "our_pros": ["[태그] 구체적 장점", "..."],
+  "our_cons": ["[태그] 정직한 보완점", "..."],
+  "selling_points": ["구체적 대비 구조의 실전 영업 멘트 3~5개"]
 }}"""
             resp = requests.post(
                 "https://api.anthropic.com/v1/messages",
                 headers={"x-api-key": api_key, "anthropic-version": "2023-06-01", "content-type": "application/json"},
-                json={"model": "claude-sonnet-4-6", "max_tokens": 900,
+                json={"model": "claude-sonnet-4-6", "max_tokens": 1100,
                       "messages": [{"role": "user", "content": prompt}]},
-                timeout=15,
+                timeout=20,
             )
             if resp.status_code == 200:
                 data = resp.json()
@@ -5256,6 +5334,7 @@ def generate_comparison(category, our_brand, our_product, our_data,
             "실물 체험 및 매장 상담을 통한 확신 있는 구매 결정을 도울 수 있습니다",
         ],
     }
+
 
 
 
