@@ -239,8 +239,15 @@ def init_db():
         source_titles TEXT DEFAULT '',
         source_urls TEXT DEFAULT '',
         fetched_at TEXT DEFAULT '',
+        product_type TEXT DEFAULT '',    -- 유모차: 디럭스/절충형/휴대용/쌍둥이, 카시트: 컨버터블/주니어/토들러
         UNIQUE(side, category, brand, product_name)
     )""")
+    try:
+        pr_cols = [r[1] for r in conn.execute("PRAGMA table_info(product_research)").fetchall()]
+        if 'product_type' not in pr_cols:
+            conn.execute("ALTER TABLE product_research ADD COLUMN product_type TEXT DEFAULT ''")
+    except Exception:
+        pass
     conn.execute("""CREATE TABLE IF NOT EXISTS competitor_comparison (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         category TEXT NOT NULL,
@@ -4807,6 +4814,26 @@ CATEGORY_TO_ITEM_GROUP = {
     '웨건':     [],  # item_name으로 원더폴드 필터링
 }
 
+# 자사 제품 유형 분류 (사용자 제공 정확한 매핑)
+OUR_PRODUCT_TYPE = {
+    '유모차': {
+        '데이5': '디럭스', '지오3': '디럭스',
+        '허브2': '절충형',
+        '에어2': '휴대용',
+        '루프트': '휴대용',
+        '슈타트듀오': '쌍둥이',
+    },
+    '카시트': {
+        '제논1': '컨버터블', '토론1': '컨버터블', '버디': '컨버터블',
+        '벨릭스': '토들러',
+        '액시언1': '주니어', '폴디': '주니어',
+    },
+}
+PRODUCT_TYPE_ORDER = {
+    '유모차': ['디럭스', '절충형', '휴대용', '쌍둥이'],
+    '카시트': ['컨버터블', '주니어', '토들러'],
+}
+
 
 def _naver_search(endpoint, query, display=10, sort='sim'):
     import urllib.request, urllib.parse
@@ -4836,7 +4863,7 @@ def api_competitor_categories():
 @app.route("/api/competitor/our-products")
 @login_required
 def api_competitor_our_products():
-    """카테고리별 자사 제품 목록 (판매 데이터 기반)"""
+    """카테고리별 자사 제품 목록 (판매 데이터 기반) — 브랜드/유형 태그 포함"""
     import re as _re
     category = request.args.get('category', '')
     conn = get_db()
@@ -4859,12 +4886,14 @@ def api_competitor_our_products():
         rows = []
     conn.close()
 
-    # 카테고리별 제외 키워드 (구형/오분류/타 카테고리 제품)
+    # 카테고리별 제외 키워드 (구형/단종/오분류/타 카테고리 제품)
     EXCLUDE_KEYWORDS = {
         '카시트': ['하이브리드'],
-        '유모차': ['원더폴드', '에어cot', '에어Cot', 'AIRCOT', '이지라이프'],
+        '유모차': ['원더폴드', '에어cot', '에어Cot', 'AIRCOT', '이지라이프',
+                  '에어+', '에어플러스', '허브+', '허브플러스'],  # 단종 제품
     }
     exclude_kw = EXCLUDE_KEYWORDS.get(category, [])
+    type_map = OUR_PRODUCT_TYPE.get(category, {})
 
     products = []
     for r in rows:
@@ -4875,7 +4904,8 @@ def api_competitor_our_products():
         norm = normalize_item_name(item_name)
         pname = _re.sub(r'^\[[^\]]+\]', '', norm).split('_')[0].strip()
         products.append({'name': pname, 'brand': brand, 'full_name': norm,
-                          'total': r[2] or 0, 'qty': r[3] or 0})
+                          'total': r[2] or 0, 'qty': r[3] or 0,
+                          'product_type': type_map.get(pname, '')})
     merged = {}
     for p in products:
         key = (p['brand'], p['name'])
@@ -4960,86 +4990,155 @@ def api_competitor_product_candidates():
     })
 
 
+def _clean_naver_snippet(s):
+    """네이버 검색 스니펫의 중간 생략(...) 흔적을 제거하고, 문장부호 기준 완결된 조각만 남김"""
+    import re as _re9
+    if not s: return []
+    # 네이버는 검색어 주변만 잘라 이어붙이며 "..."로 구간을 표시함 → "..." 기준으로 쪼개고
+    # 각 조각에서 완결된 문장(마침표로 끝나는)만 취함
+    parts = _re9.split(r'\.{2,}|…', s)
+    clean_sentences = []
+    for part in parts:
+        part = part.strip()
+        if not part:
+            continue
+        # 조각 내에서 마침표/느낌표/물음표로 끝나는 완결 문장만 추출
+        sentences = _re9.split(r'(?<=[.!?])\s+', part)
+        for sent in sentences:
+            sent = sent.strip()
+            # 문장 끝에 마침표가 있고, 너무 짧은 조각(단어 파편)이 아닌 것만 채택
+            if sent and sent[-1] in '.!?' and 10 <= len(sent) <= 140:
+                clean_sentences.append(sent)
+    return clean_sentences
+
+
 def _research_product(side, category, brand, product_name):
-    """특정 제품(자사/타사 공용)의 리뷰+설명을 다각도로 검색해 장단점/가격/설명 심층 축적"""
+    """특정 제품(자사/타사 공용)의 리뷰+설명을 다각도로 방대하게 검색해 장단점/유형 심층 축적"""
     query_base = f"{brand} {product_name}".strip()
-    titles, urls, prices = [], [], []
-    review_snippets, con_snippets, pro_snippets, official_snippets = [], [], [], []
+    titles, urls = [], []
+    review_snippets, con_snippets, pro_snippets, official_snippets, type_snippets = [], [], [], [], []
 
     try:
         shop = _naver_search('shop', f"{query_base} {category}", display=10, sort='sim')
         for item in shop.get('items', [])[:10]:
             t = _strip_tags(item.get('title',''))
             titles.append(t); urls.append(item.get('link',''))
-            price = item.get('lprice','')
-            if price:
-                try: prices.append(int(price))
-                except: pass
     except Exception:
         pass
 
-    # 일반 후기 (사용감, 실사용 경험 위주)
-    try:
-        blog = _naver_search('blog', f"{query_base} 후기", display=8, sort='sim')
-        for item in blog.get('items', [])[:8]:
-            desc = _strip_tags(item.get('description',''))
-            if desc: review_snippets.append(desc)
-    except Exception:
-        pass
-
-    # 장점 특화 검색
-    try:
-        blog_pro = _naver_search('blog', f"{query_base} 장점 추천이유", display=6, sort='sim')
-        for item in blog_pro.get('items', [])[:6]:
-            desc = _strip_tags(item.get('description',''))
-            if desc: pro_snippets.append(desc)
-    except Exception:
-        pass
-
-    # 단점 특화 검색 (불편, 아쉬운점, 단점)
-    try:
-        blog_con = _naver_search('blog', f"{query_base} 단점 아쉬운점 불편", display=6, sort='sim')
-        for item in blog_con.get('items', [])[:6]:
-            desc = _strip_tags(item.get('description',''))
-            if desc: con_snippets.append(desc)
-    except Exception:
-        pass
-
-    # 공식 소개/스펙 정보 (브랜드가 내세우는 특징)
-    try:
-        blog_official = _naver_search('blog', f"{query_base} 특징 스펙 소재", display=6, sort='sim')
-        for item in blog_official.get('items', [])[:6]:
-            desc = _strip_tags(item.get('description',''))
-            if desc: official_snippets.append(desc)
-    except Exception:
-        pass
+    # 검색 쿼리를 다각도로 확장 (방대한 수집)
+    search_plan = [
+        ('blog', f"{query_base} 후기", 10, review_snippets),
+        ('blog', f"{query_base} 실사용 후기", 8, review_snippets),
+        ('blog', f"{query_base} 장점 추천이유", 8, pro_snippets),
+        ('blog', f"{query_base} 왜 좋은지", 6, pro_snippets),
+        ('blog', f"{query_base} 단점 아쉬운점 불편", 8, con_snippets),
+        ('blog', f"{query_base} 후회 고민", 6, con_snippets),
+        ('blog', f"{query_base} 특징 스펙 소재", 6, official_snippets),
+        ('blog', f"{query_base} 무게 사이즈 접이식", 6, official_snippets),
+    ]
+    for endpoint, q, disp, bucket in search_plan:
+        try:
+            res = _naver_search(endpoint, q, display=disp, sort='sim')
+            for item in res.get('items', [])[:disp]:
+                desc = _strip_tags(item.get('description',''))
+                if desc:
+                    bucket.extend(_clean_naver_snippet(desc))
+        except Exception:
+            pass
 
     total_snippets = review_snippets + pro_snippets + con_snippets + official_snippets
     if not titles and not total_snippets:
         return None
 
-    price_text = ''
-    if prices:
-        prices.sort()
-        lo, hi = prices[0], prices[-1]
-        price_text = f"약 {lo:,}원" if lo == hi else f"약 {lo:,}원 ~ {hi:,}원"
-
     pros, cons, description = _extract_pros_cons(
         brand, product_name, category, titles,
         review_snippets, pro_snippets, con_snippets, official_snippets)
 
+    # 제품 유형 분류 (자사는 고정 매핑 우선, 없으면 AI/휴리스틱)
+    product_type = ''
+    if side == 'ours':
+        product_type = OUR_PRODUCT_TYPE.get(category, {}).get(product_name, '')
+    if not product_type:
+        product_type = _classify_product_type(
+            category, brand, product_name, titles, total_snippets)
+
     return {
-        'product_name': product_name, 'price_text': price_text,
+        'product_name': product_name, 'price_text': '',
         'pros': pros, 'cons': cons, 'description': description,
-        'review_snippets': total_snippets[:12],
+        'review_snippets': total_snippets[:20],
         'source_titles': titles[:6], 'source_urls': urls[:6],
+        'product_type': product_type,
     }
+
+
+def _classify_product_type(category, brand, product_name, titles, snippets):
+    """리뷰/설명 텍스트를 근거로 제품 유형 분류 (유모차: 디럭스/절충형/휴대용/쌍둥이, 카시트: 컨버터블/주니어/토들러)"""
+    type_options = PRODUCT_TYPE_ORDER.get(category)
+    if not type_options:
+        return ''
+
+    combined = ' '.join(titles[:6] + snippets[:10])
+    if not combined.strip():
+        return ''
+
+    api_key = os.environ.get('ANTHROPIC_API_KEY', '')
+    if api_key:
+        try:
+            import requests
+            prompt = f"""'{brand} {product_name}' ({category})의 검색 결과를 보고, 이 제품이 다음 유형 중 어디에 해당하는지 하나만 고르세요: {', '.join(type_options)}
+
+판단 기준:
+- 유모차: 디럭스(신생아부터 사용 가능한 대형 고급형), 절충형(중형, 아기~유아 모두 사용), 휴대용(경량 접이식, 여행용), 쌍둥이(2인용)
+- 카시트: 컨버터블(신생아~유아 겸용, 회전형 포함), 주니어(체구가 큰 유아~어린이용, 부스터 겸용), 토들러(영유아 전용 카시트)
+
+검색 결과: {combined[:1200]}
+
+가장 적합한 유형 하나만 정확히 그 단어로만 답하세요 (예: "디럭스"). 판단이 어려우면 "미분류"라고 답하세요."""
+            resp = requests.post(
+                "https://api.anthropic.com/v1/messages",
+                headers={"x-api-key": api_key, "anthropic-version": "2023-06-01", "content-type": "application/json"},
+                json={"model": "claude-sonnet-4-6", "max_tokens": 20,
+                      "messages": [{"role": "user", "content": prompt}]},
+                timeout=12,
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                text_blocks = [b.get('text','') for b in data.get('content',[]) if b.get('type')=='text']
+                answer = ''.join(text_blocks).strip()
+                for opt in type_options:
+                    if opt in answer:
+                        return opt
+        except Exception:
+            pass
+
+    # Fallback: 키워드 기반 휴리스틱
+    KEYWORD_MAP = {
+        '유모차': {
+            '디럭스': ['디럭스', '신생아', '하이엔드', '프리미엄', '고급형'],
+            '절충형': ['절충형', '세미디럭스', '중형'],
+            '휴대용': ['휴대용', '경량', '초경량', '여행용', '기내용', '접이식', '가벼운'],
+            '쌍둥이': ['쌍둥이', '트윈', '2인용', '듀오'],
+        },
+        '카시트': {
+            '컨버터블': ['컨버터블', '회전형', '360도', '신생아겸용'],
+            '주니어': ['주니어', '어린이', '체구가 큰', '부스터겸용'],
+            '토들러': ['토들러', '영유아', '유아전용'],
+        },
+    }
+    kw_map = KEYWORD_MAP.get(category, {})
+    scores = {opt: 0 for opt in type_options}
+    for opt, kws in kw_map.items():
+        for kw in kws:
+            scores[opt] += combined.count(kw)
+    best = max(scores.items(), key=lambda x: x[1])
+    return best[0] if best[1] > 0 else ''
 
 
 def _extract_pros_cons(brand, product_name, category, titles,
                          review_snippets=None, pro_snippets=None, con_snippets=None, official_snippets=None):
-    """수집된 검색결과(후기/장점/단점/공식정보 각각 분리)에서 TOP3 장단점을 완결된 문장으로 구조화
-    (Claude API 우선 — 언급 빈도 기준 TOP3, 리뷰 원문 복붙 금지, 실패 시 규칙 기반 완결 문장 생성)"""
+    """수집된 검색결과(후기/장점/단점/공식정보 각각 분리, 이미 완결 문장으로 정제됨)에서 TOP3 장단점을 구조화
+    (Claude API 우선 — 언급 빈도 기준 TOP3, 실패 시 빈도 기반 규칙 선별)"""
     review_snippets = review_snippets or []
     pro_snippets = pro_snippets or []
     con_snippets = con_snippets or []
@@ -5054,26 +5153,26 @@ def _extract_pros_cons(brand, product_name, category, titles,
         try:
             import requests
             prompt = f"""당신은 유아용품 업계 15년차 상품기획/영업 전문가이자 마케터입니다.
-'{brand} {product_name}' ({category})에 대해 인터넷에서 실제 수집한 정보를 분야별로 드립니다. 이를 근거로 날카로운 장단점 분석을 작성해주세요.
+'{brand} {product_name}' ({category})에 대해 인터넷에서 실제 수집한 정보를 분야별로 드립니다 (이미 완결된 문장 단위로 정제되어 있습니다). 이를 근거로 날카로운 장단점 분석을 작성해주세요.
 
 [제품/판매 정보]
 {' / '.join(titles[:8])}
 
-[일반 사용후기에서 발견된 내용]
-{' / '.join(review_snippets[:8]) or '(수집된 후기 없음)'}
+[일반 사용후기에서 발견된 완결 문장들 — 총 {len(review_snippets)}개]
+{' / '.join(review_snippets[:15]) or '(수집된 후기 없음)'}
 
-[장점/추천이유 관련 검색결과]
-{' / '.join(pro_snippets[:6]) or '(수집된 정보 없음)'}
+[장점/추천이유 관련 완결 문장들 — 총 {len(pro_snippets)}개]
+{' / '.join(pro_snippets[:12]) or '(수집된 정보 없음)'}
 
-[단점/아쉬운점/불편 관련 검색결과]
-{' / '.join(con_snippets[:6]) or '(수집된 정보 없음)'}
+[단점/아쉬운점/불편 관련 완결 문장들 — 총 {len(con_snippets)}개]
+{' / '.join(con_snippets[:12]) or '(수집된 정보 없음)'}
 
-[제품 특징/스펙/소재 관련 검색결과]
-{' / '.join(official_snippets[:6]) or '(수집된 정보 없음)'}
+[제품 특징/스펙/소재 관련 완결 문장들 — 총 {len(official_snippets)}개]
+{' / '.join(official_snippets[:12]) or '(수집된 정보 없음)'}
 
 작성 원칙:
-- 위 자료 전체를 종합했을 때 "가장 반복적으로 언급되는" 장점 TOP3, 단점 TOP3만 선별하세요. 한 번만 언급된 사소한 내용보다 여러 자료에서 공통되는 포인트를 우선하세요.
-- 리뷰 원문을 그대로 자르거나 복사하지 마세요. "..." 같은 생략 없이, 완결된 하나의 문장으로 전문가가 재작성한 것처럼 써주세요.
+- 방대한 자료 전체를 종합했을 때 "의미가 겹치는 문장이 가장 많이 나오는" 순서로 장점 TOP3, 단점 TOP3를 선별하세요. 예를 들어 "가볍다", "휴대성 좋다", "들고다니기 편하다"가 각각 다른 문장에서 반복되면 이것을 하나의 장점("휴대성이 뛰어나 이동이 편리함")으로 통합해서 1위로 꼽으세요.
+- 리뷰 원문을 그대로 복사하지 마세요. 여러 문장에서 공통되는 의미를 전문가가 한 문장으로 종합·재작성하세요.
 - 뭉뚱그린 표현("품질이 좋다", "인기가 많다") 대신, 구체적 사실(소재, 무게, 크기, 접이식 여부, 회전 기능, 통기성, 안전 인증, 조립 난이도 등)을 짚어주세요.
 - 장점과 단점을 각각 명확히 구분되는 별개의 포인트로 작성하세요.
 - 단점 정보가 부족하면, 이 카테고리 제품군에서 해당 타입 제품이 일반적으로 갖는 한계를 전문가 관점에서 신중하게 짚어주세요.
@@ -5081,8 +5180,8 @@ def _extract_pros_cons(brand, product_name, category, titles,
 
 다음 JSON 형식으로만 답하세요 (설명 없이 JSON만):
 {{
-  "pros": ["완결된 문장의 구체적 장점, 최대 3개, 언급 빈도 높은 순"],
-  "cons": ["완결된 문장의 구체적 단점, 최대 3개, 언급 빈도 높은 순"],
+  "pros": ["종합된 완결 문장의 구체적 장점, 최대 3개, 언급 빈도 높은 순"],
+  "cons": ["종합된 완결 문장의 구체적 단점, 최대 3개, 언급 빈도 높은 순"],
   "description": "제품 특징을 압축한 1~2문장"
 }}"""
             resp = requests.post(
@@ -5090,7 +5189,7 @@ def _extract_pros_cons(brand, product_name, category, titles,
                 headers={"x-api-key": api_key, "anthropic-version": "2023-06-01", "content-type": "application/json"},
                 json={"model": "claude-sonnet-4-6", "max_tokens": 800,
                       "messages": [{"role": "user", "content": prompt}]},
-                timeout=18,
+                timeout=20,
             )
             if resp.status_code == 200:
                 data = resp.json()
@@ -5101,32 +5200,38 @@ def _extract_pros_cons(brand, product_name, category, titles,
         except Exception:
             pass
 
-    # Fallback: API 키가 없을 때 — 원문을 자르지 않고 완결된 문장 단위로만 추출
-    def _first_complete_sentences(snippets, n):
-        """스니펫에서 문장부호 기준 완결된 문장만 추출 (자르지 않음)"""
-        import re as _re8
-        results = []
+    # Fallback: API 키가 없을 때 — 빈도 기반 TOP3 (키워드 중복도가 높은 문장 우선)
+    def _frequency_top(snippets, n):
+        """단어 집합 유사도로 클러스터링해 가장 흔하게 등장하는 문장 대표 n개 선정"""
+        if not snippets:
+            return []
+        # 각 문장의 핵심 단어(2글자 이상) 집합 추출
+        word_sets = []
         for s in snippets:
-            # 마침표/느낌표/물음표 기준으로 문장 분리
-            sentences = _re8.split(r'(?<=[.!?…])\s+', s)
-            for sent in sentences:
-                sent = sent.strip()
-                # 너무 짧거나(단어 조각) 너무 긴(문장 여러개 붙음) 것은 제외
-                if 8 <= len(sent) <= 120:
-                    results.append(sent)
-                    break  # 스니펫당 첫 완결 문장 하나만
-            if len(results) >= n:
+            words = set(w for w in _re_module.findall(r'[가-힣A-Za-z]{2,}', s))
+            word_sets.append(words)
+        # 문장간 단어 겹침 점수로 유사도 계산, 가장 많이 겹치는(대표성 높은) 문장 우선
+        scores = []
+        for i, ws in enumerate(word_sets):
+            overlap = sum(len(ws & other) for j, other in enumerate(word_sets) if i != j)
+            scores.append((overlap, i))
+        scores.sort(reverse=True)
+        picked, used_words = [], set()
+        for _, idx in scores:
+            if len(picked) >= n:
                 break
-        return results[:n]
+            ws = word_sets[idx]
+            # 이미 뽑은 문장과 단어 겹침이 너무 크면 스킵 (중복 방지)
+            if picked and any(len(ws & uw) / max(len(ws),1) > 0.6 for uw in used_words):
+                continue
+            picked.append(snippets[idx])
+            used_words.add(frozenset(ws))
+        return picked[:n]
 
-    pros = _first_complete_sentences(pro_snippets or review_snippets, 3)
-    cons = _first_complete_sentences(con_snippets, 3)
-    description = ''
-    for s in (official_snippets + review_snippets):
-        sentences = [x.strip() for x in __import__('re').split(r'(?<=[.!?…])\s+', s) if 8 <= len(x.strip()) <= 150]
-        if sentences:
-            description = sentences[0]
-            break
+    import re as _re_module
+    pros = _frequency_top(pro_snippets + review_snippets, 3)
+    cons = _frequency_top(con_snippets, 3)
+    description = (official_snippets + review_snippets)[0] if (official_snippets or review_snippets) else ''
     return pros, cons, description
 
 
@@ -5149,17 +5254,18 @@ def api_competitor_fetch_product():
     now_str = datetime.now().strftime('%Y-%m-%d %H:%M')
     conn.execute("""INSERT INTO product_research
         (side, category, brand, product_name, price_text, pros, cons, description,
-         review_snippets, source_titles, source_urls, fetched_at)
-        VALUES('competitor',?,?,?,?,?,?,?,?,?,?,?)
+         review_snippets, source_titles, source_urls, fetched_at, product_type)
+        VALUES('competitor',?,?,?,?,?,?,?,?,?,?,?,?)
         ON CONFLICT(side, category, brand, product_name) DO UPDATE SET
         price_text=excluded.price_text, pros=excluded.pros, cons=excluded.cons,
         description=excluded.description, review_snippets=excluded.review_snippets,
         source_titles=excluded.source_titles, source_urls=excluded.source_urls,
-        fetched_at=excluded.fetched_at""",
+        fetched_at=excluded.fetched_at, product_type=excluded.product_type""",
         (category, brand, product_name, result['price_text'],
          json.dumps(result['pros'], ensure_ascii=False), json.dumps(result['cons'], ensure_ascii=False),
          result['description'], json.dumps(result['review_snippets'], ensure_ascii=False),
-         ' | '.join(result['source_titles']), ' | '.join(result['source_urls']), now_str))
+         ' | '.join(result['source_titles']), ' | '.join(result['source_urls']), now_str,
+         result.get('product_type','')))
     conn.commit(); conn.close()
 
     return jsonify({'ok': True, **result, 'fetched_at': now_str})
@@ -5183,26 +5289,47 @@ def api_competitor_fetch_our_product():
         result = {'product_name': product_name, 'price_text': '',
                    'pros': [base_strength] if base_strength else [],
                    'cons': [], 'description': '', 'review_snippets': [],
-                   'source_titles': [], 'source_urls': []}
+                   'source_titles': [], 'source_urls': [],
+                   'product_type': OUR_PRODUCT_TYPE.get(category, {}).get(product_name, '')}
 
     conn = get_db()
     now_str = datetime.now().strftime('%Y-%m-%d %H:%M')
     conn.execute("""INSERT INTO product_research
         (side, category, brand, product_name, price_text, pros, cons, description,
-         review_snippets, source_titles, source_urls, fetched_at)
-        VALUES('ours',?,?,?,?,?,?,?,?,?,?,?)
+         review_snippets, source_titles, source_urls, fetched_at, product_type)
+        VALUES('ours',?,?,?,?,?,?,?,?,?,?,?,?)
         ON CONFLICT(side, category, brand, product_name) DO UPDATE SET
         price_text=excluded.price_text, pros=excluded.pros, cons=excluded.cons,
         description=excluded.description, review_snippets=excluded.review_snippets,
         source_titles=excluded.source_titles, source_urls=excluded.source_urls,
-        fetched_at=excluded.fetched_at""",
+        fetched_at=excluded.fetched_at, product_type=excluded.product_type""",
         (category, brand, product_name, result['price_text'],
          json.dumps(result['pros'], ensure_ascii=False), json.dumps(result['cons'], ensure_ascii=False),
          result['description'], json.dumps(result['review_snippets'], ensure_ascii=False),
-         ' | '.join(result['source_titles']), ' | '.join(result['source_urls']), now_str))
+         ' | '.join(result['source_titles']), ' | '.join(result['source_urls']), now_str,
+         result.get('product_type','')))
     conn.commit(); conn.close()
 
     return jsonify({'ok': True, **result, 'fetched_at': now_str})
+
+
+@app.route("/api/competitor/research/delete", methods=["POST"])
+@login_required
+def api_competitor_research_delete():
+    """수집된 제품 리서치 삭제"""
+    d = request.json or {}
+    side = d.get('side', '').strip()
+    category = d.get('category', '').strip()
+    brand = d.get('brand', '').strip()
+    product_name = d.get('product_name', '').strip()
+    if not all([side, category, brand, product_name]):
+        return jsonify({'ok': False, 'msg': '필요한 정보가 부족합니다'}), 400
+    conn = get_db()
+    conn.execute("""DELETE FROM product_research
+        WHERE side=? AND category=? AND brand=? AND product_name=?""",
+        (side, category, brand, product_name))
+    conn.commit(); conn.close()
+    return jsonify({'ok': True})
 
 
 OUR_BRAND_STRENGTHS = {
@@ -5336,6 +5463,7 @@ def generate_comparison(category, our_brand, our_product, our_data,
 
 다음 JSON 형식으로만 답하세요 (설명 없이 JSON만):
 {{
+  "summary": "누가 봐도 한눈에 이해되는 비교 결론 한 문장 (예: '휴대성 중시 고객엔 자사, 소재감 중시 고객엔 경쟁사가 강점')",
   "competitor_pros": ["[태그] 완결된 문장의 장점 — 최대 3개, 언급 빈도 높은 순"],
   "competitor_cons": ["[태그] 완결된 문장의 단점 — 최대 3개, 언급 빈도 높은 순"],
   "our_pros": ["[태그] 완결된 문장의 장점 — 최대 3개, 언급 빈도 높은 순"],
@@ -5357,12 +5485,14 @@ def generate_comparison(category, our_brand, our_product, our_data,
                 required = ['competitor_pros','competitor_cons','our_pros','selling_points']
                 if all(k in parsed for k in required):
                     parsed.setdefault('our_cons', [])
+                    parsed.setdefault('summary', '')
                     return parsed
         except Exception:
             pass
 
     # Fallback: 원본 데이터에서 완결된 문장만 추려 노출 (가격 제외, 잘림 없음)
     return {
+        'summary': f"{our_brand} {our_product}와 {competitor_brand} {competitor_product}의 수집된 리뷰 데이터를 비교했습니다.",
         'competitor_pros': comp_pros_raw[:3] or [f"{competitor_brand} {competitor_product}에 대한 장점 정보가 충분히 수집되지 않았습니다"],
         'competitor_cons': comp_cons_raw[:3] or ["단점 정보가 충분히 수집되지 않았습니다"],
         'our_pros': our_pros_raw[:3] or [fallback_strength],
