@@ -1820,7 +1820,7 @@ async function renderOurProductResearch(p, anchorEl){
   panel.style.cssText = 'margin:6px 0 10px;padding:12px;border:1px dashed var(--border-md);border-radius:8px;background:var(--bg)';
 
   if(existing){
-    panel.innerHTML = renderResearchMini(existing, false);
+    panel.innerHTML = renderResearchMini(existing);
   } else {
     panel.innerHTML = `<div style="display:flex;align-items:center;justify-content:space-between">
       <span style="font-size:11.5px;color:var(--t-400)">이 제품에 대한 외부 평가 데이터가 아직 없습니다</span>
@@ -1835,35 +1835,54 @@ async function renderOurProductResearch(p, anchorEl){
 
 async function fetchOurProductResearch(){
   const btn = document.getElementById('our-fetch-btn');
+  const orig = btn.textContent;
   btn.textContent = '수집 중…'; btn.disabled = true;
   const r = await api('/api/competitor/fetch-our-product', {method:'POST', body:{
     category: compSelectedCategory, brand: compOurSelected.brand, product_name: compOurSelected.name}});
   if(r?.ok){
     const panel = document.getElementById('comp-our-research-panel');
-    panel.innerHTML = renderResearchMini(r, false);
+    panel.innerHTML = renderResearchMini(r);
     toast('자사 제품 리서치를 수집했습니다');
   } else {
+    btn.textContent = orig; btn.disabled = false;
     toast(r?.msg || '수집에 실패했습니다', false);
   }
 }
 
-function renderResearchMini(data, isCompetitor){
+// "[태그] 내용" 형식을 배지+텍스트로 분리 렌더링 (전역 헬퍼)
+function renderTaggedItem(item){
+  const m = String(item).match(/^\[([^\]]+)\]\s*(.*)$/);
+  if(m){
+    return `<div style="display:flex;gap:6px;align-items:flex-start;margin-bottom:6px">
+      <span style="flex-shrink:0;font-size:9px;font-weight:700;color:var(--t-400);background:var(--paper);border:1px solid var(--border);padding:1px 5px;border-radius:4px;white-space:nowrap;margin-top:1px">${m[1]}</span>
+      <span style="font-size:11px;color:var(--t-600);line-height:1.6">${m[2]}</span>
+    </div>`;
+  }
+  return `<div style="font-size:11px;color:var(--t-600);line-height:1.6;margin-bottom:5px">· ${item}</div>`;
+}
+
+function renderResearchMini(data){
   const pros = data.pros || [];
   const cons = data.cons || [];
+  const safeCat = compSelectedCategory, safeBrand = (data.brand||compOurSelected?.brand||'').replace(/'/g,"\\'");
+  const safeName = (data.product_name||'').replace(/'/g,"\\'");
   return `<div>
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
-      <span style="font-size:11.5px;font-weight:700;color:var(--t-700)">${data.price_text || '가격 정보 없음'}</span>
-      <span style="font-size:10px;color:var(--t-300)">${(data.fetched_at||'').slice(0,10)} 수집</span>
+      <span style="font-size:10px;color:var(--t-300)">${(data.fetched_at||'').slice(0,16)} 수집</span>
+      <button onclick="fetchOurProductResearch()" id="our-fetch-btn"
+        style="font-size:10px;font-weight:600;padding:4px 9px;border-radius:6px;border:1px solid var(--border-md);background:var(--paper);color:var(--t-500);cursor:pointer">
+        다시 수집
+      </button>
     </div>
-    ${data.description?`<div style="font-size:11.5px;color:var(--t-600);line-height:1.6;margin-bottom:8px">${data.description}</div>`:''}
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+    ${data.description?`<div style="font-size:11.5px;color:var(--t-600);line-height:1.6;margin-bottom:9px">${data.description}</div>`:''}
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
       <div>
-        <div style="font-size:10px;font-weight:700;color:var(--green);margin-bottom:4px">장점</div>
-        ${pros.slice(0,3).map(p=>`<div style="font-size:11px;color:var(--t-600);line-height:1.6">· ${p}</div>`).join('')||'<div style="font-size:11px;color:var(--t-300)">—</div>'}
+        <div style="font-size:10px;font-weight:700;color:var(--green);margin-bottom:5px">장점 TOP3</div>
+        ${pros.slice(0,3).map(renderTaggedItem).join('')||'<div style="font-size:11px;color:var(--t-300)">—</div>'}
       </div>
       <div>
-        <div style="font-size:10px;font-weight:700;color:var(--red);margin-bottom:4px">단점</div>
-        ${cons.slice(0,3).map(p=>`<div style="font-size:11px;color:var(--t-600);line-height:1.6">· ${p}</div>`).join('')||'<div style="font-size:11px;color:var(--t-300)">—</div>'}
+        <div style="font-size:10px;font-weight:700;color:var(--red);margin-bottom:5px">단점 TOP3</div>
+        ${cons.slice(0,3).map(renderTaggedItem).join('')||'<div style="font-size:11px;color:var(--t-300)">—</div>'}
       </div>
     </div>
   </div>`;
@@ -1903,20 +1922,27 @@ function renderCompetitorProductList(candidates){
     html += allNames.map(name=>{
       const researched = compCompetitorResearchList.find(r=>r.product_name===name);
       const active = compCompetitorSelected?.product_name === name;
+      const safeName = name.replace(/'/g,"\\'");
       if(researched){
-        return `<div onclick='pickCompetitorProduct(${JSON.stringify(researched).replace(/'/g,"&apos;")}, this)'
-          class="comp-comp-item"
-          style="border:1px solid ${active?'var(--t-900)':'var(--border)'};background:${active?'var(--bg)':'var(--paper)'};border-radius:8px;padding:10px 12px;margin-bottom:6px;cursor:pointer;transition:.15s">
-          <div style="display:flex;justify-content:space-between;align-items:center">
-            <span style="font-size:12.5px;font-weight:700;color:var(--t-900)">${name}</span>
-            <span style="font-size:9.5px;background:var(--green-lt);color:var(--green);padding:2px 7px;border-radius:5px;font-weight:700">리서치 완료</span>
+        return `<div class="comp-comp-item"
+          style="border:1px solid ${active?'var(--t-900)':'var(--border)'};background:${active?'var(--bg)':'var(--paper)'};border-radius:8px;padding:10px 12px;margin-bottom:6px;transition:.15s">
+          <div style="display:flex;justify-content:space-between;align-items:center;gap:8px">
+            <div onclick='pickCompetitorProduct(${JSON.stringify(researched).replace(/'/g,"&apos;")}, this.closest(".comp-comp-item"))'
+              style="flex:1;cursor:pointer;display:flex;align-items:center;gap:8px;min-width:0">
+              <span style="font-size:12.5px;font-weight:700;color:var(--t-900);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${name}</span>
+              <span style="font-size:9.5px;background:var(--green-lt);color:var(--green);padding:2px 7px;border-radius:5px;font-weight:700;flex-shrink:0">리서치 완료</span>
+            </div>
+            <button onclick="event.stopPropagation();fetchCompetitorProduct('${safeName}')"
+              style="font-size:10px;font-weight:600;padding:4px 9px;border-radius:6px;border:1px solid var(--border-md);background:var(--paper);color:var(--t-500);cursor:pointer;flex-shrink:0">
+              다시 수집
+            </button>
           </div>
-          <div style="font-size:11px;color:var(--t-400);margin-top:3px">${researched.price_text||'가격 정보 없음'}</div>
+          <div style="font-size:10.5px;color:var(--t-300);margin-top:3px">${(researched.fetched_at||'').slice(0,16)} 수집</div>
         </div>`;
       } else {
         return `<div style="display:flex;justify-content:space-between;align-items:center;border:1px solid var(--border);border-radius:8px;padding:10px 12px;margin-bottom:6px">
           <span style="font-size:12.5px;font-weight:600;color:var(--t-700)">${name}</span>
-          <button onclick="fetchCompetitorProduct('${name.replace(/'/g,"\\'")}')"
+          <button onclick="fetchCompetitorProduct('${safeName}')"
             style="font-size:10.5px;font-weight:700;padding:5px 10px;border-radius:6px;border:1px solid var(--border-md);background:var(--bg);color:var(--t-600);cursor:pointer;flex-shrink:0">
             리서치 수집
           </button>
@@ -1973,7 +1999,7 @@ function pickCompetitorProduct(data, el){
   panel = document.createElement('div');
   panel.id = 'comp-comp-research-panel';
   panel.style.cssText = 'margin:6px 0 10px;padding:12px;border:1px dashed var(--border-md);border-radius:8px;background:var(--bg)';
-  panel.innerHTML = renderResearchMini(data, true);
+  panel.innerHTML = renderResearchMini(data);
   el.after(panel);
 }
 
@@ -2012,20 +2038,19 @@ async function runCompetitorCompare(){
   const ourLabel = `${compOurSelected.brand} ${compOurSelected.name}`;
   const compLabel = `${compCompetitorBrand} ${compCompetitorSelected.product_name}`;
 
-  // "[태그] 내용" 형식을 배지+텍스트로 분리 렌더링
-  function renderTaggedItem(item){
-    const m = String(item).match(/^\[([^\]]+)\]\s*(.*)$/);
-    if(m){
-      return `<div style="display:flex;gap:7px;align-items:flex-start;margin-bottom:7px">
-        <span style="flex-shrink:0;font-size:9.5px;font-weight:700;color:var(--t-400);background:var(--bg);border:1px solid var(--border);padding:1.5px 6px;border-radius:5px;white-space:nowrap;margin-top:1px">${m[1]}</span>
-        <span style="font-size:12px;color:var(--t-700);line-height:1.65">${m[2]}</span>
-      </div>`;
-    }
-    return `<div style="font-size:12px;color:var(--t-700);line-height:1.7;margin-bottom:5px">· ${item}</div>`;
-  }
+  // 표 셀용 태그 렌더링 (전역 renderTaggedItem 재사용, 폰트 크기만 크게)
   function renderTaggedList(items){
     if(!items || !items.length) return '<span style="color:var(--t-300);font-size:11.5px">확인된 정보 없음</span>';
-    return items.map(renderTaggedItem).join('');
+    return items.map(item=>{
+      const m = String(item).match(/^\[([^\]]+)\]\s*(.*)$/);
+      if(m){
+        return `<div style="display:flex;gap:7px;align-items:flex-start;margin-bottom:7px">
+          <span style="flex-shrink:0;font-size:9.5px;font-weight:700;color:var(--t-400);background:var(--bg);border:1px solid var(--border);padding:1.5px 6px;border-radius:5px;white-space:nowrap;margin-top:1px">${m[1]}</span>
+          <span style="font-size:12px;color:var(--t-700);line-height:1.65">${m[2]}</span>
+        </div>`;
+      }
+      return `<div style="font-size:12px;color:var(--t-700);line-height:1.7;margin-bottom:5px">· ${item}</div>`;
+    }).join('');
   }
 
   resultEl.innerHTML = `
@@ -2036,7 +2061,6 @@ async function runCompetitorCompare(){
           <div style="font-size:14px;font-weight:800;color:var(--t-900)">${ourLabel} <span style="color:var(--t-300);font-weight:500">vs</span> ${compLabel}</div>
           <div style="font-size:11px;color:var(--t-400)">${CATEGORY_LABEL[compSelectedCategory]} 비교 리포트</div>
         </div>
-        ${comp.price_comparison?`<div style="font-size:12px;color:var(--t-500);margin-top:6px">${comp.price_comparison}</div>`:''}
       </div>
 
       <div style="padding:20px">
