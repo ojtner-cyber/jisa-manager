@@ -224,27 +224,38 @@ def init_db():
         columns TEXT DEFAULT '',
         uploaded_at TEXT DEFAULT ''
     )""")
-    # SNS 정보 테이블 (블로그 중심)
-    conn.execute("""CREATE TABLE IF NOT EXISTS competitor_products (
+    # 타사/자사 제품 단위 리서치 데이터 (리뷰+설명 기반 장단점 축적)
+    conn.execute("""CREATE TABLE IF NOT EXISTS product_research (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
+        side TEXT NOT NULL,              -- 'ours' 또는 'competitor'
         category TEXT NOT NULL,
         brand TEXT NOT NULL,
-        product_name TEXT DEFAULT '',
+        product_name TEXT NOT NULL,
         price_text TEXT DEFAULT '',
-        summary TEXT DEFAULT '',
+        pros TEXT DEFAULT '',            -- JSON 배열
+        cons TEXT DEFAULT '',            -- JSON 배열
+        description TEXT DEFAULT '',
+        review_snippets TEXT DEFAULT '', -- JSON 배열 (원문 리뷰 조각)
         source_titles TEXT DEFAULT '',
         source_urls TEXT DEFAULT '',
         fetched_at TEXT DEFAULT '',
-        UNIQUE(category, brand)
+        UNIQUE(side, category, brand, product_name)
     )""")
     conn.execute("""CREATE TABLE IF NOT EXISTS competitor_comparison (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         category TEXT NOT NULL,
         our_product TEXT NOT NULL,
         competitor_brand TEXT NOT NULL,
+        competitor_product TEXT DEFAULT '',
         comparison_text TEXT DEFAULT '',
         created_at TEXT DEFAULT ''
     )""")
+    try:
+        cc_cols = [r[1] for r in conn.execute("PRAGMA table_info(competitor_comparison)").fetchall()]
+        if 'competitor_product' not in cc_cols:
+            conn.execute("ALTER TABLE competitor_comparison ADD COLUMN competitor_product TEXT DEFAULT ''")
+    except Exception:
+        pass
     conn.execute("""CREATE TABLE IF NOT EXISTS store_communication (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         seller_name TEXT NOT NULL,
@@ -4797,6 +4808,24 @@ CATEGORY_TO_ITEM_GROUP = {
 }
 
 
+def _naver_search(endpoint, query, display=10, sort='sim'):
+    import urllib.request, urllib.parse
+    client_id     = os.environ.get('NAVER_CLIENT_ID',     'InqUUQfvWZN1rAZM4whk')
+    client_secret = os.environ.get('NAVER_CLIENT_SECRET', 'fXYMLK1N1X')
+    url = (f'https://openapi.naver.com/v1/search/{endpoint}.json?query='
+           + urllib.parse.quote(query) + f'&display={display}&sort={sort}')
+    req = urllib.request.Request(url)
+    req.add_header('X-Naver-Client-Id', client_id)
+    req.add_header('X-Naver-Client-Secret', client_secret)
+    with urllib.request.urlopen(req, timeout=10) as r:
+        return json.loads(r.read().decode('utf-8'))
+
+
+def _strip_tags(s):
+    import re as _re6
+    return _re6.sub('<[^>]+>', '', s or '')
+
+
 @app.route("/api/competitor/categories")
 @login_required
 def api_competitor_categories():
@@ -4837,7 +4866,6 @@ def api_competitor_our_products():
         pname = _re.sub(r'^\[[^\]]+\]', '', norm).split('_')[0].strip()
         products.append({'name': pname, 'brand': brand, 'full_name': norm,
                           'total': r[2] or 0, 'qty': r[3] or 0})
-    # 같은 제품명(색상 다른 것) 합산
     merged = {}
     for p in products:
         key = (p['brand'], p['name'])
@@ -4850,166 +4878,224 @@ def api_competitor_our_products():
     return jsonify(result)
 
 
-@app.route("/api/competitor/fetch", methods=["POST"])
+@app.route("/api/competitor/product-candidates", methods=["POST"])
 @login_required
-def api_competitor_fetch():
-    """타사 브랜드 제품 정보 자동 수집 (네이버 검색 기반)"""
-    import urllib.request, urllib.parse, re as _re5
-
+def api_competitor_product_candidates():
+    """타사 브랜드의 구체적 제품명 후보 검색 (쇼핑 검색 기반 제품 라인업 추출)"""
+    import re as _re7
     d = request.json or {}
     category = d.get('category', '').strip()
     brand = d.get('brand', '').strip()
     if not category or not brand:
         return jsonify({'ok': False, 'msg': '품목과 브랜드를 선택해주세요'}), 400
 
-    client_id     = os.environ.get('NAVER_CLIENT_ID',     'InqUUQfvWZN1rAZM4whk')
-    client_secret = os.environ.get('NAVER_CLIENT_SECRET', 'fXYMLK1N1X')
+    # 이미 캐시된 제품이 있으면 우선 반환
+    conn = get_db()
+    cached = [dict(r) for r in conn.execute("""
+        SELECT product_name, price_text, fetched_at FROM product_research
+        WHERE side='competitor' AND category=? AND brand=?
+        ORDER BY fetched_at DESC
+    """, (category, brand)).fetchall()]
+    conn.close()
 
-    def strip_tags(s): return _re5.sub('<[^>]+>', '', s or '')
+    candidates = set()
+    try:
+        shop = _naver_search('shop', f"{brand} {category}", display=20, sort='sim')
+        for item in shop.get('items', []):
+            title = _strip_tags(item.get('title',''))
+            # 브랜드명 뒤에 오는 모델명 추출 (예: "실버크로스 니아 유모차" -> "니아")
+            t = title.replace(brand, '').strip()
+            # 흔한 잡단어 제거
+            for junk in [category, '유모차', '카시트', '식탁의자', '웨건', '정품', '공식', '풀박스', '풀세트', '신상', '신제품']:
+                t = t.replace(junk, '')
+            # 특수문자 정리 후 앞 2단어 정도만 모델명 후보로
+            t = _re7.sub(r'[\[\]()【】/|,·\-–]', ' ', t).strip()
+            words = [w for w in t.split() if len(w) >= 2][:2]
+            if words:
+                model = ' '.join(words)
+                if 1 < len(model) <= 20:
+                    candidates.add(model)
+    except Exception:
+        pass
 
-    def naver_search(endpoint, query, display=10, sort='sim'):
-        url = (f'https://openapi.naver.com/v1/search/{endpoint}.json?query='
-               + urllib.parse.quote(query) + f'&display={display}&sort={sort}')
-        req = urllib.request.Request(url)
-        req.add_header('X-Naver-Client-Id', client_id)
-        req.add_header('X-Naver-Client-Secret', client_secret)
-        with urllib.request.urlopen(req, timeout=10) as r:
-            return json.loads(r.read().decode('utf-8'))
+    return jsonify({
+        'ok': True,
+        'cached_products': cached,
+        'candidates': sorted(candidates)[:12],
+    })
 
-    query = f"{brand} {category}"
-    titles, urls, prices, snippets = [], [], [], []
+
+def _research_product(side, category, brand, product_name):
+    """특정 제품(자사/타사 공용)의 리뷰+설명을 검색해 장단점/가격/설명 축적"""
+    query_base = f"{brand} {product_name}".strip()
+    titles, urls, prices, review_snippets, desc_snippets = [], [], [], [], []
 
     try:
-        # 쇼핑 검색 — 가격/제품명 정보
-        shop = naver_search('shop', query, display=8, sort='sim')
+        shop = _naver_search('shop', f"{query_base} {category}", display=8, sort='sim')
         for item in shop.get('items', [])[:8]:
-            t = strip_tags(item.get('title',''))
-            titles.append(t)
-            urls.append(item.get('link',''))
+            t = _strip_tags(item.get('title',''))
+            titles.append(t); urls.append(item.get('link',''))
             price = item.get('lprice','')
             if price:
-                prices.append(int(price))
-    except Exception as e:
+                try: prices.append(int(price))
+                except: pass
+    except Exception:
         pass
 
     try:
-        # 블로그 검색 — 리뷰/특징 정보
-        blog = naver_search('blog', query, display=6, sort='sim')
-        for item in blog.get('items', [])[:6]:
-            desc = strip_tags(item.get('description',''))
-            if desc: snippets.append(desc)
-    except Exception as e:
+        blog = _naver_search('blog', f"{query_base} 리뷰", display=8, sort='sim')
+        for item in blog.get('items', [])[:8]:
+            desc = _strip_tags(item.get('description',''))
+            if desc: review_snippets.append(desc)
+    except Exception:
         pass
 
-    if not titles and not snippets:
-        return jsonify({'ok': False, 'msg': '검색 결과가 없습니다. 브랜드명을 확인해주세요'}), 404
+    try:
+        blog2 = _naver_search('blog', f"{query_base} 장단점", display=5, sort='sim')
+        for item in blog2.get('items', [])[:5]:
+            desc = _strip_tags(item.get('description',''))
+            if desc: desc_snippets.append(desc)
+    except Exception:
+        pass
 
-    # 가격대 요약
+    if not titles and not review_snippets and not desc_snippets:
+        return None
+
     price_text = ''
     if prices:
         prices.sort()
         lo, hi = prices[0], prices[-1]
-        if lo == hi:
-            price_text = f"약 {lo:,}원"
-        else:
-            price_text = f"약 {lo:,}원 ~ {hi:,}원"
+        price_text = f"약 {lo:,}원" if lo == hi else f"약 {lo:,}원 ~ {hi:,}원"
 
-    # 요약 텍스트 생성 (Claude API 사용, 실패 시 원문 스니펫 나열)
-    summary = summarize_competitor_info(brand, category, titles, snippets)
+    pros, cons, description = _extract_pros_cons(
+        brand, product_name, category, titles, review_snippets + desc_snippets)
 
-    conn = get_db()
-    now_str = datetime.now().strftime('%Y-%m-%d %H:%M')
-    conn.execute("""INSERT INTO competitor_products
-        (category, brand, product_name, price_text, summary, source_titles, source_urls, fetched_at)
-        VALUES(?,?,?,?,?,?,?,?)
-        ON CONFLICT(category, brand) DO UPDATE SET
-        product_name=excluded.product_name, price_text=excluded.price_text,
-        summary=excluded.summary, source_titles=excluded.source_titles,
-        source_urls=excluded.source_urls, fetched_at=excluded.fetched_at""",
-        (category, brand, titles[0] if titles else '', price_text, summary,
-         ' | '.join(titles[:5]), ' | '.join(urls[:5]), now_str))
-    conn.commit()
-    conn.close()
-
-    return jsonify({
-        'ok': True, 'category': category, 'brand': brand,
-        'product_name': titles[0] if titles else '', 'price_text': price_text,
-        'summary': summary, 'source_titles': titles[:5], 'fetched_at': now_str,
-    })
+    return {
+        'product_name': product_name, 'price_text': price_text,
+        'pros': pros, 'cons': cons, 'description': description,
+        'review_snippets': (review_snippets + desc_snippets)[:8],
+        'source_titles': titles[:6], 'source_urls': urls[:6],
+    }
 
 
-def summarize_competitor_info(brand, category, titles, snippets):
-    """수집된 타사 제품 정보를 간결한 특징 요약으로 정리 (Claude API, 실패 시 원문 기반 정리)"""
-    combined = ' / '.join(titles[:5] + snippets[:4])
+def _extract_pros_cons(brand, product_name, category, titles, snippets):
+    """수집된 검색결과에서 장점/단점/설명을 구조화 (Claude API 우선, 실패 시 규칙 기반)"""
+    combined = ' / '.join((titles[:6] + snippets[:8]))
     combined = combined.strip()
     if not combined:
-        return ''
+        return [], [], ''
 
     api_key = os.environ.get('ANTHROPIC_API_KEY', '')
     if api_key:
         try:
             import requests
-            prompt = f"""다음은 유아용품 브랜드 '{brand}'의 '{category}' 제품과 관련해 인터넷에서 수집한 검색 결과(제목/리뷰 일부)입니다.
-이 정보만을 바탕으로, 과장하거나 없는 사실을 추가하지 말고 이 브랜드 제품의 특징을 3~4개의 짧은 불릿포인트로 요약해주세요.
-가격대, 디자인/소재 특징, 주요 기능, 시장 포지셔닝(프리미엄/보급형 등) 위주로 정리하세요.
-결과는 "• "로 시작하는 불릿 목록만 출력하세요 (설명, 서론 없이).
+            prompt = f"""아래는 유아용품 '{brand} {product_name}' ({category})에 대해 인터넷에서 수집한 검색 결과(쇼핑 제목, 블로그 리뷰 일부)입니다.
+이 정보만을 근거로, 절대 사실을 지어내지 말고 실제 언급된 내용 위주로 분석해주세요.
 
-수집된 정보: {combined}"""
+다음 JSON 형식으로만 답하세요 (설명 없이 JSON만):
+{{
+  "pros": ["실제 리뷰/설명에서 확인되는 장점 2~4개, 구체적으로"],
+  "cons": ["실제 언급되거나 일반적으로 알려진 단점/아쉬운 점 1~3개. 확실하지 않으면 카테고리 특성상 흔한 단점을 신중하게 언급"],
+  "description": "제품의 특징을 1~2문장으로 요약"
+}}
+
+수집된 정보: {combined[:1800]}"""
             resp = requests.post(
                 "https://api.anthropic.com/v1/messages",
                 headers={"x-api-key": api_key, "anthropic-version": "2023-06-01", "content-type": "application/json"},
-                json={"model": "claude-sonnet-4-6", "max_tokens": 400,
+                json={"model": "claude-sonnet-4-6", "max_tokens": 600,
                       "messages": [{"role": "user", "content": prompt}]},
-                timeout=12,
+                timeout=15,
             )
             if resp.status_code == 200:
                 data = resp.json()
                 text_blocks = [b.get('text','') for b in data.get('content',[]) if b.get('type')=='text']
-                summary = ''.join(text_blocks).strip()
-                if summary:
-                    return summary
+                raw = ''.join(text_blocks).strip().replace('```json','').replace('```','').strip()
+                parsed = json.loads(raw)
+                return parsed.get('pros', []), parsed.get('cons', []), parsed.get('description', '')
         except Exception:
             pass
 
-    # Fallback: 원문 스니펫 그대로 나열
-    lines = [f"• {t}" for t in titles[:4]]
-    return '\n'.join(lines) if lines else combined[:200]
+    # Fallback: 원문 제목/스니펫 그대로 노출 (가공 없이)
+    pros = [f"검색 결과: {t}" for t in titles[:2]]
+    cons = []
+    description = snippets[0][:150] if snippets else (titles[0] if titles else '')
+    return pros, cons, description
 
 
-@app.route("/api/competitor/compare", methods=["POST"])
+@app.route("/api/competitor/fetch-product", methods=["POST"])
 @login_required
-def api_competitor_compare():
-    """자사 제품 vs 타사 제품 비교 분석 생성"""
+def api_competitor_fetch_product():
+    """특정 타사 제품(브랜드+모델명)의 상세 리서치 수집 및 저장"""
     d = request.json or {}
     category = d.get('category', '').strip()
-    our_product = d.get('our_product', '').strip()
-    our_brand = d.get('our_brand', '').strip()
-    competitor_brand = d.get('competitor_brand', '').strip()
+    brand = d.get('brand', '').strip()
+    product_name = d.get('product_name', '').strip()
+    if not (category and brand and product_name):
+        return jsonify({'ok': False, 'msg': '품목/브랜드/제품명이 필요합니다'}), 400
 
-    if not category or not our_product or not competitor_brand:
-        return jsonify({'ok': False, 'msg': '품목/자사제품/타사브랜드를 모두 선택해주세요'}), 400
-
-    conn = get_db()
-    comp_row = conn.execute(
-        "SELECT * FROM competitor_products WHERE category=? AND brand=?",
-        (category, competitor_brand)).fetchone()
-    conn.close()
-
-    if not comp_row:
-        return jsonify({'ok': False, 'msg': '먼저 타사 정보를 불러와주세요'}), 400
-
-    comp = dict(comp_row)
-    comparison = generate_comparison(category, our_brand, our_product, competitor_brand, comp)
+    result = _research_product('competitor', category, brand, product_name)
+    if not result:
+        return jsonify({'ok': False, 'msg': '검색 결과가 없습니다. 제품명을 다르게 시도해보세요'}), 404
 
     conn = get_db()
-    conn.execute("""INSERT INTO competitor_comparison
-        (category, our_product, competitor_brand, comparison_text, created_at)
-        VALUES(?,?,?,?,?)""",
-        (category, our_product, competitor_brand, json.dumps(comparison, ensure_ascii=False),
-         datetime.now().strftime('%Y-%m-%d %H:%M')))
+    now_str = datetime.now().strftime('%Y-%m-%d %H:%M')
+    conn.execute("""INSERT INTO product_research
+        (side, category, brand, product_name, price_text, pros, cons, description,
+         review_snippets, source_titles, source_urls, fetched_at)
+        VALUES('competitor',?,?,?,?,?,?,?,?,?,?,?)
+        ON CONFLICT(side, category, brand, product_name) DO UPDATE SET
+        price_text=excluded.price_text, pros=excluded.pros, cons=excluded.cons,
+        description=excluded.description, review_snippets=excluded.review_snippets,
+        source_titles=excluded.source_titles, source_urls=excluded.source_urls,
+        fetched_at=excluded.fetched_at""",
+        (category, brand, product_name, result['price_text'],
+         json.dumps(result['pros'], ensure_ascii=False), json.dumps(result['cons'], ensure_ascii=False),
+         result['description'], json.dumps(result['review_snippets'], ensure_ascii=False),
+         ' | '.join(result['source_titles']), ' | '.join(result['source_urls']), now_str))
     conn.commit(); conn.close()
 
-    return jsonify({'ok': True, 'comparison': comparison})
+    return jsonify({'ok': True, **result, 'fetched_at': now_str})
+
+
+@app.route("/api/competitor/fetch-our-product", methods=["POST"])
+@login_required
+def api_competitor_fetch_our_product():
+    """자사 제품의 외부 리뷰 기반 장단점 리서치 수집 및 저장"""
+    d = request.json or {}
+    category = d.get('category', '').strip()
+    brand = d.get('brand', '').strip()
+    product_name = d.get('product_name', '').strip()
+    if not (category and brand and product_name):
+        return jsonify({'ok': False, 'msg': '품목/브랜드/제품명이 필요합니다'}), 400
+
+    result = _research_product('ours', category, brand, product_name)
+    if not result:
+        # 검색 결과가 없어도 내부 브랜드 강점으로 최소한의 데이터 구성
+        base_strength = OUR_BRAND_STRENGTHS.get(brand, '')
+        result = {'product_name': product_name, 'price_text': '',
+                   'pros': [base_strength] if base_strength else [],
+                   'cons': [], 'description': '', 'review_snippets': [],
+                   'source_titles': [], 'source_urls': []}
+
+    conn = get_db()
+    now_str = datetime.now().strftime('%Y-%m-%d %H:%M')
+    conn.execute("""INSERT INTO product_research
+        (side, category, brand, product_name, price_text, pros, cons, description,
+         review_snippets, source_titles, source_urls, fetched_at)
+        VALUES('ours',?,?,?,?,?,?,?,?,?,?,?)
+        ON CONFLICT(side, category, brand, product_name) DO UPDATE SET
+        price_text=excluded.price_text, pros=excluded.pros, cons=excluded.cons,
+        description=excluded.description, review_snippets=excluded.review_snippets,
+        source_titles=excluded.source_titles, source_urls=excluded.source_urls,
+        fetched_at=excluded.fetched_at""",
+        (category, brand, product_name, result['price_text'],
+         json.dumps(result['pros'], ensure_ascii=False), json.dumps(result['cons'], ensure_ascii=False),
+         result['description'], json.dumps(result['review_snippets'], ensure_ascii=False),
+         ' | '.join(result['source_titles']), ' | '.join(result['source_urls']), now_str))
+    conn.commit(); conn.close()
+
+    return jsonify({'ok': True, **result, 'fetched_at': now_str})
 
 
 OUR_BRAND_STRENGTHS = {
@@ -5023,85 +5109,154 @@ OUR_BRAND_STRENGTHS = {
 }
 
 
-def generate_comparison(category, our_brand, our_product, competitor_brand, comp):
-    """비교 분석 생성 (Claude API 우선, 실패 시 규칙 기반 템플릿)"""
+@app.route("/api/competitor/research")
+@login_required
+def api_competitor_research_get():
+    """저장된 제품 리서치 데이터 조회 (자사/타사)"""
+    side = request.args.get('side', '')
+    category = request.args.get('category', '')
+    brand = request.args.get('brand', '')
+    conn = get_db()
+    q = "SELECT * FROM product_research WHERE 1=1"
+    params = []
+    if side: q += " AND side=?"; params.append(side)
+    if category: q += " AND category=?"; params.append(category)
+    if brand: q += " AND brand=?"; params.append(brand)
+    q += " ORDER BY fetched_at DESC"
+    rows = [dict(r) for r in conn.execute(q, params).fetchall()]
+    conn.close()
+    for r in rows:
+        try: r['pros'] = json.loads(r.get('pros') or '[]')
+        except: r['pros'] = []
+        try: r['cons'] = json.loads(r.get('cons') or '[]')
+        except: r['cons'] = []
+    return jsonify(rows)
+
+
+@app.route("/api/competitor/compare", methods=["POST"])
+@login_required
+def api_competitor_compare():
+    """자사 제품 vs 타사 제품(구체적 모델) 비교 분석 생성 — 축적된 리서치 데이터 기반"""
+    d = request.json or {}
+    category = d.get('category', '').strip()
+    our_brand = d.get('our_brand', '').strip()
+    our_product = d.get('our_product', '').strip()
+    competitor_brand = d.get('competitor_brand', '').strip()
+    competitor_product = d.get('competitor_product', '').strip()
+
+    if not all([category, our_brand, our_product, competitor_brand, competitor_product]):
+        return jsonify({'ok': False, 'msg': '자사 제품과 타사 제품을 모두 선택해주세요'}), 400
+
+    conn = get_db()
+    our_row = conn.execute("""SELECT * FROM product_research
+        WHERE side='ours' AND category=? AND brand=? AND product_name=?""",
+        (category, our_brand, our_product)).fetchone()
+    comp_row = conn.execute("""SELECT * FROM product_research
+        WHERE side='competitor' AND category=? AND brand=? AND product_name=?""",
+        (category, competitor_brand, competitor_product)).fetchone()
+    conn.close()
+
+    if not comp_row:
+        return jsonify({'ok': False, 'msg': '먼저 타사 제품 정보를 불러와주세요'}), 400
+
+    our_data = dict(our_row) if our_row else {
+        'pros': '[]', 'cons': '[]', 'description': '', 'price_text': ''
+    }
+    comp_data = dict(comp_row)
+
+    comparison = generate_comparison(
+        category, our_brand, our_product, our_data,
+        competitor_brand, competitor_product, comp_data)
+
+    conn = get_db()
+    conn.execute("""INSERT INTO competitor_comparison
+        (category, our_product, competitor_brand, competitor_product, comparison_text, created_at)
+        VALUES(?,?,?,?,?,?)""",
+        (category, our_product, competitor_brand, competitor_product,
+         json.dumps(comparison, ensure_ascii=False), datetime.now().strftime('%Y-%m-%d %H:%M')))
+    conn.commit(); conn.close()
+
+    return jsonify({'ok': True, 'comparison': comparison})
+
+
+def generate_comparison(category, our_brand, our_product, our_data,
+                          competitor_brand, competitor_product, comp_data):
+    """축적된 상세 리서치 데이터를 기반으로 제품 단위 비교 분석 생성"""
     api_key = os.environ.get('ANTHROPIC_API_KEY', '')
-    our_strength = OUR_BRAND_STRENGTHS.get(our_brand, '국내 유통망과 사후관리 대응력')
+
+    try: our_pros_raw = json.loads(our_data.get('pros') or '[]')
+    except: our_pros_raw = []
+    try: our_cons_raw = json.loads(our_data.get('cons') or '[]')
+    except: our_cons_raw = []
+    try: comp_pros_raw = json.loads(comp_data.get('pros') or '[]')
+    except: comp_pros_raw = []
+    try: comp_cons_raw = json.loads(comp_data.get('cons') or '[]')
+    except: comp_cons_raw = []
+
+    fallback_strength = OUR_BRAND_STRENGTHS.get(our_brand, '국내 유통망과 사후관리 대응력')
 
     if api_key:
         try:
             import requests
-            prompt = f"""당신은 유아용품 B2B 영업 전문가입니다. 아래 정보를 바탕으로 자사 제품과 경쟁사 제품을 비교 분석해주세요.
+            prompt = f"""당신은 유아용품 B2B 영업 전문가입니다. 실제 수집된 데이터를 근거로 두 제품을 심층 비교해주세요.
+사실을 지어내지 말고, 주어진 데이터에 있는 내용을 우선 활용하되 부족한 부분은 업계 일반 지식 수준에서 신중하게 보완하세요.
 
 [품목] {category}
-[자사 제품] {our_brand} - {our_product}
-[자사 브랜드 강점 참고] {our_strength}
 
-[경쟁사] {competitor_brand}
-[경쟁사 제품 정보] {comp.get('product_name','')}
-[경쟁사 가격대] {comp.get('price_text','정보 없음')}
-[경쟁사 특징 요약] {comp.get('summary','')}
+[자사 제품] {our_brand} {our_product}
+- 가격: {our_data.get('price_text','정보 없음')}
+- 설명: {our_data.get('description','')}
+- 확인된 장점: {our_pros_raw}
+- 확인된 단점: {our_cons_raw}
+
+[경쟁 제품] {competitor_brand} {competitor_product}
+- 가격: {comp_data.get('price_text','정보 없음')}
+- 설명: {comp_data.get('description','')}
+- 확인된 장점: {comp_pros_raw}
+- 확인된 단점: {comp_cons_raw}
 
 다음 JSON 형식으로만 답하세요 (설명 없이 JSON만):
 {{
-  "competitor_pros": ["경쟁사 장점 2~3개, 사실 기반으로만"],
-  "competitor_cons": ["경쟁사 단점이나 우리가 파고들 수 있는 약점 2~3개"],
-  "our_pros": ["자사 제품 장점 2~3개"],
-  "selling_points": ["매장/고객에게 어필할 수 있는 영업 포인트 3~4개, 구체적이고 실전적으로"]
-}}
-
-주의: 과장하거나 사실이 아닌 내용을 만들어내지 마세요. 경쟁사 정보가 부족하면 일반적으로 알려진 특성 수준에서만 언급하세요."""
+  "price_comparison": "가격 비교 한 문장 (데이터 없으면 '가격 정보 확인 필요'라고 표기)",
+  "competitor_pros": ["경쟁제품 장점 2~4개, 구체적으로"],
+  "competitor_cons": ["경쟁제품 단점/약점 2~3개"],
+  "our_pros": ["자사제품 장점 2~4개, 구체적으로"],
+  "our_cons": ["자사제품이 보완할 점 1~2개, 정직하게"],
+  "selling_points": ["매장에서 바로 쓸 수 있는 실전 영업 멘트 3~4개, 구체적 수치나 특징 인용"]
+}}"""
             resp = requests.post(
                 "https://api.anthropic.com/v1/messages",
                 headers={"x-api-key": api_key, "anthropic-version": "2023-06-01", "content-type": "application/json"},
-                json={"model": "claude-sonnet-4-6", "max_tokens": 800,
+                json={"model": "claude-sonnet-4-6", "max_tokens": 900,
                       "messages": [{"role": "user", "content": prompt}]},
                 timeout=15,
             )
             if resp.status_code == 200:
                 data = resp.json()
                 text_blocks = [b.get('text','') for b in data.get('content',[]) if b.get('type')=='text']
-                raw = ''.join(text_blocks).strip()
-                raw = raw.replace('```json','').replace('```','').strip()
+                raw = ''.join(text_blocks).strip().replace('```json','').replace('```','').strip()
                 parsed = json.loads(raw)
-                if all(k in parsed for k in ['competitor_pros','competitor_cons','our_pros','selling_points']):
+                required = ['competitor_pros','competitor_cons','our_pros','selling_points']
+                if all(k in parsed for k in required):
+                    parsed.setdefault('our_cons', [])
+                    parsed.setdefault('price_comparison', '')
                     return parsed
         except Exception:
             pass
 
-    # Fallback: 규칙 기반 템플릿
+    # Fallback: 축적된 원본 데이터 그대로 구조화 (가공 없이)
     return {
-        'competitor_pros': [
-            f"{competitor_brand}는 해외 브랜드로서의 인지도를 갖추고 있습니다",
-            f"가격대: {comp.get('price_text','정보 없음')}",
-        ],
-        'competitor_cons': [
-            "국내 A/S 및 부품 수급 대응 속도가 상대적으로 느릴 수 있습니다",
-            "국내 육아 환경(공간, 사용 패턴)에 맞춘 현지화가 제한적일 수 있습니다",
-        ],
-        'our_pros': [our_strength],
+        'price_comparison': f"자사 {our_data.get('price_text') or '정보 없음'} / 경쟁사 {comp_data.get('price_text') or '정보 없음'}",
+        'competitor_pros': comp_pros_raw or [f"{competitor_brand} {competitor_product} 관련 장점 정보가 충분히 수집되지 않았습니다"],
+        'competitor_cons': comp_cons_raw or ["단점 정보가 충분히 수집되지 않았습니다"],
+        'our_pros': our_pros_raw or [fallback_strength],
+        'our_cons': our_cons_raw,
         'selling_points': [
             "국내 정식 유통 및 빠른 A/S 대응이 가능합니다",
             "실물 체험 및 매장 상담을 통한 확신 있는 구매 결정을 도울 수 있습니다",
-            "가격 대비 구성품과 사후관리 혜택을 강조해주세요",
         ],
     }
 
-
-@app.route("/api/competitor/list")
-@login_required
-def api_competitor_list():
-    """수집된 타사 제품 목록 (카테고리별)"""
-    category = request.args.get('category', '')
-    conn = get_db()
-    if category:
-        rows = [dict(r) for r in conn.execute(
-            "SELECT * FROM competitor_products WHERE category=? ORDER BY brand", (category,)).fetchall()]
-    else:
-        rows = [dict(r) for r in conn.execute(
-            "SELECT * FROM competitor_products ORDER BY category, brand").fetchall()]
-    conn.close()
-    return jsonify(rows)
 
 
 # ── SNS 활용 매장 API ────────────────────────────────

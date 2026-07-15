@@ -864,54 +864,55 @@ td.center{text-align:center}
     <!-- ██ 매장과의 소통 ██ -->
     <!-- ██ 타사 비교 ██ -->
     <div class="page" id="page-competitor">
-      <!-- 히어로 헤더 -->
-      <div style="background:linear-gradient(135deg,#0F172A 0%,#1E293B 50%,#334155 100%);border-radius:18px;padding:26px 28px;margin-bottom:20px;position:relative;overflow:hidden">
-        <div style="position:absolute;top:-50px;right:-20px;width:220px;height:220px;background:rgba(96,165,250,.08);border-radius:50%"></div>
-        <div style="position:absolute;bottom:-60px;right:150px;width:140px;height:140px;background:rgba(96,165,250,.06);border-radius:50%"></div>
-        <div style="position:relative">
-          <div style="font-size:11px;font-weight:700;color:rgba(255,255,255,.6);letter-spacing:1px;text-transform:uppercase;margin-bottom:6px">Competitive Intelligence</div>
-          <div style="font-size:23px;font-weight:800;color:#fff;display:flex;align-items:center;gap:10px;margin-bottom:6px">⚔️ 타사 비교</div>
-          <div style="font-size:13px;color:rgba(255,255,255,.75)">품목을 선택하고, 타사 제품 정보를 자동으로 수집해 자사 강점을 발굴하세요</div>
-        </div>
+      <!-- 헤더: 절제된 스타일 -->
+      <div class="ph">
+        <div><h2>타사 비교</h2><p>품목·제품 단위로 리서치를 축적하고, 데이터 기반의 비교 리포트를 생성합니다</p></div>
       </div>
 
       <!-- 1단계: 품목 선택 -->
-      <div style="margin-bottom:18px">
-        <div style="font-size:12px;font-weight:800;color:var(--t-500);margin-bottom:10px;display:flex;align-items:center;gap:6px">
-          <span style="width:20px;height:20px;border-radius:6px;background:#1E293B;color:#fff;display:inline-flex;align-items:center;justify-content:center;font-size:11px">1</span>
-          품목 선택
-        </div>
+      <div style="margin-bottom:20px">
+        <div style="font-size:11px;font-weight:700;color:var(--t-400);text-transform:uppercase;letter-spacing:.4px;margin-bottom:9px">품목</div>
         <div id="comp-category-pills" style="display:flex;gap:8px;flex-wrap:wrap"></div>
       </div>
 
-      <!-- 2단계: 자사 제품 + 타사 브랜드 2단 배치 -->
       <div id="comp-main-area" style="display:none">
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:18px;align-items:start;margin-bottom:20px">
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;align-items:start;margin-bottom:18px">
 
-          <!-- 자사 제품 선택 -->
-          <div style="background:var(--paper);border:1.5px solid var(--border);border-radius:16px;overflow:hidden">
-            <div style="padding:14px 18px;background:linear-gradient(135deg,#EFF6FF,#DBEAFE);border-bottom:1px solid var(--border);display:flex;align-items:center;gap:8px">
-              <span style="width:20px;height:20px;border-radius:6px;background:var(--p);color:#fff;display:inline-flex;align-items:center;justify-content:center;font-size:11px;flex-shrink:0">2</span>
-              <span style="font-size:13px;font-weight:800;color:var(--t-900)">🏠 자사 제품 선택</span>
+          <!-- 자사 제품 -->
+          <div style="background:var(--paper);border:1px solid var(--border);border-radius:12px;overflow:hidden">
+            <div style="padding:12px 16px;border-bottom:1px solid var(--border);background:var(--bg)">
+              <span style="font-size:12.5px;font-weight:700;color:var(--t-700)">자사 제품</span>
             </div>
-            <div id="comp-our-products" style="padding:14px;max-height:340px;overflow-y:auto"></div>
+            <div id="comp-our-products" style="padding:10px;max-height:420px;overflow-y:auto"></div>
           </div>
 
-          <!-- 타사 브랜드 선택 -->
-          <div style="background:var(--paper);border:1.5px solid var(--border);border-radius:16px;overflow:hidden">
-            <div style="padding:14px 18px;background:linear-gradient(135deg,#FEF2F2,#FEE2E2);border-bottom:1px solid var(--border);display:flex;align-items:center;gap:8px">
-              <span style="width:20px;height:20px;border-radius:6px;background:#DC2626;color:#fff;display:inline-flex;align-items:center;justify-content:center;font-size:11px;flex-shrink:0">3</span>
-              <span style="font-size:13px;font-weight:800;color:var(--t-900)">🎯 타사 브랜드 선택</span>
+          <!-- 타사 브랜드/제품 -->
+          <div style="background:var(--paper);border:1px solid var(--border);border-radius:12px;overflow:hidden">
+            <div style="padding:12px 16px;border-bottom:1px solid var(--border);background:var(--bg);display:flex;justify-content:space-between;align-items:center">
+              <span style="font-size:12.5px;font-weight:700;color:var(--t-700)">경쟁사 브랜드</span>
+              <select id="comp-brand-select" onchange="onCompetitorBrandChange()"
+                style="font-size:12px;padding:5px 8px;border:1px solid var(--border-md);border-radius:6px;background:var(--paper);color:var(--t-700)">
+                <option value="">브랜드 선택</option>
+              </select>
             </div>
-            <div id="comp-competitor-brands" style="padding:14px;max-height:340px;overflow-y:auto"></div>
+            <div id="comp-competitor-products" style="padding:10px;max-height:420px;overflow-y:auto">
+              <div style="text-align:center;padding:40px 16px;color:var(--t-300);font-size:12px">브랜드를 선택하면 제품 리서치를 시작할 수 있습니다</div>
+            </div>
           </div>
         </div>
 
-        <!-- 비교하기 버튼 -->
-        <div style="display:flex;justify-content:center;margin-bottom:24px">
+        <!-- 선택 요약 + 비교 버튼 -->
+        <div style="display:flex;align-items:center;justify-content:space-between;background:var(--bg);border:1px solid var(--border);border-radius:10px;padding:12px 16px;margin-bottom:20px">
+          <div style="display:flex;align-items:center;gap:10px;font-size:12.5px;color:var(--t-500)">
+            <span>선택:</span>
+            <span id="comp-sel-our" style="font-weight:700;color:var(--t-800)">자사 제품 미선택</span>
+            <span style="color:var(--t-300)">vs</span>
+            <span id="comp-sel-comp" style="font-weight:700;color:var(--t-800)">경쟁 제품 미선택</span>
+          </div>
           <button onclick="runCompetitorCompare()" id="comp-compare-btn" disabled
-            style="display:flex;align-items:center;gap:8px;background:linear-gradient(135deg,#1E293B,#0F172A);color:#fff;border:none;padding:14px 36px;border-radius:14px;font-size:14px;font-weight:800;cursor:not-allowed;opacity:.4;box-shadow:0 6px 20px rgba(15,23,42,.25);transition:.2s">
-            ⚔️ 비교하기
+            style="padding:9px 22px;border-radius:8px;border:none;background:var(--t-900);color:#fff;
+            font-size:12.5px;font-weight:700;cursor:not-allowed;opacity:.35;transition:.15s">
+            비교 리포트 생성
           </button>
         </div>
 
@@ -920,10 +921,9 @@ td.center{text-align:center}
       </div>
 
       <!-- 초기 안내 -->
-      <div id="comp-empty-state" style="text-align:center;padding:80px 20px;color:var(--t-300)">
-        <div style="font-size:40px;margin-bottom:14px">⚔️</div>
-        <div style="font-size:14px;font-weight:700;color:var(--t-500)">위에서 품목을 먼저 선택해주세요</div>
-        <div style="font-size:12px;margin-top:6px">유모차, 카시트, 식탁의자, 웨건 중 비교하고 싶은 품목을 고르면 시작됩니다</div>
+      <div id="comp-empty-state" style="text-align:center;padding:70px 20px;color:var(--t-300);border:1px dashed var(--border);border-radius:12px">
+        <div style="font-size:13px;font-weight:600;color:var(--t-500)">위에서 품목을 먼저 선택해주세요</div>
+        <div style="font-size:11.5px;margin-top:5px">유모차 · 카시트 · 식탁의자 · 웨건</div>
       </div>
     </div>
 
@@ -1729,10 +1729,14 @@ async function saveCheckResult(){
 }
 
 // ── 타사 비교 ────────────────────────────────
-let compCategories = {}, compSelectedCategory = '', compSelectedOurProduct = null, compSelectedCompetitor = '';
-let compCompetitorCache = {}; // brand -> fetched data
+let compCategories = {}, compSelectedCategory = '';
+let compOurSelected = null;      // {brand, name}
+let compCompetitorBrand = '';
+let compCompetitorSelected = null; // {brand, product_name, ...researchData}
+let compOurResearch = null;      // 자사 제품 리서치 캐시 {brand+name: data}
+let compCompetitorResearchList = []; // 현재 브랜드의 저장된 제품 리서치들
 
-const CATEGORY_ICON = {'유모차':'🚼','카시트':'🪑','식탁의자':'🍽️','웨건':'🛒'};
+const CATEGORY_LABEL = {'유모차':'유모차','카시트':'카시트','식탁의자':'식탁의자','웨건':'웨건'};
 
 async function loadCompetitorPage(){
   if(!Object.keys(compCategories).length){
@@ -1746,193 +1750,309 @@ function renderCategoryPills(){
   el.innerHTML = Object.keys(compCategories).map(cat=>{
     const active = cat === compSelectedCategory;
     return `<button onclick="selectCompCategory('${cat}')"
-      style="display:flex;align-items:center;gap:7px;padding:11px 20px;border-radius:12px;
-      border:1.5px solid ${active?'#1E293B':'var(--border-md)'};background:${active?'#1E293B':'var(--paper)'};
-      color:${active?'#fff':'var(--t-700)'};font-size:13px;font-weight:700;cursor:pointer;transition:.15s;box-shadow:${active?'0 4px 14px rgba(15,23,42,.2)':'none'}">
-      <span style="font-size:16px">${CATEGORY_ICON[cat]||'📦'}</span>${cat}
-      <span style="font-size:10.5px;opacity:.7;background:${active?'rgba(255,255,255,.15)':'var(--bg)'};padding:1px 7px;border-radius:8px">${(compCategories[cat]||[]).length}개 브랜드</span>
+      style="padding:9px 18px;border-radius:8px;border:1px solid ${active?'var(--t-900)':'var(--border-md)'};
+      background:${active?'var(--t-900)':'var(--paper)'};color:${active?'#fff':'var(--t-600)'};
+      font-size:12.5px;font-weight:600;cursor:pointer;transition:.15s">
+      ${CATEGORY_LABEL[cat]||cat}
     </button>`;
   }).join('');
 }
 
 async function selectCompCategory(cat){
   compSelectedCategory = cat;
-  compSelectedOurProduct = null;
-  compSelectedCompetitor = '';
+  compOurSelected = null;
+  compCompetitorBrand = '';
+  compCompetitorSelected = null;
   renderCategoryPills();
 
   document.getElementById('comp-empty-state').style.display = 'none';
   document.getElementById('comp-main-area').style.display = 'block';
   document.getElementById('comp-result-area').innerHTML = '';
-  updateCompareButton();
+  updateSelectionSummary();
 
   // 자사 제품 로드
   const ourEl = document.getElementById('comp-our-products');
-  ourEl.innerHTML = `<div style="text-align:center;padding:30px;color:var(--t-300);font-size:12px">불러오는 중...</div>`;
+  ourEl.innerHTML = `<div style="text-align:center;padding:30px;color:var(--t-300);font-size:12px">불러오는 중</div>`;
   const ourProducts = await api(`/api/competitor/our-products?category=${encodeURIComponent(cat)}`) || [];
   if(!ourProducts.length){
     ourEl.innerHTML = `<div style="text-align:center;padding:30px;color:var(--t-300);font-size:12px">해당 품목의 판매 데이터가 없습니다</div>`;
   } else {
     ourEl.innerHTML = ourProducts.map((p,i)=>`
-      <div onclick='selectOurProduct(${JSON.stringify(p).replace(/'/g,"&apos;")})'
-        id="our-prod-${i}"
-        style="display:flex;justify-content:space-between;align-items:center;padding:11px 14px;border-radius:10px;
-        border:1.5px solid var(--border);margin-bottom:6px;cursor:pointer;transition:.15s"
-        onmouseenter="if(!this.classList.contains('sel'))this.style.background='var(--bg)'"
-        onmouseleave="if(!this.classList.contains('sel'))this.style.background='var(--paper)'">
-        <div>
-          <span style="font-size:10px;background:var(--p-lt);color:var(--p);padding:2px 7px;border-radius:6px;font-weight:700;margin-right:6px">${p.brand}</span>
-          <span style="font-size:13px;font-weight:700;color:var(--t-900)">${p.name}</span>
-        </div>
-        <span style="font-size:11px;color:var(--t-300);font-weight:600">${N(p.total)}원</span>
+      <div onclick='selectOurProduct(${JSON.stringify({brand:p.brand,name:p.name}).replace(/'/g,"&apos;")}, this)'
+        class="comp-our-item"
+        style="display:flex;align-items:center;gap:8px;padding:10px 12px;border-radius:8px;
+        border:1px solid var(--border);margin-bottom:5px;cursor:pointer;transition:.15s">
+        <span style="font-size:9.5px;background:var(--bg);color:var(--t-500);padding:2px 7px;border-radius:5px;font-weight:600;flex-shrink:0">${p.brand}</span>
+        <span style="font-size:12.5px;font-weight:600;color:var(--t-900)">${p.name}</span>
       </div>`).join('');
   }
 
-  // 타사 브랜드 목록 로드
-  renderCompetitorBrands();
+  // 타사 브랜드 셀렉트 채우기
+  const brandSel = document.getElementById('comp-brand-select');
+  const brands = compCategories[cat] || [];
+  brandSel.innerHTML = '<option value="">브랜드 선택</option>' + brands.map(b=>`<option value="${b}">${b}</option>`).join('');
+  document.getElementById('comp-competitor-products').innerHTML =
+    `<div style="text-align:center;padding:40px 16px;color:var(--t-300);font-size:12px">브랜드를 선택하면 제품 리서치를 시작할 수 있습니다</div>`;
 }
 
-function selectOurProduct(p){
-  compSelectedOurProduct = p;
-  document.querySelectorAll('#comp-our-products > div').forEach(el=>{
-    el.classList.remove('sel');
-    el.style.borderColor = 'var(--border)';
-    el.style.background = 'var(--paper)';
+function selectOurProduct(p, el){
+  compOurSelected = p;
+  document.querySelectorAll('.comp-our-item').forEach(x=>{
+    x.style.borderColor = 'var(--border)'; x.style.background = 'var(--paper)';
   });
-  event.currentTarget.classList.add('sel');
-  event.currentTarget.style.borderColor = 'var(--p)';
-  event.currentTarget.style.background = 'var(--p-lt)';
-  updateCompareButton();
+  el.style.borderColor = 'var(--t-900)'; el.style.background = 'var(--bg)';
+  updateSelectionSummary();
+
+  // 자사 제품 리서치 카드 표시 (선택된 항목 아래에 인라인으로)
+  renderOurProductResearch(p, el);
 }
 
-async function renderCompetitorBrands(){
-  const el = document.getElementById('comp-competitor-brands');
-  const brands = compCategories[compSelectedCategory] || [];
-  // 기존 수집 데이터 확인
-  const existing = await api(`/api/competitor/list?category=${encodeURIComponent(compSelectedCategory)}`) || [];
-  const existingMap = {}; existing.forEach(e=>existingMap[e.brand]=e);
-  compCompetitorCache = existingMap;
+async function renderOurProductResearch(p, anchorEl){
+  // 기존 리서치 조회
+  const rows = await api(`/api/competitor/research?side=ours&category=${encodeURIComponent(compSelectedCategory)}&brand=${encodeURIComponent(p.brand)}`) || [];
+  const existing = rows.find(r=>r.product_name===p.name);
 
-  el.innerHTML = brands.map(brand=>{
-    const fetched = existingMap[brand];
-    const active = brand === compSelectedCompetitor;
-    return `<div id="comp-brand-${brand}" style="border:1.5px solid ${active?'#DC2626':'var(--border)'};border-radius:12px;padding:12px 14px;margin-bottom:8px;background:${active?'#FEF2F2':'var(--paper)'};transition:.15s">
-      <div style="display:flex;justify-content:space-between;align-items:center;gap:8px">
-        <div onclick="selectCompetitorBrand('${brand}')" style="cursor:pointer;flex:1;display:flex;align-items:center;gap:8px">
-          <span style="font-size:13px;font-weight:700;color:var(--t-900)">${brand}</span>
-          ${fetched?`<span style="font-size:9.5px;background:var(--green-lt);color:var(--green);padding:1px 6px;border-radius:6px;font-weight:700">✓ 정보 있음</span>`:''}
-        </div>
-        <button onclick="event.stopPropagation();fetchCompetitorInfo('${brand}')" id="fetch-btn-${brand}"
-          style="font-size:10.5px;font-weight:700;padding:6px 11px;border-radius:8px;border:1px solid var(--border-md);
-          background:var(--bg);color:var(--t-600);cursor:pointer;flex-shrink:0;white-space:nowrap">
-          ${fetched?'🔄 다시 불러오기':'🔍 정보 불러오기'}
-        </button>
-      </div>
-      ${fetched ? `<div style="margin-top:8px;padding-top:8px;border-top:1px dashed var(--border);font-size:11px;color:var(--t-500);line-height:1.6;white-space:pre-wrap">${(fetched.summary||'').slice(0,120)}${(fetched.summary||'').length>120?'...':''}</div>`:''}
+  // 리서치 패널 삽입 (선택 항목 바로 아래, 재사용)
+  let panel = document.getElementById('comp-our-research-panel');
+  if(panel) panel.remove();
+  panel = document.createElement('div');
+  panel.id = 'comp-our-research-panel';
+  panel.style.cssText = 'margin:6px 0 10px;padding:12px;border:1px dashed var(--border-md);border-radius:8px;background:var(--bg)';
+
+  if(existing){
+    panel.innerHTML = renderResearchMini(existing, false);
+  } else {
+    panel.innerHTML = `<div style="display:flex;align-items:center;justify-content:space-between">
+      <span style="font-size:11.5px;color:var(--t-400)">이 제품에 대한 외부 평가 데이터가 아직 없습니다</span>
+      <button onclick="fetchOurProductResearch()" id="our-fetch-btn"
+        style="font-size:11px;font-weight:700;padding:6px 12px;border-radius:7px;border:1px solid var(--t-900);background:var(--t-900);color:#fff;cursor:pointer">
+        리서치 수집
+      </button>
     </div>`;
-  }).join('');
+  }
+  anchorEl.after(panel);
 }
 
-function selectCompetitorBrand(brand){
-  if(!compCompetitorCache[brand]){
-    toast('먼저 "정보 불러오기"로 타사 데이터를 수집해주세요', false);
+async function fetchOurProductResearch(){
+  const btn = document.getElementById('our-fetch-btn');
+  btn.textContent = '수집 중…'; btn.disabled = true;
+  const r = await api('/api/competitor/fetch-our-product', {method:'POST', body:{
+    category: compSelectedCategory, brand: compOurSelected.brand, product_name: compOurSelected.name}});
+  if(r?.ok){
+    const panel = document.getElementById('comp-our-research-panel');
+    panel.innerHTML = renderResearchMini(r, false);
+    toast('자사 제품 리서치를 수집했습니다');
+  } else {
+    toast(r?.msg || '수집에 실패했습니다', false);
+  }
+}
+
+function renderResearchMini(data, isCompetitor){
+  const pros = data.pros || [];
+  const cons = data.cons || [];
+  return `<div>
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+      <span style="font-size:11.5px;font-weight:700;color:var(--t-700)">${data.price_text || '가격 정보 없음'}</span>
+      <span style="font-size:10px;color:var(--t-300)">${(data.fetched_at||'').slice(0,10)} 수집</span>
+    </div>
+    ${data.description?`<div style="font-size:11.5px;color:var(--t-600);line-height:1.6;margin-bottom:8px">${data.description}</div>`:''}
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+      <div>
+        <div style="font-size:10px;font-weight:700;color:var(--green);margin-bottom:4px">장점</div>
+        ${pros.slice(0,3).map(p=>`<div style="font-size:11px;color:var(--t-600);line-height:1.6">· ${p}</div>`).join('')||'<div style="font-size:11px;color:var(--t-300)">—</div>'}
+      </div>
+      <div>
+        <div style="font-size:10px;font-weight:700;color:var(--red);margin-bottom:4px">단점</div>
+        ${cons.slice(0,3).map(p=>`<div style="font-size:11px;color:var(--t-600);line-height:1.6">· ${p}</div>`).join('')||'<div style="font-size:11px;color:var(--t-300)">—</div>'}
+      </div>
+    </div>
+  </div>`;
+}
+
+async function onCompetitorBrandChange(){
+  const brand = document.getElementById('comp-brand-select').value;
+  compCompetitorBrand = brand;
+  compCompetitorSelected = null;
+  updateSelectionSummary();
+
+  const el = document.getElementById('comp-competitor-products');
+  if(!brand){
+    el.innerHTML = `<div style="text-align:center;padding:40px 16px;color:var(--t-300);font-size:12px">브랜드를 선택하면 제품 리서치를 시작할 수 있습니다</div>`;
     return;
   }
-  compSelectedCompetitor = brand;
-  renderCompetitorBrands();
-  updateCompareButton();
+
+  el.innerHTML = `<div style="text-align:center;padding:30px;color:var(--t-300);font-size:12px">제품 후보 검색 중</div>`;
+
+  const [existing, candidates] = await Promise.all([
+    api(`/api/competitor/research?side=competitor&category=${encodeURIComponent(compSelectedCategory)}&brand=${encodeURIComponent(brand)}`),
+    api('/api/competitor/product-candidates', {method:'POST', body:{category: compSelectedCategory, brand}}),
+  ]);
+  compCompetitorResearchList = existing || [];
+
+  renderCompetitorProductList(candidates?.candidates || []);
 }
 
-async function fetchCompetitorInfo(brand){
-  const btn = document.getElementById(`fetch-btn-${brand}`);
-  const origText = btn.textContent;
-  btn.textContent = '수집 중...'; btn.disabled = true;
+function renderCompetitorProductList(candidates){
+  const el = document.getElementById('comp-competitor-products');
+  const existingNames = new Set(compCompetitorResearchList.map(r=>r.product_name));
+  const allNames = [...new Set([...compCompetitorResearchList.map(r=>r.product_name), ...candidates])];
 
-  const r = await api('/api/competitor/fetch', {method:'POST', body:{category: compSelectedCategory, brand}});
+  let html = '';
 
-  btn.disabled = false;
+  if(allNames.length){
+    html += allNames.map(name=>{
+      const researched = compCompetitorResearchList.find(r=>r.product_name===name);
+      const active = compCompetitorSelected?.product_name === name;
+      if(researched){
+        return `<div onclick='pickCompetitorProduct(${JSON.stringify(researched).replace(/'/g,"&apos;")}, this)'
+          class="comp-comp-item"
+          style="border:1px solid ${active?'var(--t-900)':'var(--border)'};background:${active?'var(--bg)':'var(--paper)'};border-radius:8px;padding:10px 12px;margin-bottom:6px;cursor:pointer;transition:.15s">
+          <div style="display:flex;justify-content:space-between;align-items:center">
+            <span style="font-size:12.5px;font-weight:700;color:var(--t-900)">${name}</span>
+            <span style="font-size:9.5px;background:var(--green-lt);color:var(--green);padding:2px 7px;border-radius:5px;font-weight:700">리서치 완료</span>
+          </div>
+          <div style="font-size:11px;color:var(--t-400);margin-top:3px">${researched.price_text||'가격 정보 없음'}</div>
+        </div>`;
+      } else {
+        return `<div style="display:flex;justify-content:space-between;align-items:center;border:1px solid var(--border);border-radius:8px;padding:10px 12px;margin-bottom:6px">
+          <span style="font-size:12.5px;font-weight:600;color:var(--t-700)">${name}</span>
+          <button onclick="fetchCompetitorProduct('${name.replace(/'/g,"\\'")}')"
+            style="font-size:10.5px;font-weight:700;padding:5px 10px;border-radius:6px;border:1px solid var(--border-md);background:var(--bg);color:var(--t-600);cursor:pointer;flex-shrink:0">
+            리서치 수집
+          </button>
+        </div>`;
+      }
+    }).join('');
+  }
+
+  html += `<div style="display:flex;gap:6px;margin-top:8px">
+    <input id="comp-manual-product" placeholder="다른 제품명 직접 입력 (예: 듄2)"
+      style="flex:1;font-size:12px;padding:8px 10px;border:1px solid var(--border-md);border-radius:7px;background:var(--paper)"
+      onkeydown="if(event.key==='Enter')addManualCompetitorProduct()">
+    <button onclick="addManualCompetitorProduct()"
+      style="font-size:11px;font-weight:700;padding:8px 12px;border-radius:7px;border:1px solid var(--border-md);background:var(--bg);color:var(--t-600);cursor:pointer;white-space:nowrap">추가</button>
+  </div>`;
+
+  if(!allNames.length){
+    html = `<div style="text-align:center;padding:16px;color:var(--t-300);font-size:11.5px;margin-bottom:8px">자동 검색된 제품 후보가 없습니다. 아래에 직접 제품명을 입력해주세요</div>` + html;
+  }
+
+  el.innerHTML = html;
+}
+
+function addManualCompetitorProduct(){
+  const input = document.getElementById('comp-manual-product');
+  const name = input.value.trim();
+  if(!name) return;
+  fetchCompetitorProduct(name);
+  input.value = '';
+}
+
+async function fetchCompetitorProduct(productName){
+  toast(`${compCompetitorBrand} ${productName} 정보를 수집하고 있습니다...`);
+  const r = await api('/api/competitor/fetch-product', {method:'POST', body:{
+    category: compSelectedCategory, brand: compCompetitorBrand, product_name: productName}});
   if(r?.ok){
-    toast(`${brand} 정보를 수집했습니다`);
-    await renderCompetitorBrands();
+    toast(`${productName} 리서치를 수집했습니다`);
+    await onCompetitorBrandChange();
   } else {
-    btn.textContent = origText;
-    toast(r?.msg || '정보 수집에 실패했습니다', false);
+    toast(r?.msg || '수집에 실패했습니다', false);
   }
 }
 
-function updateCompareButton(){
+function pickCompetitorProduct(data, el){
+  compCompetitorSelected = data;
+  document.querySelectorAll('.comp-comp-item').forEach(x=>{
+    x.style.borderColor = 'var(--border)'; x.style.background = 'var(--paper)';
+  });
+  el.style.borderColor = 'var(--t-900)'; el.style.background = 'var(--bg)';
+  updateSelectionSummary();
+
+  let panel = document.getElementById('comp-comp-research-panel');
+  if(panel) panel.remove();
+  panel = document.createElement('div');
+  panel.id = 'comp-comp-research-panel';
+  panel.style.cssText = 'margin:6px 0 10px;padding:12px;border:1px dashed var(--border-md);border-radius:8px;background:var(--bg)';
+  panel.innerHTML = renderResearchMini(data, true);
+  el.after(panel);
+}
+
+function updateSelectionSummary(){
+  document.getElementById('comp-sel-our').textContent =
+    compOurSelected ? `${compOurSelected.brand} ${compOurSelected.name}` : '자사 제품 미선택';
+  document.getElementById('comp-sel-comp').textContent =
+    compCompetitorSelected ? `${compCompetitorBrand} ${compCompetitorSelected.product_name}` : '경쟁 제품 미선택';
+
   const btn = document.getElementById('comp-compare-btn');
-  const ready = compSelectedOurProduct && compSelectedCompetitor;
+  const ready = compOurSelected && compCompetitorSelected;
   btn.disabled = !ready;
-  btn.style.opacity = ready ? '1' : '.4';
+  btn.style.opacity = ready ? '1' : '.35';
   btn.style.cursor = ready ? 'pointer' : 'not-allowed';
+  btn.style.background = ready ? 'var(--p)' : 'var(--t-900)';
 }
 
 async function runCompetitorCompare(){
-  if(!compSelectedOurProduct || !compSelectedCompetitor) return;
+  if(!compOurSelected || !compCompetitorSelected) return;
   const resultEl = document.getElementById('comp-result-area');
-  resultEl.innerHTML = `<div style="text-align:center;padding:50px;color:var(--t-300)">
-    <div style="font-size:24px;margin-bottom:10px">⚔️</div>
-    <div style="font-size:13px;font-weight:600">AI가 비교 분석 중입니다...</div>
-  </div>`;
+  resultEl.innerHTML = `<div style="text-align:center;padding:50px;color:var(--t-300);font-size:12.5px">비교 리포트를 생성하는 중입니다</div>`;
   resultEl.scrollIntoView({behavior:'smooth', block:'nearest'});
 
   const r = await api('/api/competitor/compare', {method:'POST', body:{
     category: compSelectedCategory,
-    our_product: compSelectedOurProduct.name,
-    our_brand: compSelectedOurProduct.brand,
-    competitor_brand: compSelectedCompetitor,
+    our_brand: compOurSelected.brand, our_product: compOurSelected.name,
+    competitor_brand: compCompetitorBrand, competitor_product: compCompetitorSelected.product_name,
   }});
 
   if(!r?.ok){
-    resultEl.innerHTML = `<div style="text-align:center;padding:40px;color:var(--red);font-size:13px">${r?.msg||'비교 분석에 실패했습니다'}</div>`;
+    resultEl.innerHTML = `<div style="text-align:center;padding:40px;color:var(--red);font-size:12.5px">${r?.msg||'비교 리포트 생성에 실패했습니다'}</div>`;
     return;
   }
 
   const comp = r.comparison;
-  const compInfo = compCompetitorCache[compSelectedCompetitor] || {};
+  const ourLabel = `${compOurSelected.brand} ${compOurSelected.name}`;
+  const compLabel = `${compCompetitorBrand} ${compCompetitorSelected.product_name}`;
 
   resultEl.innerHTML = `
-    <div style="background:var(--paper);border:1.5px solid var(--border);border-radius:18px;overflow:hidden;box-shadow:0 8px 24px rgba(0,0,0,.06)">
-      <!-- 대결 헤더 -->
-      <div style="background:linear-gradient(135deg,#1E293B,#0F172A);padding:20px 24px;display:flex;align-items:center;justify-content:space-between">
-        <div style="text-align:left">
-          <div style="font-size:10px;color:rgba(255,255,255,.6);font-weight:700;margin-bottom:3px">OUR PRODUCT</div>
-          <div style="font-size:16px;font-weight:800;color:#fff">${compSelectedOurProduct.brand} ${compSelectedOurProduct.name}</div>
+    <div style="border:1px solid var(--border);border-radius:12px;overflow:hidden">
+      <!-- 리포트 헤더 -->
+      <div style="padding:16px 20px;border-bottom:1px solid var(--border);background:var(--bg)">
+        <div style="display:flex;justify-content:space-between;align-items:baseline">
+          <div style="font-size:14px;font-weight:800;color:var(--t-900)">${ourLabel} <span style="color:var(--t-300);font-weight:500">vs</span> ${compLabel}</div>
+          <div style="font-size:11px;color:var(--t-400)">${CATEGORY_LABEL[compSelectedCategory]} 비교 리포트</div>
         </div>
-        <div style="font-size:20px;color:rgba(255,255,255,.4);font-weight:800">VS</div>
-        <div style="text-align:right">
-          <div style="font-size:10px;color:rgba(255,255,255,.6);font-weight:700;margin-bottom:3px">COMPETITOR</div>
-          <div style="font-size:16px;font-weight:800;color:#fff">${compSelectedCompetitor}</div>
-          <div style="font-size:11px;color:rgba(255,255,255,.5);margin-top:2px">${compInfo.price_text||''}</div>
-        </div>
+        ${comp.price_comparison?`<div style="font-size:12px;color:var(--t-500);margin-top:6px">${comp.price_comparison}</div>`:''}
       </div>
 
-      <div style="padding:24px">
-        <!-- 장단점 2단 배치 -->
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:20px">
-          <div style="background:#FEF2F2;border-radius:14px;padding:16px">
-            <div style="font-size:12px;font-weight:800;color:#DC2626;margin-bottom:10px">🎯 ${compSelectedCompetitor}의 강점</div>
-            ${(comp.competitor_pros||[]).map(p=>`<div style="font-size:12px;color:var(--t-700);line-height:1.7;margin-bottom:5px">• ${p}</div>`).join('')}
-          </div>
-          <div style="background:#ECFDF3;border-radius:14px;padding:16px">
-            <div style="font-size:12px;font-weight:800;color:#16A34A;margin-bottom:10px">💡 ${compSelectedCompetitor}의 약점 (공략 포인트)</div>
-            ${(comp.competitor_cons||[]).map(p=>`<div style="font-size:12px;color:var(--t-700);line-height:1.7;margin-bottom:5px">• ${p}</div>`).join('')}
-          </div>
-        </div>
-
-        <!-- 자사 장점 -->
-        <div style="background:var(--p-lt);border-radius:14px;padding:16px;margin-bottom:16px">
-          <div style="font-size:12px;font-weight:800;color:var(--p);margin-bottom:10px">🏆 우리 제품의 강점</div>
-          ${(comp.our_pros||[]).map(p=>`<div style="font-size:12.5px;color:var(--t-800);line-height:1.7;margin-bottom:5px;font-weight:500">• ${p}</div>`).join('')}
-        </div>
+      <div style="padding:20px">
+        <!-- 비교 테이블 -->
+        <table style="width:100%;border-collapse:collapse;margin-bottom:20px">
+          <thead>
+            <tr>
+              <th style="width:16%"></th>
+              <th style="text-align:left;padding:8px 10px;font-size:11px;font-weight:700;color:var(--t-500);border-bottom:1.5px solid var(--border)">${ourLabel}</th>
+              <th style="text-align:left;padding:8px 10px;font-size:11px;font-weight:700;color:var(--t-500);border-bottom:1.5px solid var(--border)">${compLabel}</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td style="padding:10px;font-size:11px;font-weight:700;color:var(--green);vertical-align:top;border-bottom:1px solid var(--border)">장점</td>
+              <td style="padding:10px;font-size:12px;color:var(--t-700);line-height:1.8;vertical-align:top;border-bottom:1px solid var(--border)">${(comp.our_pros||[]).map(p=>`· ${p}`).join('<br>')}</td>
+              <td style="padding:10px;font-size:12px;color:var(--t-700);line-height:1.8;vertical-align:top;border-bottom:1px solid var(--border)">${(comp.competitor_pros||[]).map(p=>`· ${p}`).join('<br>')}</td>
+            </tr>
+            <tr>
+              <td style="padding:10px;font-size:11px;font-weight:700;color:var(--red);vertical-align:top">단점</td>
+              <td style="padding:10px;font-size:12px;color:var(--t-700);line-height:1.8;vertical-align:top">${(comp.our_cons||[]).map(p=>`· ${p}`).join('<br>')||'<span style="color:var(--t-300)">—</span>'}</td>
+              <td style="padding:10px;font-size:12px;color:var(--t-700);line-height:1.8;vertical-align:top">${(comp.competitor_cons||[]).map(p=>`· ${p}`).join('<br>')}</td>
+            </tr>
+          </tbody>
+        </table>
 
         <!-- 영업 포인트 -->
-        <div style="background:linear-gradient(135deg,#1E293B,#334155);border-radius:14px;padding:18px">
-          <div style="font-size:12.5px;font-weight:800;color:#fff;margin-bottom:12px;display:flex;align-items:center;gap:6px">🔥 영업 실전 활용 포인트</div>
-          ${(comp.selling_points||[]).map((p,i)=>`<div style="display:flex;gap:10px;margin-bottom:9px;align-items:flex-start">
-            <span style="width:18px;height:18px;border-radius:6px;background:rgba(255,255,255,.15);color:#fff;font-size:10px;font-weight:800;display:flex;align-items:center;justify-content:center;flex-shrink:0;margin-top:1px">${i+1}</span>
-            <span style="font-size:12.5px;color:rgba(255,255,255,.92);line-height:1.6">${p}</span>
+        <div style="border-top:1px solid var(--border);padding-top:16px">
+          <div style="font-size:12px;font-weight:800;color:var(--t-900);margin-bottom:10px">영업 실전 포인트</div>
+          ${(comp.selling_points||[]).map((p,i)=>`<div style="display:flex;gap:9px;margin-bottom:8px;align-items:flex-start">
+            <span style="font-size:11px;font-weight:700;color:var(--t-300);flex-shrink:0;width:16px">${i+1}.</span>
+            <span style="font-size:12.5px;color:var(--t-700);line-height:1.65">${p}</span>
           </div>`).join('')}
         </div>
       </div>
@@ -1940,6 +2060,7 @@ async function runCompetitorCompare(){
   `;
 }
 
+// ── 매장과의 소통 ────────────────────────────────
 // ── 매장과의 소통 ────────────────────────────────
 let commData = [], commAllSellers = [], commSelectedSeller = '';
 const COMM_TYPE_ICON = {'방문':'🚗','전화':'📞','카톡/문자':'💬','이메일':'✉️','기타':'📝'};
