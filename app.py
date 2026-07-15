@@ -225,6 +225,26 @@ def init_db():
         uploaded_at TEXT DEFAULT ''
     )""")
     # SNS 정보 테이블 (블로그 중심)
+    conn.execute("""CREATE TABLE IF NOT EXISTS competitor_products (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        category TEXT NOT NULL,
+        brand TEXT NOT NULL,
+        product_name TEXT DEFAULT '',
+        price_text TEXT DEFAULT '',
+        summary TEXT DEFAULT '',
+        source_titles TEXT DEFAULT '',
+        source_urls TEXT DEFAULT '',
+        fetched_at TEXT DEFAULT '',
+        UNIQUE(category, brand)
+    )""")
+    conn.execute("""CREATE TABLE IF NOT EXISTS competitor_comparison (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        category TEXT NOT NULL,
+        our_product TEXT NOT NULL,
+        competitor_brand TEXT NOT NULL,
+        comparison_text TEXT DEFAULT '',
+        created_at TEXT DEFAULT ''
+    )""")
     conn.execute("""CREATE TABLE IF NOT EXISTS store_communication (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         seller_name TEXT NOT NULL,
@@ -4758,6 +4778,330 @@ def api_export_communication_xlsx():
     fname = f'매장소통_{seller}_{year}.xlsx' if seller else f'매장소통_전체_{year}.xlsx'
     return send_file(buf, mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
         as_attachment=True, download_name=fname)
+
+
+# ── 타사 비교 API ────────────────────────────────
+COMPETITOR_CATEGORIES = {
+    '유모차': ['실버크로스','잉글레시나','뉴나','조이','부가부','시크','미마','스토케','타보','리안','에그','오르빗','오이스터','와이업'],
+    '카시트': ['브라이택스','싸이벡스','맥시코시','뉴나','조이','다이치','순성'],
+    '식탁의자': ['스토케','야마토야','싸이벡스','이케아','본베베','시디즈','아가드','빼그빼레고','호크베타'],
+    '웨건': ['폼포라','킨즈'],
+}
+
+# 카테고리 → 자사 item_group 매핑 (sales_data 기준)
+CATEGORY_TO_ITEM_GROUP = {
+    '유모차':   ['유모차'],
+    '카시트':   ['컨버터블카시트','주니어카시트','휴대용부스터'],
+    '식탁의자': ['식탁의자','하이체어'],
+    '웨건':     [],  # item_name으로 원더폴드 필터링
+}
+
+
+@app.route("/api/competitor/categories")
+@login_required
+def api_competitor_categories():
+    """품목 카테고리 + 타사 브랜드 목록"""
+    return jsonify({cat: brands for cat, brands in COMPETITOR_CATEGORIES.items()})
+
+
+@app.route("/api/competitor/our-products")
+@login_required
+def api_competitor_our_products():
+    """카테고리별 자사 제품 목록 (판매 데이터 기반)"""
+    import re as _re
+    category = request.args.get('category', '')
+    conn = get_db()
+    groups = CATEGORY_TO_ITEM_GROUP.get(category, [])
+
+    if category == '웨건':
+        rows = conn.execute("""
+            SELECT item_name, item_group, SUM(total) total, SUM(quantity) qty
+            FROM sales_data WHERE item_name LIKE '%원더폴드%'
+            GROUP BY item_name ORDER BY total DESC
+        """).fetchall()
+    elif groups:
+        placeholders = ','.join('?' for _ in groups)
+        rows = conn.execute(f"""
+            SELECT item_name, item_group, SUM(total) total, SUM(quantity) qty
+            FROM sales_data WHERE item_group IN ({placeholders})
+            GROUP BY item_name ORDER BY total DESC
+        """, groups).fetchall()
+    else:
+        rows = []
+    conn.close()
+
+    products = []
+    for r in rows:
+        brand = remap_group(r[1], r[0])
+        norm = normalize_item_name(r[0])
+        pname = _re.sub(r'^\[[^\]]+\]', '', norm).split('_')[0].strip()
+        products.append({'name': pname, 'brand': brand, 'full_name': norm,
+                          'total': r[2] or 0, 'qty': r[3] or 0})
+    # 같은 제품명(색상 다른 것) 합산
+    merged = {}
+    for p in products:
+        key = (p['brand'], p['name'])
+        if key not in merged:
+            merged[key] = p
+        else:
+            merged[key]['total'] += p['total']
+            merged[key]['qty']   += p['qty']
+    result = sorted(merged.values(), key=lambda x: -x['total'])
+    return jsonify(result)
+
+
+@app.route("/api/competitor/fetch", methods=["POST"])
+@login_required
+def api_competitor_fetch():
+    """타사 브랜드 제품 정보 자동 수집 (네이버 검색 기반)"""
+    import urllib.request, urllib.parse, re as _re5
+
+    d = request.json or {}
+    category = d.get('category', '').strip()
+    brand = d.get('brand', '').strip()
+    if not category or not brand:
+        return jsonify({'ok': False, 'msg': '품목과 브랜드를 선택해주세요'}), 400
+
+    client_id     = os.environ.get('NAVER_CLIENT_ID',     'InqUUQfvWZN1rAZM4whk')
+    client_secret = os.environ.get('NAVER_CLIENT_SECRET', 'fXYMLK1N1X')
+
+    def strip_tags(s): return _re5.sub('<[^>]+>', '', s or '')
+
+    def naver_search(endpoint, query, display=10, sort='sim'):
+        url = (f'https://openapi.naver.com/v1/search/{endpoint}.json?query='
+               + urllib.parse.quote(query) + f'&display={display}&sort={sort}')
+        req = urllib.request.Request(url)
+        req.add_header('X-Naver-Client-Id', client_id)
+        req.add_header('X-Naver-Client-Secret', client_secret)
+        with urllib.request.urlopen(req, timeout=10) as r:
+            return json.loads(r.read().decode('utf-8'))
+
+    query = f"{brand} {category}"
+    titles, urls, prices, snippets = [], [], [], []
+
+    try:
+        # 쇼핑 검색 — 가격/제품명 정보
+        shop = naver_search('shop', query, display=8, sort='sim')
+        for item in shop.get('items', [])[:8]:
+            t = strip_tags(item.get('title',''))
+            titles.append(t)
+            urls.append(item.get('link',''))
+            price = item.get('lprice','')
+            if price:
+                prices.append(int(price))
+    except Exception as e:
+        pass
+
+    try:
+        # 블로그 검색 — 리뷰/특징 정보
+        blog = naver_search('blog', query, display=6, sort='sim')
+        for item in blog.get('items', [])[:6]:
+            desc = strip_tags(item.get('description',''))
+            if desc: snippets.append(desc)
+    except Exception as e:
+        pass
+
+    if not titles and not snippets:
+        return jsonify({'ok': False, 'msg': '검색 결과가 없습니다. 브랜드명을 확인해주세요'}), 404
+
+    # 가격대 요약
+    price_text = ''
+    if prices:
+        prices.sort()
+        lo, hi = prices[0], prices[-1]
+        if lo == hi:
+            price_text = f"약 {lo:,}원"
+        else:
+            price_text = f"약 {lo:,}원 ~ {hi:,}원"
+
+    # 요약 텍스트 생성 (Claude API 사용, 실패 시 원문 스니펫 나열)
+    summary = summarize_competitor_info(brand, category, titles, snippets)
+
+    conn = get_db()
+    now_str = datetime.now().strftime('%Y-%m-%d %H:%M')
+    conn.execute("""INSERT INTO competitor_products
+        (category, brand, product_name, price_text, summary, source_titles, source_urls, fetched_at)
+        VALUES(?,?,?,?,?,?,?,?)
+        ON CONFLICT(category, brand) DO UPDATE SET
+        product_name=excluded.product_name, price_text=excluded.price_text,
+        summary=excluded.summary, source_titles=excluded.source_titles,
+        source_urls=excluded.source_urls, fetched_at=excluded.fetched_at""",
+        (category, brand, titles[0] if titles else '', price_text, summary,
+         ' | '.join(titles[:5]), ' | '.join(urls[:5]), now_str))
+    conn.commit()
+    conn.close()
+
+    return jsonify({
+        'ok': True, 'category': category, 'brand': brand,
+        'product_name': titles[0] if titles else '', 'price_text': price_text,
+        'summary': summary, 'source_titles': titles[:5], 'fetched_at': now_str,
+    })
+
+
+def summarize_competitor_info(brand, category, titles, snippets):
+    """수집된 타사 제품 정보를 간결한 특징 요약으로 정리 (Claude API, 실패 시 원문 기반 정리)"""
+    combined = ' / '.join(titles[:5] + snippets[:4])
+    combined = combined.strip()
+    if not combined:
+        return ''
+
+    api_key = os.environ.get('ANTHROPIC_API_KEY', '')
+    if api_key:
+        try:
+            import requests
+            prompt = f"""다음은 유아용품 브랜드 '{brand}'의 '{category}' 제품과 관련해 인터넷에서 수집한 검색 결과(제목/리뷰 일부)입니다.
+이 정보만을 바탕으로, 과장하거나 없는 사실을 추가하지 말고 이 브랜드 제품의 특징을 3~4개의 짧은 불릿포인트로 요약해주세요.
+가격대, 디자인/소재 특징, 주요 기능, 시장 포지셔닝(프리미엄/보급형 등) 위주로 정리하세요.
+결과는 "• "로 시작하는 불릿 목록만 출력하세요 (설명, 서론 없이).
+
+수집된 정보: {combined}"""
+            resp = requests.post(
+                "https://api.anthropic.com/v1/messages",
+                headers={"x-api-key": api_key, "anthropic-version": "2023-06-01", "content-type": "application/json"},
+                json={"model": "claude-sonnet-4-6", "max_tokens": 400,
+                      "messages": [{"role": "user", "content": prompt}]},
+                timeout=12,
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                text_blocks = [b.get('text','') for b in data.get('content',[]) if b.get('type')=='text']
+                summary = ''.join(text_blocks).strip()
+                if summary:
+                    return summary
+        except Exception:
+            pass
+
+    # Fallback: 원문 스니펫 그대로 나열
+    lines = [f"• {t}" for t in titles[:4]]
+    return '\n'.join(lines) if lines else combined[:200]
+
+
+@app.route("/api/competitor/compare", methods=["POST"])
+@login_required
+def api_competitor_compare():
+    """자사 제품 vs 타사 제품 비교 분석 생성"""
+    d = request.json or {}
+    category = d.get('category', '').strip()
+    our_product = d.get('our_product', '').strip()
+    our_brand = d.get('our_brand', '').strip()
+    competitor_brand = d.get('competitor_brand', '').strip()
+
+    if not category or not our_product or not competitor_brand:
+        return jsonify({'ok': False, 'msg': '품목/자사제품/타사브랜드를 모두 선택해주세요'}), 400
+
+    conn = get_db()
+    comp_row = conn.execute(
+        "SELECT * FROM competitor_products WHERE category=? AND brand=?",
+        (category, competitor_brand)).fetchone()
+    conn.close()
+
+    if not comp_row:
+        return jsonify({'ok': False, 'msg': '먼저 타사 정보를 불러와주세요'}), 400
+
+    comp = dict(comp_row)
+    comparison = generate_comparison(category, our_brand, our_product, competitor_brand, comp)
+
+    conn = get_db()
+    conn.execute("""INSERT INTO competitor_comparison
+        (category, our_product, competitor_brand, comparison_text, created_at)
+        VALUES(?,?,?,?,?)""",
+        (category, our_product, competitor_brand, json.dumps(comparison, ensure_ascii=False),
+         datetime.now().strftime('%Y-%m-%d %H:%M')))
+    conn.commit(); conn.close()
+
+    return jsonify({'ok': True, 'comparison': comparison})
+
+
+OUR_BRAND_STRENGTHS = {
+    '줄즈':      'SNS 바이럴 확산력과 트렌디한 색상 구성, 재구매율이 높은 실용적 유모차',
+    '레카로':    '독일 안전 인증 기반 신뢰도, 카시트 전문 브랜드로서의 전문성',
+    '엔픽스':    '국내 브랜드 특유의 가성비와 A/S 접근성, 국내 육아 환경에 최적화',
+    '카오스':    '프리미엄 하이체어 라인, 원목 소재와 오래 쓸 수 있는 확장성',
+    '원더폴드':  '웨건 시장 국내 독점적 포지션, 다인승 특화 설계',
+    'ABC디자인': '유럽 감성 디자인과 패밀리 브랜드 이미지, 소재 고급감',
+    '타프토이즈': '유아 발달단계별 완구 전문성, 선물/사은품 수요 대응',
+}
+
+
+def generate_comparison(category, our_brand, our_product, competitor_brand, comp):
+    """비교 분석 생성 (Claude API 우선, 실패 시 규칙 기반 템플릿)"""
+    api_key = os.environ.get('ANTHROPIC_API_KEY', '')
+    our_strength = OUR_BRAND_STRENGTHS.get(our_brand, '국내 유통망과 사후관리 대응력')
+
+    if api_key:
+        try:
+            import requests
+            prompt = f"""당신은 유아용품 B2B 영업 전문가입니다. 아래 정보를 바탕으로 자사 제품과 경쟁사 제품을 비교 분석해주세요.
+
+[품목] {category}
+[자사 제품] {our_brand} - {our_product}
+[자사 브랜드 강점 참고] {our_strength}
+
+[경쟁사] {competitor_brand}
+[경쟁사 제품 정보] {comp.get('product_name','')}
+[경쟁사 가격대] {comp.get('price_text','정보 없음')}
+[경쟁사 특징 요약] {comp.get('summary','')}
+
+다음 JSON 형식으로만 답하세요 (설명 없이 JSON만):
+{{
+  "competitor_pros": ["경쟁사 장점 2~3개, 사실 기반으로만"],
+  "competitor_cons": ["경쟁사 단점이나 우리가 파고들 수 있는 약점 2~3개"],
+  "our_pros": ["자사 제품 장점 2~3개"],
+  "selling_points": ["매장/고객에게 어필할 수 있는 영업 포인트 3~4개, 구체적이고 실전적으로"]
+}}
+
+주의: 과장하거나 사실이 아닌 내용을 만들어내지 마세요. 경쟁사 정보가 부족하면 일반적으로 알려진 특성 수준에서만 언급하세요."""
+            resp = requests.post(
+                "https://api.anthropic.com/v1/messages",
+                headers={"x-api-key": api_key, "anthropic-version": "2023-06-01", "content-type": "application/json"},
+                json={"model": "claude-sonnet-4-6", "max_tokens": 800,
+                      "messages": [{"role": "user", "content": prompt}]},
+                timeout=15,
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                text_blocks = [b.get('text','') for b in data.get('content',[]) if b.get('type')=='text']
+                raw = ''.join(text_blocks).strip()
+                raw = raw.replace('```json','').replace('```','').strip()
+                parsed = json.loads(raw)
+                if all(k in parsed for k in ['competitor_pros','competitor_cons','our_pros','selling_points']):
+                    return parsed
+        except Exception:
+            pass
+
+    # Fallback: 규칙 기반 템플릿
+    return {
+        'competitor_pros': [
+            f"{competitor_brand}는 해외 브랜드로서의 인지도를 갖추고 있습니다",
+            f"가격대: {comp.get('price_text','정보 없음')}",
+        ],
+        'competitor_cons': [
+            "국내 A/S 및 부품 수급 대응 속도가 상대적으로 느릴 수 있습니다",
+            "국내 육아 환경(공간, 사용 패턴)에 맞춘 현지화가 제한적일 수 있습니다",
+        ],
+        'our_pros': [our_strength],
+        'selling_points': [
+            "국내 정식 유통 및 빠른 A/S 대응이 가능합니다",
+            "실물 체험 및 매장 상담을 통한 확신 있는 구매 결정을 도울 수 있습니다",
+            "가격 대비 구성품과 사후관리 혜택을 강조해주세요",
+        ],
+    }
+
+
+@app.route("/api/competitor/list")
+@login_required
+def api_competitor_list():
+    """수집된 타사 제품 목록 (카테고리별)"""
+    category = request.args.get('category', '')
+    conn = get_db()
+    if category:
+        rows = [dict(r) for r in conn.execute(
+            "SELECT * FROM competitor_products WHERE category=? ORDER BY brand", (category,)).fetchall()]
+    else:
+        rows = [dict(r) for r in conn.execute(
+            "SELECT * FROM competitor_products ORDER BY category, brand").fetchall()]
+    conn.close()
+    return jsonify(rows)
 
 
 # ── SNS 활용 매장 API ────────────────────────────────
