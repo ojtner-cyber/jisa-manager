@@ -902,7 +902,7 @@ td.center{text-align:center}
         </div>
 
         <!-- 선택 요약 + 비교 버튼 -->
-        <div style="display:flex;align-items:center;justify-content:space-between;background:var(--bg);border:1px solid var(--border);border-radius:10px;padding:12px 16px;margin-bottom:20px">
+        <div style="display:flex;align-items:center;justify-content:space-between;background:var(--bg);border:1px solid var(--border);border-radius:10px;padding:12px 16px;margin-bottom:12px">
           <div style="display:flex;align-items:center;gap:10px;font-size:12.5px;color:var(--t-500)">
             <span>선택:</span>
             <span id="comp-sel-our" style="font-weight:700;color:var(--t-800)">자사 제품 미선택</span>
@@ -915,6 +915,9 @@ td.center{text-align:center}
             비교 리포트 생성
           </button>
         </div>
+
+        <!-- 유형별 일괄 비교 영역 -->
+        <div id="comp-type-compare-area"></div>
 
         <!-- 비교 결과 -->
         <div id="comp-result-area"></div>
@@ -1782,6 +1785,8 @@ async function selectCompCategory(cat){
   brandSel.innerHTML = '<option value="">브랜드 선택</option>' + brands.map(b=>`<option value="${b}">${b}</option>`).join('');
   document.getElementById('comp-competitor-products').innerHTML =
     `<div style="text-align:center;padding:40px 16px;color:var(--t-300);font-size:12px">브랜드를 선택하면 제품 리서치를 시작할 수 있습니다</div>`;
+
+  loadTypeCompareOptions();
 }
 
 function renderOurProductsGrouped(){
@@ -1879,6 +1884,7 @@ async function fetchOurProductResearch(){
     panel.innerHTML = renderResearchMini(r, 'ours');
     toast('자사 제품 리서치를 수집했습니다');
     renderOurProductsGrouped(); // product_type 갱신 반영
+    loadTypeCompareOptions();
   } else {
     btn.textContent = orig; btn.disabled = false;
     toast(r?.msg || '수집에 실패했습니다', false);
@@ -1900,6 +1906,18 @@ async function deleteOurResearch(){
 
 // "[태그] 내용" 형식을 배지+텍스트로 분리 렌더링 (전역 헬퍼)
 function renderTaggedItem(item){
+  // 새 구조: {tag, point, reason} — point=무엇이 좋은지, reason=왜 그런지
+  if(item && typeof item === 'object' && (item.point !== undefined)){
+    const tag = item.tag ? `<span style="flex-shrink:0;font-size:9px;font-weight:700;color:var(--t-400);background:var(--paper);border:1px solid var(--border);padding:1px 5px;border-radius:4px;white-space:nowrap;margin-top:1px">${item.tag}</span>` : '';
+    return `<div style="margin-bottom:9px">
+      <div style="display:flex;gap:6px;align-items:flex-start">
+        ${tag}
+        <span style="font-size:11.5px;font-weight:700;color:var(--t-800);line-height:1.5">${item.point}</span>
+      </div>
+      ${item.reason?`<div style="font-size:10.5px;color:var(--t-500);line-height:1.55;margin-top:3px;padding-left:${item.tag?'34px':'0'}">→ ${item.reason}</div>`:''}
+    </div>`;
+  }
+  // 하위 호환: "[태그] 내용" 형식 문자열
   const m = String(item).match(/^\[([^\]]+)\]\s*(.*)$/);
   if(m){
     return `<div style="display:flex;gap:6px;align-items:flex-start;margin-bottom:6px">
@@ -2052,6 +2070,7 @@ async function fetchCompetitorProduct(productName){
   if(r?.ok){
     toast(`${productName} 리서치를 수집했습니다`);
     await onCompetitorBrandChange();
+    loadTypeCompareOptions();
   } else {
     toast(r?.msg || '수집에 실패했습니다', false);
   }
@@ -2113,7 +2132,7 @@ function updateSelectionSummary(){
 async function runCompetitorCompare(){
   if(!compOurSelected || !compCompetitorSelected) return;
   const resultEl = document.getElementById('comp-result-area');
-  resultEl.innerHTML = `<div style="text-align:center;padding:50px;color:var(--t-300);font-size:12.5px">비교 리포트를 생성하는 중입니다</div>`;
+  resultEl.innerHTML = `<div style="text-align:center;padding:50px;color:var(--t-300);font-size:12.5px">비교 리포트를 생성하는 중입니다 (이유까지 세밀하게 분석 중)</div>`;
   resultEl.scrollIntoView({behavior:'smooth', block:'nearest'});
 
   const r = await api('/api/competitor/compare', {method:'POST', body:{
@@ -2133,17 +2152,12 @@ async function runCompetitorCompare(){
 
   function renderTaggedList(items){
     if(!items || !items.length) return '<span style="color:var(--t-300);font-size:11.5px">확인된 정보 없음</span>';
-    return items.map(item=>{
-      const m = String(item).match(/^\[([^\]]+)\]\s*(.*)$/);
-      if(m){
-        return `<div style="display:flex;gap:7px;align-items:flex-start;margin-bottom:8px">
-          <span style="flex-shrink:0;font-size:9.5px;font-weight:700;color:var(--t-400);background:var(--bg);border:1px solid var(--border);padding:1.5px 6px;border-radius:5px;white-space:nowrap;margin-top:1px">${m[1]}</span>
-          <span style="font-size:12px;color:var(--t-700);line-height:1.65">${m[2]}</span>
-        </div>`;
-      }
-      return `<div style="font-size:12px;color:var(--t-700);line-height:1.7;margin-bottom:6px">· ${item}</div>`;
-    }).join('');
+    return items.map(renderTaggedItem).join('');
   }
+
+  const exportUrl = `/api/competitor/export-xlsx?mode=single&category=${encodeURIComponent(compSelectedCategory)}`
+    + `&our_brand=${encodeURIComponent(compOurSelected.brand)}&our_product=${encodeURIComponent(compOurSelected.name)}`
+    + `&competitor_brand=${encodeURIComponent(compCompetitorBrand)}&competitor_product=${encodeURIComponent(compCompetitorSelected.product_name)}`;
 
   resultEl.innerHTML = `
     <div style="border:1px solid var(--border);border-radius:12px;overflow:hidden">
@@ -2151,7 +2165,10 @@ async function runCompetitorCompare(){
       <div style="padding:16px 20px;border-bottom:1px solid var(--border);background:var(--bg)">
         <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:8px">
           <div style="font-size:14px;font-weight:800;color:var(--t-900)">${ourLabel} <span style="color:var(--t-300);font-weight:500">vs</span> ${compLabel}</div>
-          <div style="font-size:11px;color:var(--t-400)">${CATEGORY_LABEL[compSelectedCategory]} 비교 리포트</div>
+          <div style="display:flex;align-items:center;gap:10px">
+            <a href="${exportUrl}" style="font-size:11px;font-weight:700;color:var(--p);text-decoration:none;display:flex;align-items:center;gap:4px">📥 엑셀 다운로드</a>
+            <div style="font-size:11px;color:var(--t-400)">${CATEGORY_LABEL[compSelectedCategory]} 비교 리포트</div>
+          </div>
         </div>
         ${comp.summary?`<div style="font-size:12.5px;color:var(--p);font-weight:700;background:var(--p-lt);padding:9px 12px;border-radius:8px;line-height:1.5">💡 ${comp.summary}</div>`:''}
       </div>
@@ -2168,12 +2185,12 @@ async function runCompetitorCompare(){
           </thead>
           <tbody>
             <tr>
-              <td style="padding:12px 10px;font-size:11px;font-weight:700;color:var(--green);vertical-align:top;border-bottom:1px solid var(--border)">✓ 장점</td>
+              <td style="padding:12px 10px;font-size:11px;font-weight:700;color:var(--green);vertical-align:top;border-bottom:1px solid var(--border)">✓ 이래서<br>추천해요</td>
               <td style="padding:12px 10px;vertical-align:top;border-bottom:1px solid var(--border)">${renderTaggedList(comp.our_pros)}</td>
               <td style="padding:12px 10px;vertical-align:top;border-bottom:1px solid var(--border)">${renderTaggedList(comp.competitor_pros)}</td>
             </tr>
             <tr>
-              <td style="padding:12px 10px;font-size:11px;font-weight:700;color:var(--red);vertical-align:top">✗ 단점</td>
+              <td style="padding:12px 10px;font-size:11px;font-weight:700;color:var(--red);vertical-align:top">✗ 이건<br>아쉬워요</td>
               <td style="padding:12px 10px;vertical-align:top">${renderTaggedList(comp.our_cons)}</td>
               <td style="padding:12px 10px;vertical-align:top">${renderTaggedList(comp.competitor_cons)}</td>
             </tr>
@@ -2188,6 +2205,82 @@ async function runCompetitorCompare(){
             <span style="font-size:12.5px;color:var(--t-700);line-height:1.65">${p}</span>
           </div>`).join('')}
         </div>
+      </div>
+    </div>
+  `;
+}
+
+// ── 유형별 일괄 비교 (휴대용/절충형/디럭스, 컨버터블/주니어/토들러) ──────
+async function loadTypeCompareOptions(){
+  const el = document.getElementById('comp-type-compare-area');
+  if(!el) return;
+  const types = await api(`/api/competitor/type-options?category=${encodeURIComponent(compSelectedCategory)}`) || [];
+  if(!types.length){
+    el.innerHTML = '';
+    return;
+  }
+  el.innerHTML = `
+    <div style="margin:18px 0;padding:14px 16px;border:1px solid var(--border);border-radius:12px;background:var(--bg)">
+      <div style="font-size:11.5px;font-weight:700;color:var(--t-500);margin-bottom:9px">유형별 일괄 비교 — 리서치된 모든 제품을 한 번에</div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        ${types.map(t=>`<button onclick="runTypeCompare('${t}')"
+          style="padding:8px 16px;border-radius:8px;border:1px solid var(--border-md);background:var(--paper);color:var(--t-700);font-size:12px;font-weight:700;cursor:pointer">
+          ${t} 전체 비교 →
+        </button>`).join('')}
+      </div>
+    </div>`;
+}
+
+async function runTypeCompare(productType){
+  const resultEl = document.getElementById('comp-result-area');
+  resultEl.innerHTML = `<div style="text-align:center;padding:50px;color:var(--t-300);font-size:12.5px">${productType} 유형 전체 비교를 준비하는 중입니다</div>`;
+  resultEl.scrollIntoView({behavior:'smooth', block:'nearest'});
+
+  const r = await api(`/api/competitor/type-compare?category=${encodeURIComponent(compSelectedCategory)}&product_type=${encodeURIComponent(productType)}`);
+  if(!r?.ok){
+    resultEl.innerHTML = `<div style="text-align:center;padding:40px;color:var(--red);font-size:12.5px">${r?.msg||'비교 데이터를 불러오지 못했습니다'}</div>`;
+    return;
+  }
+
+  const allProducts = [
+    ...r.our_products.map(p=>({...p, sideLabel:'자사'})),
+    ...r.competitor_products.map(p=>({...p, sideLabel:'경쟁사'})),
+  ];
+
+  const exportUrl = `/api/competitor/export-xlsx?mode=type&category=${encodeURIComponent(compSelectedCategory)}&product_type=${encodeURIComponent(productType)}`;
+
+  resultEl.innerHTML = `
+    <div style="border:1px solid var(--border);border-radius:12px;overflow:hidden">
+      <div style="padding:16px 20px;border-bottom:1px solid var(--border);background:var(--bg);display:flex;justify-content:space-between;align-items:center">
+        <div style="font-size:14px;font-weight:800;color:var(--t-900)">${CATEGORY_LABEL[compSelectedCategory]} · ${productType} 유형 일괄 비교</div>
+        <a href="${exportUrl}" style="font-size:11px;font-weight:700;color:var(--p);text-decoration:none">📥 엑셀 다운로드</a>
+      </div>
+      <div style="padding:20px;overflow-x:auto">
+        <table style="border-collapse:collapse;min-width:100%">
+          <thead>
+            <tr>
+              <th style="width:70px"></th>
+              ${allProducts.map(p=>`<th style="min-width:240px;text-align:left;padding:8px 10px;font-size:11px;font-weight:700;
+                color:${p.side==='ours'?'#fff':'var(--t-600)'};background:${p.side==='ours'?'var(--p)':'var(--bg)'};border-bottom:1.5px solid var(--border);border-radius:6px 6px 0 0">
+                <span style="font-size:9px;opacity:.8">${p.sideLabel}</span><br>${p.brand} ${p.product_name}
+              </th>`).join('')}
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td style="padding:10px;font-size:11px;font-weight:700;color:var(--green);vertical-align:top;border-bottom:1px solid var(--border)">장점</td>
+              ${allProducts.map(p=>`<td style="padding:10px;vertical-align:top;border-bottom:1px solid var(--border);border-left:1px solid var(--border)">
+                ${(p.pros&&p.pros.length)?p.pros.map(renderTaggedItem).join(''):'<span style="color:var(--t-300);font-size:11px">정보 없음</span>'}
+              </td>`).join('')}
+            </tr>
+            <tr>
+              <td style="padding:10px;font-size:11px;font-weight:700;color:var(--red);vertical-align:top">단점</td>
+              ${allProducts.map(p=>`<td style="padding:10px;vertical-align:top;border-left:1px solid var(--border)">
+                ${(p.cons&&p.cons.length)?p.cons.map(renderTaggedItem).join(''):'<span style="color:var(--t-300);font-size:11px">정보 없음</span>'}
+              </td>`).join('')}
+            </tr>
+          </tbody>
+        </table>
       </div>
     </div>
   `;

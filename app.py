@@ -5137,8 +5137,9 @@ def _classify_product_type(category, brand, product_name, titles, snippets):
 
 def _extract_pros_cons(brand, product_name, category, titles,
                          review_snippets=None, pro_snippets=None, con_snippets=None, official_snippets=None):
-    """수집된 검색결과(후기/장점/단점/공식정보 각각 분리, 이미 완결 문장으로 정제됨)에서 TOP3 장단점을 구조화
-    (Claude API 우선 — 언급 빈도 기준 TOP3, 실패 시 빈도 기반 규칙 선별)"""
+    """수집된 검색결과(후기/장점/단점/공식정보 각각 분리, 이미 완결 문장으로 정제됨)에서 TOP3 장단점을
+    '이유/근거'까지 포함한 구조로 정리 (Claude API 우선 — 언급 빈도 기준 TOP3, 실패 시 빈도 기반 규칙 선별)
+    반환 형식: pros/cons는 [{"tag":str, "point":str, "reason":str}, ...] 구조"""
     review_snippets = review_snippets or []
     pro_snippets = pro_snippets or []
     con_snippets = con_snippets or []
@@ -5152,8 +5153,8 @@ def _extract_pros_cons(brand, product_name, category, titles,
     if api_key:
         try:
             import requests
-            prompt = f"""당신은 유아용품 업계 15년차 상품기획/영업 전문가이자 마케터입니다.
-'{brand} {product_name}' ({category})에 대해 인터넷에서 실제 수집한 정보를 분야별로 드립니다 (이미 완결된 문장 단위로 정제되어 있습니다). 이를 근거로 날카로운 장단점 분석을 작성해주세요.
+            prompt = f"""당신은 유아용품 업계 15년차 상품기획/영업 전문가이자 마케터입니다. 이 분석은 실제 매장 영업 현장에서 고객 응대용으로 쓰일 자료이므로, "왜 그런지" 이유가 빠지면 안 됩니다.
+'{brand} {product_name}' ({category})에 대해 인터넷에서 실제 수집한 정보를 분야별로 드립니다 (이미 완결된 문장 단위로 정제되어 있습니다).
 
 [제품/판매 정보]
 {' / '.join(titles[:8])}
@@ -5170,67 +5171,82 @@ def _extract_pros_cons(brand, product_name, category, titles,
 [제품 특징/스펙/소재 관련 완결 문장들 — 총 {len(official_snippets)}개]
 {' / '.join(official_snippets[:12]) or '(수집된 정보 없음)'}
 
-작성 원칙:
-- 방대한 자료 전체를 종합했을 때 "의미가 겹치는 문장이 가장 많이 나오는" 순서로 장점 TOP3, 단점 TOP3를 선별하세요. 예를 들어 "가볍다", "휴대성 좋다", "들고다니기 편하다"가 각각 다른 문장에서 반복되면 이것을 하나의 장점("휴대성이 뛰어나 이동이 편리함")으로 통합해서 1위로 꼽으세요.
-- 리뷰 원문을 그대로 복사하지 마세요. 여러 문장에서 공통되는 의미를 전문가가 한 문장으로 종합·재작성하세요.
-- 뭉뚱그린 표현("품질이 좋다", "인기가 많다") 대신, 구체적 사실(소재, 무게, 크기, 접이식 여부, 회전 기능, 통기성, 안전 인증, 조립 난이도 등)을 짚어주세요.
-- 장점과 단점을 각각 명확히 구분되는 별개의 포인트로 작성하세요.
-- 단점 정보가 부족하면, 이 카테고리 제품군에서 해당 타입 제품이 일반적으로 갖는 한계를 전문가 관점에서 신중하게 짚어주세요.
-- 가격은 언급하지 마세요.
+작성 원칙 (매우 중요):
+1. 방대한 자료 전체를 종합했을 때 "의미가 겹치는 문장이 가장 많이 나오는" 순서로 장점 TOP3, 단점 TOP3를 선별하세요.
+2. 각 장점/단점은 반드시 point(무엇이 좋은지/아쉬운지 한 줄 요약)와 reason(왜 그런지, 실사용에서 구체적으로 어떤 상황·어떤 사용자에게 이점/불편이 되는지 설명) 두 부분으로 나눠 작성하세요.
+   - 나쁜 예: point="휴대성이 좋음" reason="편리해서" (너무 뭉뚱그림)
+   - 좋은 예: point="원터치 폴딩으로 휴대성이 뛰어남" reason="한 손으로 3초 만에 접혀 대중교통 이용이나 차량 트렁크 적재 시 실질적으로 유용하다는 후기가 다수 확인됨"
+3. 리뷰 원문을 그대로 복사하지 마세요. 여러 문장에서 공통되는 의미를 전문가가 종합·재작성하세요.
+4. 뭉뚱그린 표현("품질이 좋다", "인기가 많다") 대신, 구체적 사실(소재, 무게, 크기, 접이식 여부, 회전 기능, 통기성, 안전 인증, 조립 난이도 등)을 짚어주세요.
+5. 단점 정보가 부족하면, 이 카테고리 제품군에서 해당 타입 제품이 일반적으로 갖는 한계를 전문가 관점에서 신중하게 짚고 reason에 왜 그런 한계가 생기는지 설명하세요.
+6. 태그는 [소재/디자인] [기능성] [무게/휴대성] [안전성] [내구성] [편의성] [브랜드신뢰도] 중 선택하세요.
+7. 가격은 언급하지 마세요.
 
 다음 JSON 형식으로만 답하세요 (설명 없이 JSON만):
 {{
-  "pros": ["종합된 완결 문장의 구체적 장점, 최대 3개, 언급 빈도 높은 순"],
-  "cons": ["종합된 완결 문장의 구체적 단점, 최대 3개, 언급 빈도 높은 순"],
+  "pros": [{{"tag":"태그", "point":"무엇이 좋은지 한 줄", "reason":"왜 좋은지, 어떤 상황/사용자에게 이점인지 구체적 설명"}}],
+  "cons": [{{"tag":"태그", "point":"무엇이 아쉬운지 한 줄", "reason":"왜 아쉬운지, 어떤 상황/사용자에게 불편한지 구체적 설명"}}],
   "description": "제품 특징을 압축한 1~2문장"
-}}"""
+}}
+pros/cons는 각각 최대 3개, 언급 빈도 높은 순."""
             resp = requests.post(
                 "https://api.anthropic.com/v1/messages",
                 headers={"x-api-key": api_key, "anthropic-version": "2023-06-01", "content-type": "application/json"},
-                json={"model": "claude-sonnet-4-6", "max_tokens": 800,
+                json={"model": "claude-sonnet-4-6", "max_tokens": 1200,
                       "messages": [{"role": "user", "content": prompt}]},
-                timeout=20,
+                timeout=25,
             )
             if resp.status_code == 200:
                 data = resp.json()
                 text_blocks = [b.get('text','') for b in data.get('content',[]) if b.get('type')=='text']
                 raw = ''.join(text_blocks).strip().replace('```json','').replace('```','').strip()
                 parsed = json.loads(raw)
-                return parsed.get('pros', [])[:3], parsed.get('cons', [])[:3], parsed.get('description', '')
+                pros = parsed.get('pros', [])[:3]
+                cons = parsed.get('cons', [])[:3]
+                # 형식 검증 — dict가 아니면 문자열을 point로 감싸서 호환
+                pros = [p if isinstance(p, dict) else {'tag':'', 'point':str(p), 'reason':''} for p in pros]
+                cons = [c if isinstance(c, dict) else {'tag':'', 'point':str(c), 'reason':''} for c in cons]
+                return pros, cons, parsed.get('description', '')
         except Exception:
             pass
 
-    # Fallback: API 키가 없을 때 — 빈도 기반 TOP3 (키워드 중복도가 높은 문장 우선)
-    def _frequency_top(snippets, n):
-        """단어 집합 유사도로 클러스터링해 가장 흔하게 등장하는 문장 대표 n개 선정"""
+    # Fallback: API 키가 없을 때 — 빈도 기반 TOP3 (키워드 중복도가 높은 문장 우선) + 근거 문장 첨부
+    def _frequency_top_with_reason(snippets, n):
+        """단어 집합 유사도로 클러스터링해 대표 문장(point) + 유사 문장 1개(reason 근거)를 함께 반환"""
         if not snippets:
             return []
-        # 각 문장의 핵심 단어(2글자 이상) 집합 추출
         word_sets = []
         for s in snippets:
             words = set(w for w in _re_module.findall(r'[가-힣A-Za-z]{2,}', s))
             word_sets.append(words)
-        # 문장간 단어 겹침 점수로 유사도 계산, 가장 많이 겹치는(대표성 높은) 문장 우선
         scores = []
         for i, ws in enumerate(word_sets):
             overlap = sum(len(ws & other) for j, other in enumerate(word_sets) if i != j)
             scores.append((overlap, i))
         scores.sort(reverse=True)
-        picked, used_words = [], set()
+        picked_idx, used_words = [], set()
         for _, idx in scores:
-            if len(picked) >= n:
+            if len(picked_idx) >= n:
                 break
             ws = word_sets[idx]
-            # 이미 뽑은 문장과 단어 겹침이 너무 크면 스킵 (중복 방지)
-            if picked and any(len(ws & uw) / max(len(ws),1) > 0.6 for uw in used_words):
+            if picked_idx and any(len(ws & word_sets[p]) / max(len(ws),1) > 0.6 for p in picked_idx):
                 continue
-            picked.append(snippets[idx])
-            used_words.add(frozenset(ws))
-        return picked[:n]
+            picked_idx.append(idx)
+
+        results = []
+        for idx in picked_idx:
+            point = snippets[idx]
+            ws = word_sets[idx]
+            # 같은 의미로 겹치는 다른 문장을 근거(reason)로 추가 제시
+            related = [snippets[j] for j, other in enumerate(word_sets)
+                       if j != idx and len(ws & other) >= 2][:2]
+            reason = ' '.join(related) if related else '여러 사용자 후기에서 반복적으로 언급된 내용입니다.'
+            results.append({'tag': '', 'point': point, 'reason': reason})
+        return results
 
     import re as _re_module
-    pros = _frequency_top(pro_snippets + review_snippets, 3)
-    cons = _frequency_top(con_snippets, 3)
+    pros = _frequency_top_with_reason(pro_snippets + review_snippets, 3)
+    cons = _frequency_top_with_reason(con_snippets, 3)
     description = (official_snippets + review_snippets)[0] if (official_snippets or review_snippets) else ''
     return pros, cons, description
 
@@ -5413,19 +5429,247 @@ def api_competitor_compare():
     return jsonify({'ok': True, 'comparison': comparison})
 
 
+@app.route("/api/competitor/type-options")
+@login_required
+def api_competitor_type_options():
+    """카테고리 내에서 리서치가 축적된 제품 유형 목록 반환 (휴대용/절충형/디럭스 등)"""
+    category = request.args.get('category', '')
+    type_order = PRODUCT_TYPE_ORDER.get(category, [])
+    conn = get_db()
+    rows = conn.execute("""
+        SELECT DISTINCT product_type FROM product_research
+        WHERE category=? AND product_type!=''
+    """, (category,)).fetchall()
+    conn.close()
+    found_types = set(r[0] for r in rows)
+    # 정해진 순서대로, 실제 데이터가 있는 유형만 반환
+    ordered = [t for t in type_order if t in found_types]
+    # 순서에 없는 유형도 혹시 있으면 추가
+    ordered += [t for t in found_types if t not in ordered]
+    return jsonify(ordered)
+
+
+@app.route("/api/competitor/type-compare")
+@login_required
+def api_competitor_type_compare():
+    """제품 유형(휴대용/절충형/디럭스 등) 단위로 자사 vs 모든 타사 제품 일괄 비교"""
+    category = request.args.get('category', '')
+    product_type = request.args.get('product_type', '')
+    if not category or not product_type:
+        return jsonify({'ok': False, 'msg': '품목과 유형을 선택해주세요'}), 400
+
+    conn = get_db()
+    our_rows = [dict(r) for r in conn.execute("""
+        SELECT * FROM product_research WHERE side='ours' AND category=? AND product_type=?
+        ORDER BY brand, product_name
+    """, (category, product_type)).fetchall()]
+    comp_rows = [dict(r) for r in conn.execute("""
+        SELECT * FROM product_research WHERE side='competitor' AND category=? AND product_type=?
+        ORDER BY brand, product_name
+    """, (category, product_type)).fetchall()]
+    conn.close()
+
+    def _parse_row(r):
+        try: r['pros'] = json.loads(r.get('pros') or '[]')
+        except: r['pros'] = []
+        try: r['cons'] = json.loads(r.get('cons') or '[]')
+        except: r['cons'] = []
+        r['pros'] = [p if isinstance(p, dict) else {'tag':'','point':str(p),'reason':''} for p in r['pros']]
+        r['cons'] = [c if isinstance(c, dict) else {'tag':'','point':str(c),'reason':''} for c in r['cons']]
+        return r
+
+    our_rows = [_parse_row(r) for r in our_rows]
+    comp_rows = [_parse_row(r) for r in comp_rows]
+
+    if not our_rows and not comp_rows:
+        return jsonify({'ok': False, 'msg': '이 유형에 리서치된 제품이 없습니다. 먼저 개별 제품 리서치를 수집해주세요'}), 404
+
+    return jsonify({'ok': True, 'category': category, 'product_type': product_type,
+                     'our_products': our_rows, 'competitor_products': comp_rows})
+
+
+@app.route("/api/competitor/export-xlsx")
+@login_required
+def api_competitor_export_xlsx():
+    """비교 리포트 엑셀 다운로드 — 단일 제품 비교(mode=single) 또는 유형별 일괄 비교(mode=type)"""
+    from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
+    from openpyxl.utils import get_column_letter
+
+    mode = request.args.get('mode', 'single')
+    category = request.args.get('category', '')
+    FNAME = '맑은 고딕'
+    def mf(h): return PatternFill("solid", fgColor=h)
+    thin = Side(style='thin', color='E5E7EB')
+    bdr  = Border(left=thin, right=thin, top=thin, bottom=thin)
+    ctr  = Alignment(horizontal='center', vertical='center', wrap_text=True)
+    left = Alignment(horizontal='left', vertical='center', wrap_text=True)
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+
+    def _parse_items(raw):
+        try: items = json.loads(raw or '[]')
+        except: items = []
+        return [it if isinstance(it, dict) else {'tag':'','point':str(it),'reason':''} for it in items]
+
+    def _write_items_cell(ws, ri, ci, items, label_color):
+        lines = []
+        for it in items:
+            tag = f"[{it.get('tag')}] " if it.get('tag') else ''
+            lines.append(f"• {tag}{it.get('point','')}")
+            if it.get('reason'):
+                lines.append(f"   → {it.get('reason')}")
+        c = ws.cell(row=ri, column=ci, value='\n'.join(lines) if lines else '수집된 정보 없음')
+        c.font = Font(size=9, name=FNAME, color='1F2937')
+        c.alignment = left
+        c.border = bdr
+        return c
+
+    if mode == 'single':
+        our_brand = request.args.get('our_brand','')
+        our_product = request.args.get('our_product','')
+        competitor_brand = request.args.get('competitor_brand','')
+        competitor_product = request.args.get('competitor_product','')
+
+        conn = get_db()
+        our_row = conn.execute("""SELECT * FROM product_research
+            WHERE side='ours' AND category=? AND brand=? AND product_name=?""",
+            (category, our_brand, our_product)).fetchone()
+        comp_row = conn.execute("""SELECT * FROM product_research
+            WHERE side='competitor' AND category=? AND brand=? AND product_name=?""",
+            (category, competitor_brand, competitor_product)).fetchone()
+        conn.close()
+        our_data = dict(our_row) if our_row else {'pros':'[]','cons':'[]','description':''}
+        comp_data = dict(comp_row) if comp_row else {'pros':'[]','cons':'[]','description':''}
+
+        comparison = generate_comparison(category, our_brand, our_product, our_data,
+                                          competitor_brand, competitor_product, comp_data)
+
+        ws.title = f'{our_product[:10]}_vs_{competitor_product[:10]}'[:31]
+        ws.merge_cells('A1:B1')
+        c = ws.cell(row=1, column=1, value=f'{our_brand} {our_product}  vs  {competitor_brand} {competitor_product}   ({category} 비교 리포트)')
+        c.font = Font(bold=True, size=13, name=FNAME, color='1F2937'); c.alignment = ctr
+        ws.row_dimensions[1].height = 26
+
+        ri = 2
+        if comparison.get('summary'):
+            ws.merge_cells(f'A{ri}:B{ri}')
+            c = ws.cell(row=ri, column=1, value=f"핵심 요약: {comparison['summary']}")
+            c.font = Font(bold=True, size=10, name=FNAME, color='2563EB'); c.fill = mf('EFF6FF'); c.alignment = left
+            ws.row_dimensions[ri].height = 30
+            ri += 2
+
+        headers = [f'{our_brand} {our_product}', f'{competitor_brand} {competitor_product}']
+        for ci, h in enumerate(headers, 1):
+            c = ws.cell(row=ri, column=ci, value=h)
+            c.font = Font(bold=True, size=10, name=FNAME, color='374151'); c.fill = mf('F3F4F6'); c.border = bdr; c.alignment = ctr
+        ws.row_dimensions[ri].height = 20
+        ri += 1
+
+        ws.cell(row=ri, column=1, value='장점').font = Font(bold=True, size=9, name=FNAME, color='16A34A')
+        r0 = ri
+        ws.merge_cells(f'A{ri}:A{ri}')
+        _write_items_cell(ws, ri, 1, comparison.get('our_pros',[]), 'green')
+        _write_items_cell(ws, ri, 2, comparison.get('competitor_pros',[]), 'green')
+        ws.row_dimensions[ri].height = 120
+        ri += 1
+
+        _write_items_cell(ws, ri, 1, comparison.get('our_cons',[]), 'red')
+        _write_items_cell(ws, ri, 2, comparison.get('competitor_cons',[]), 'red')
+        ws.row_dimensions[ri].height = 90
+        ri += 2
+
+        ws.merge_cells(f'A{ri}:B{ri}')
+        c = ws.cell(row=ri, column=1, value='영업 실전 포인트')
+        c.font = Font(bold=True, size=11, name=FNAME, color='1F2937'); ri += 1
+        for i, p in enumerate(comparison.get('selling_points', []), 1):
+            ws.merge_cells(f'A{ri}:B{ri}')
+            c = ws.cell(row=ri, column=1, value=f"{i}. {p}")
+            c.font = Font(size=9, name=FNAME, color='374151'); c.alignment = left
+            ws.row_dimensions[ri].height = 34
+            ri += 1
+
+        ws.column_dimensions['A'].width = 55
+        ws.column_dimensions['B'].width = 55
+        fname = f'타사비교_{our_product}_vs_{competitor_product}.xlsx'
+
+    else:  # mode == 'type' — 유형별 일괄 비교
+        product_type = request.args.get('product_type', '')
+        conn = get_db()
+        our_rows = [dict(r) for r in conn.execute("""
+            SELECT * FROM product_research WHERE side='ours' AND category=? AND product_type=?
+            ORDER BY brand, product_name""", (category, product_type)).fetchall()]
+        comp_rows = [dict(r) for r in conn.execute("""
+            SELECT * FROM product_research WHERE side='competitor' AND category=? AND product_type=?
+            ORDER BY brand, product_name""", (category, product_type)).fetchall()]
+        conn.close()
+
+        all_rows = our_rows + comp_rows
+        ws.title = f'{category}_{product_type}'[:31]
+        ncol = len(all_rows)
+        if ncol == 0:
+            ws.cell(row=1, column=1, value='데이터 없음')
+        else:
+            ws.merge_cells(f'A1:{get_column_letter(ncol+1)}1')
+            c = ws.cell(row=1, column=1, value=f'{category} · {product_type} 유형 일괄 비교 리포트')
+            c.font = Font(bold=True, size=13, name=FNAME, color='1F2937'); c.alignment = ctr
+            ws.row_dimensions[1].height = 26
+
+            ri = 3
+            ws.cell(row=ri, column=1, value='').fill = mf('F3F4F6')
+            for ci, r in enumerate(all_rows, 2):
+                side_label = '자사' if r['side'] == 'ours' else '경쟁사'
+                c = ws.cell(row=ri, column=ci, value=f"[{side_label}] {r['brand']} {r['product_name']}")
+                c.font = Font(bold=True, size=10, name=FNAME, color='FFFFFF' if r['side']=='ours' else '374151')
+                c.fill = mf('2563EB' if r['side']=='ours' else 'F3F4F6')
+                c.border = bdr; c.alignment = ctr
+                ws.column_dimensions[get_column_letter(ci)].width = 40
+            ws.row_dimensions[ri].height = 22
+            ri += 1
+
+            c = ws.cell(row=ri, column=1, value='장점')
+            c.font = Font(bold=True, size=9, name=FNAME, color='16A34A'); c.border = bdr
+            for ci, r in enumerate(all_rows, 2):
+                _write_items_cell(ws, ri, ci, _parse_items(r.get('pros')), 'green')
+            ws.row_dimensions[ri].height = 140
+            ri += 1
+
+            c = ws.cell(row=ri, column=1, value='단점')
+            c.font = Font(bold=True, size=9, name=FNAME, color='DC2626'); c.border = bdr
+            for ci, r in enumerate(all_rows, 2):
+                _write_items_cell(ws, ri, ci, _parse_items(r.get('cons')), 'red')
+            ws.row_dimensions[ri].height = 110
+            ri += 1
+
+            c = ws.cell(row=ri, column=1, value='제품 설명')
+            c.font = Font(bold=True, size=9, name=FNAME, color='6B7280'); c.border = bdr
+            for ci, r in enumerate(all_rows, 2):
+                c2 = ws.cell(row=ri, column=ci, value=r.get('description','') or '—')
+                c2.font = Font(size=9, name=FNAME, color='6B7280'); c2.alignment = left; c2.border = bdr
+            ws.row_dimensions[ri].height = 50
+
+            ws.column_dimensions['A'].width = 12
+        fname = f'타사비교_{category}_{product_type}_일괄비교.xlsx'
+
+    buf = io.BytesIO(); wb.save(buf); buf.seek(0)
+    return send_file(buf, mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        as_attachment=True, download_name=fname)
+
+
 def generate_comparison(category, our_brand, our_product, our_data,
                           competitor_brand, competitor_product, comp_data):
-    """축적된 상세 리서치 데이터를 기반으로 제품 단위 심층 비교 분석 생성"""
+    """축적된 상세 리서치 데이터를 기반으로 제품 단위 심층 비교 분석 생성 (이유 포함 구조)"""
     api_key = os.environ.get('ANTHROPIC_API_KEY', '')
 
-    try: our_pros_raw = json.loads(our_data.get('pros') or '[]')
-    except: our_pros_raw = []
-    try: our_cons_raw = json.loads(our_data.get('cons') or '[]')
-    except: our_cons_raw = []
-    try: comp_pros_raw = json.loads(comp_data.get('pros') or '[]')
-    except: comp_pros_raw = []
-    try: comp_cons_raw = json.loads(comp_data.get('cons') or '[]')
-    except: comp_cons_raw = []
+    def _load_items(raw_json):
+        try: items = json.loads(raw_json or '[]')
+        except: items = []
+        return [it if isinstance(it, dict) else {'tag':'', 'point':str(it), 'reason':''} for it in items]
+
+    our_pros_raw  = _load_items(our_data.get('pros'))
+    our_cons_raw  = _load_items(our_data.get('cons'))
+    comp_pros_raw = _load_items(comp_data.get('pros'))
+    comp_cons_raw = _load_items(comp_data.get('cons'))
     try: our_reviews = json.loads(our_data.get('review_snippets') or '[]')
     except: our_reviews = []
     try: comp_reviews = json.loads(comp_data.get('review_snippets') or '[]')
@@ -5433,49 +5677,53 @@ def generate_comparison(category, our_brand, our_product, our_data,
 
     fallback_strength = OUR_BRAND_STRENGTHS.get(our_brand, '국내 유통망과 사후관리 대응력')
 
+    def _fmt_items(items):
+        return '; '.join(f"[{it.get('tag','')}] {it.get('point','')} (이유: {it.get('reason','')})" for it in items) or '(없음)'
+
     if api_key:
         try:
             import requests
-            prompt = f"""당신은 유아용품 업계 15년차 상품기획/영업 전문가이자 마케터입니다. 아래 실제 수집된 리뷰·설명 데이터를 근거로 두 제품을 심층 비교 분석해주세요.
+            prompt = f"""당신은 유아용품 업계 15년차 상품기획/영업 전문가이자 마케터입니다. 이 자료는 실제 매장 영업 현장에서 고객 응대용으로 쓰입니다.
+아래 실제 수집된 리뷰·설명 데이터를 근거로 두 제품을 심층 비교 분석해주세요.
 정형화된 뻔한 비교("A/S가 좋다", "국내 유통이 강점이다" 같은 상투적 표현 금지)가 아니라, 실제 데이터에 기반한 구체적이고 날카로운 비교를 원합니다.
 
 [품목] {category}
 
 [자사 제품] {our_brand} {our_product}
 - 제품 설명: {our_data.get('description','')}
-- 기존 분석 장점: {our_pros_raw}
-- 기존 분석 단점: {our_cons_raw}
+- 기존 분석 장점: {_fmt_items(our_pros_raw)}
+- 기존 분석 단점: {_fmt_items(our_cons_raw)}
 - 원본 리뷰/설명 조각들: {' / '.join(our_reviews[:8])}
 
 [경쟁 제품] {competitor_brand} {competitor_product}
 - 제품 설명: {comp_data.get('description','')}
-- 기존 분석 장점: {comp_pros_raw}
-- 기존 분석 단점: {comp_cons_raw}
+- 기존 분석 장점: {_fmt_items(comp_pros_raw)}
+- 기존 분석 단점: {_fmt_items(comp_cons_raw)}
 - 원본 리뷰/설명 조각들: {' / '.join(comp_reviews[:8])}
 
-작성 원칙:
-1. 각 제품마다 리뷰/설명 전반에서 "가장 자주 반복적으로 언급되는 순서" 기준 TOP3 장점, TOP3 단점만 선별하세요. 산발적으로 한 번만 언급된 내용보다 여러 자료에서 공통적으로 나오는 포인트를 우선하세요.
-2. 절대 리뷰 문장을 그대로 복사/축약(...) 하지 마세요. 리뷰에 담긴 의미를 영업/마케팅 전문가 관점에서 완결된 한 문장으로 재작성하세요. 문장이 중간에 끊기면 안 됩니다.
-3. 장점/단점은 카테고리 태그를 붙이세요. 태그 예시: [소재/디자인] [기능성] [무게/휴대성] [안전성] [내구성] [편의성] [브랜드 신뢰도] [사용 편의성]
-4. 실제 데이터에 없는 내용은 지어내지 마세요. 다만 완결된 문장으로 다듬는 것은 필수입니다.
+작성 원칙 (매우 중요 — 반드시 "왜 그런지" 이유를 포함):
+1. 각 제품마다 TOP3 장점, TOP3 단점만 선별하세요. 산발적 언급보다 여러 자료에서 공통되는 포인트를 우선하세요.
+2. 각 항목은 point(무엇이 좋은지/아쉬운지)와 reason(왜 그런지, 어떤 상황·어떤 고객에게 실질적 이점/불편이 되는지)을 반드시 함께 작성하세요. "추천합니다"처럼 이유 없는 결론만 쓰지 마세요.
+3. 태그는 [소재/디자인] [기능성] [무게/휴대성] [안전성] [내구성] [편의성] [브랜드신뢰도] 중 선택하세요.
+4. 실제 데이터에 없는 내용은 지어내지 마세요. 완결된 문장으로 다듬는 것은 필수입니다.
 5. 가격은 절대 언급하지 마세요.
-6. 영업 포인트는 반드시 위에서 도출한 TOP3 장단점을 근거로, "고객이 경쟁사 제품을 언급하며 망설일 때 이렇게 응대하라"는 구체적 실전 화법으로 작성하세요. 일반론("A/S가 좋습니다") 금지, 반드시 이번 비교에서 나온 구체적 특징을 인용하세요.
+6. 영업 포인트는 반드시 위에서 도출한 TOP3 장단점(특히 reason)을 근거로, "고객이 경쟁사 제품을 언급하며 망설일 때 이렇게 응대하라"는 구체적 실전 화법으로 작성하세요. 일반론 금지, 왜 그렇게 응대해야 하는지 이유가 드러나야 합니다.
 
 다음 JSON 형식으로만 답하세요 (설명 없이 JSON만):
 {{
-  "summary": "누가 봐도 한눈에 이해되는 비교 결론 한 문장 (예: '휴대성 중시 고객엔 자사, 소재감 중시 고객엔 경쟁사가 강점')",
-  "competitor_pros": ["[태그] 완결된 문장의 장점 — 최대 3개, 언급 빈도 높은 순"],
-  "competitor_cons": ["[태그] 완결된 문장의 단점 — 최대 3개, 언급 빈도 높은 순"],
-  "our_pros": ["[태그] 완결된 문장의 장점 — 최대 3개, 언급 빈도 높은 순"],
-  "our_cons": ["[태그] 완결된 문장의 정직한 보완점 — 최대 2개"],
-  "selling_points": ["이번 비교의 구체적 특징을 인용한 실전 응대 화법 3~5개"]
+  "summary": "누가 봐도 한눈에 이해되는 비교 결론 한 문장",
+  "competitor_pros": [{{"tag":"태그","point":"무엇이 좋은지","reason":"왜 좋은지 구체적으로"}}],
+  "competitor_cons": [{{"tag":"태그","point":"무엇이 아쉬운지","reason":"왜 아쉬운지 구체적으로"}}],
+  "our_pros": [{{"tag":"태그","point":"무엇이 좋은지","reason":"왜 좋은지 구체적으로"}}],
+  "our_cons": [{{"tag":"태그","point":"무엇이 아쉬운지(최대2개)","reason":"왜 아쉬운지, 정직하게"}}],
+  "selling_points": ["이번 비교의 구체적 장단점과 이유를 인용한 실전 응대 화법 3~5개"]
 }}"""
             resp = requests.post(
                 "https://api.anthropic.com/v1/messages",
                 headers={"x-api-key": api_key, "anthropic-version": "2023-06-01", "content-type": "application/json"},
-                json={"model": "claude-sonnet-4-6", "max_tokens": 1200,
+                json={"model": "claude-sonnet-4-6", "max_tokens": 1600,
                       "messages": [{"role": "user", "content": prompt}]},
-                timeout=20,
+                timeout=25,
             )
             if resp.status_code == 200:
                 data = resp.json()
@@ -5490,12 +5738,12 @@ def generate_comparison(category, our_brand, our_product, our_data,
         except Exception:
             pass
 
-    # Fallback: 원본 데이터에서 완결된 문장만 추려 노출 (가격 제외, 잘림 없음)
+    # Fallback: 원본 데이터(이미 point+reason 구조) 그대로 노출
     return {
         'summary': f"{our_brand} {our_product}와 {competitor_brand} {competitor_product}의 수집된 리뷰 데이터를 비교했습니다.",
-        'competitor_pros': comp_pros_raw[:3] or [f"{competitor_brand} {competitor_product}에 대한 장점 정보가 충분히 수집되지 않았습니다"],
-        'competitor_cons': comp_cons_raw[:3] or ["단점 정보가 충분히 수집되지 않았습니다"],
-        'our_pros': our_pros_raw[:3] or [fallback_strength],
+        'competitor_pros': comp_pros_raw[:3] or [{'tag':'','point':f"{competitor_brand} {competitor_product}에 대한 장점 정보가 충분히 수집되지 않았습니다",'reason':''}],
+        'competitor_cons': comp_cons_raw[:3] or [{'tag':'','point':"단점 정보가 충분히 수집되지 않았습니다",'reason':''}],
+        'our_pros': our_pros_raw[:3] or [{'tag':'','point':fallback_strength,'reason':''}],
         'our_cons': our_cons_raw[:2],
         'selling_points': [
             "실물 체험 및 매장 상담을 통해 고객이 직접 비교해보고 확신을 갖도록 안내해주세요.",
