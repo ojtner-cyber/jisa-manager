@@ -280,8 +280,19 @@ def init_db():
         memo_text TEXT DEFAULT '',
         source_filename TEXT DEFAULT '',
         uploaded_at TEXT DEFAULT '',
+        raw_grid_json TEXT DEFAULT '',
+        merged_cells_json TEXT DEFAULT '',
+        sheet_title TEXT DEFAULT '',
         UNIQUE(visit_date, store_name)
     )""")
+    try:
+        svr_cols = [r[1] for r in conn.execute("PRAGMA table_info(store_visit_report)").fetchall()]
+        for col, typ in [('raw_grid_json',"TEXT DEFAULT ''"), ('merged_cells_json',"TEXT DEFAULT ''"),
+                          ('sheet_title',"TEXT DEFAULT ''")]:
+            if col not in svr_cols:
+                conn.execute(f"ALTER TABLE store_visit_report ADD COLUMN {col} {typ}")
+    except Exception:
+        pass
     conn.execute("""CREATE TABLE IF NOT EXISTS store_communication (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         seller_name TEXT NOT NULL,
@@ -4976,6 +4987,20 @@ def _parse_visit_report_sheet(ws, source_filename=''):
     if not visit_date or not store_name:
         return None
 
+    # 원본 그대로 재현하기 위한 전체 그리드 + 병합셀 캡처 (엑셀 다운로드 시 원본 형태 복원용)
+    raw_grid = []
+    max_r = min(ws.max_row, 200)
+    max_c = min(ws.max_column, 20)
+    for ri in range(1, max_r+1):
+        row_vals = []
+        for ci in range(1, max_c+1):
+            v = cell(ri, ci)
+            if hasattr(v, 'strftime'):
+                v = v.strftime('%Y-%m-%d')
+            row_vals.append(v)
+        raw_grid.append(row_vals)
+    merged_ranges = [str(mr) for mr in ws.merged_cells.ranges]
+
     return {
         'visit_date': visit_date, 'store_name': store_name, 'brand': brand,
         'region': region or '', 'manager': manager, 'author': author,
@@ -4983,6 +5008,8 @@ def _parse_visit_report_sheet(ws, source_filename=''):
         'content': content, 'requests': requests_list,
         'followup_text': (promo_text + '\n' + followup_text).strip(),
         'source_filename': source_filename,
+        'raw_grid': raw_grid, 'merged_cells': merged_ranges,
+        'sheet_title': ws.title,
     }
 
 
@@ -5018,26 +5045,30 @@ def api_visit_report_upload():
                 (parsed['visit_date'], parsed['store_name'])).fetchone()
             content_json = json.dumps(parsed['content'], ensure_ascii=False)
             request_json = json.dumps(parsed['requests'], ensure_ascii=False)
+            raw_grid_json = json.dumps(parsed.get('raw_grid', []), ensure_ascii=False, default=str)
+            merged_cells_json = json.dumps(parsed.get('merged_cells', []), ensure_ascii=False)
+            sheet_title = parsed.get('sheet_title', '')
             if existing:
                 conn.execute("""UPDATE store_visit_report SET
                     brand=?, region=?, manager=?, author=?, store_rank=?, staff_info=?, store_size=?,
-                    content_json=?, request_json=?, followup_text=?, source_filename=?, uploaded_at=?
+                    content_json=?, request_json=?, followup_text=?, source_filename=?, uploaded_at=?,
+                    raw_grid_json=?, merged_cells_json=?, sheet_title=?
                     WHERE id=?""",
                     (parsed['brand'], parsed['region'], parsed['manager'], parsed['author'],
                      parsed['store_rank'], parsed['staff_info'], parsed['store_size'],
                      content_json, request_json, parsed['followup_text'], parsed['source_filename'],
-                     now_str, existing[0]))
+                     now_str, raw_grid_json, merged_cells_json, sheet_title, existing[0]))
                 updated += 1
             else:
                 conn.execute("""INSERT INTO store_visit_report
                     (visit_date, store_name, brand, region, manager, author, store_rank,
                      staff_info, store_size, content_json, request_json, followup_text,
-                     source_filename, uploaded_at)
-                    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                     source_filename, uploaded_at, raw_grid_json, merged_cells_json, sheet_title)
+                    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                     (parsed['visit_date'], parsed['store_name'], parsed['brand'], parsed['region'],
                      parsed['manager'], parsed['author'], parsed['store_rank'], parsed['staff_info'],
                      parsed['store_size'], content_json, request_json, parsed['followup_text'],
-                     parsed['source_filename'], now_str))
+                     parsed['source_filename'], now_str, raw_grid_json, merged_cells_json, sheet_title))
                 inserted += 1
 
     for f in files:
@@ -5153,12 +5184,98 @@ def api_visit_report_brands():
     return jsonify([r[0] for r in rows])
 
 
+def _write_dashboard_sheet(ws, rows, FNAME, mf, bdr, ctr, left):
+    """스크린샷과 동일한 '브랜드별 매장 방문 현황' 대시보드 스타일 시트 작성"""
+    from openpyxl.styles import Font, Alignment
+    from openpyxl.utils import get_column_letter
+
+    # 브랜드별로 매장 그룹핑 + 매장별 방문 집계
+    by_brand_store = {}
+    for r in rows:
+        brand = r['brand'] or '기타'
+        key = (brand, r['store_name'])
+        if key not in by_brand_store:
+            by_brand_store[key] = {'dates': [], 'sheet_tabs': []}
+        by_brand_store[key]['dates'].append(r['visit_date'])
+        by_brand_store[key]['sheet_tabs'].append(r.get('sheet_title') or f"{r['store_name']}_{r['visit_date'][5:].replace('-','')}")
+
+    brands = sorted(set(b for b, s in by_brand_store.keys()))
+    HEADER_BLUE = '4472C4'
+
+    ri = 1
+    for brand in brands:
+        stores_in_brand = [(s, v) for (b, s), v in by_brand_store.items() if b == brand]
+        stores_in_brand.sort(key=lambda x: -len(x[1]['dates']))
+
+        ws.merge_cells(f'A{ri}:F{ri}')
+        c = ws.cell(row=ri, column=1, value=f"{brand} 매장별 방문 현황")
+        c.font = Font(bold=True, size=13, name=FNAME, color='1F2937'); c.alignment = left
+        ws.row_dimensions[ri].height = 26
+        ri += 1
+
+        headers = ['No.', '매장명', '방문 횟수', '방문일', '시트 탭', '']
+        for ci, h in enumerate(headers[:5], 1):
+            c = ws.cell(row=ri, column=ci, value=h)
+            c.font = Font(bold=True, size=9, name=FNAME, color='FFFFFF'); c.fill = mf(HEADER_BLUE); c.border = bdr; c.alignment = ctr
+        ws.row_dimensions[ri].height = 20
+        ri += 1
+
+        for i, (store_name, v) in enumerate(stores_in_brand, 1):
+            dates_sorted = sorted(v['dates'])
+            dates_str = ', '.join(d[5:].replace('-', '/') for d in dates_sorted)
+            tabs_str = ', '.join(v['sheet_tabs'])
+            row_vals = [i, store_name, f"{len(v['dates'])}회", dates_str, tabs_str]
+            for ci, val in enumerate(row_vals, 1):
+                c = ws.cell(row=ri, column=ci, value=val)
+                c.font = Font(size=9, name=FNAME, color='1F2937')
+                c.border = bdr
+                c.alignment = ctr if ci in (1,3) else left
+            ws.row_dimensions[ri].height = 16
+            ri += 1
+        ri += 2  # 브랜드 간 여백
+
+    for ci, w in zip(range(1,6), [6, 22, 10, 26, 46]):
+        ws.column_dimensions[get_column_letter(ci)].width = w
+
+
+def _write_raw_grid_sheet(ws, raw_grid, merged_cells, FNAME):
+    """원본 업로드 파일의 셀 값·병합구조를 최대한 그대로 재현 (원본 그대로 보기용)"""
+    from openpyxl.styles import Font, Alignment, PatternFill
+    if not raw_grid:
+        ws.cell(row=1, column=1, value='원본 데이터가 없습니다')
+        return
+    for ri, row in enumerate(raw_grid, 1):
+        for ci, val in enumerate(row, 1):
+            if val is None: continue
+            c = ws.cell(row=ri, column=ci, value=val)
+            c.font = Font(size=9, name=FNAME)
+            c.alignment = Alignment(vertical='top', wrap_text=True)
+    for mc in (merged_cells or []):
+        try: ws.merge_cells(mc)
+        except Exception: pass
+    # 첫 행(타이틀), 섹션 헤더(예: "1. 기본 정보")는 굵게 강조
+    for ri, row in enumerate(raw_grid[:3], 1):
+        for ci in range(1, len(row)+1):
+            c = ws.cell(row=ri, column=ci)
+            if c.value:
+                c.font = Font(bold=True, size=12 if ri==1 else 10, name=FNAME, color='1F2937')
+    for ri, row in enumerate(raw_grid, 1):
+        v = row[1] if len(row) > 1 else None
+        if v and isinstance(v, str) and _re_visit.match(r'^\d\.\s', v):
+            for ci in range(1, len(row)+1):
+                c = ws.cell(row=ri, column=ci)
+                c.font = Font(bold=True, size=10, name=FNAME, color='2563EB')
+    ws.column_dimensions['A'].width = 4
+    ws.column_dimensions['B'].width = 16
+    for col_letter in ['C','D','E','F']:
+        ws.column_dimensions[col_letter].width = 22
+
+
 @app.route("/api/export/xlsx/visit-report")
 @login_required
 def api_export_visit_report_xlsx():
-    """방문 보고서 엑셀 다운로드 — 날짜 범위 또는 매장명 필터 지원, 심플 전문가용 디자인"""
+    """방문 보고서 엑셀 다운로드 — 브랜드별 대시보드 요약 + 원본 그대로의 상세 시트 구성"""
     from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
-    from openpyxl.utils import get_column_letter
 
     store = request.args.get('store', '').strip()
     date_from = request.args.get('date_from', '').strip()
@@ -5170,7 +5287,7 @@ def api_export_visit_report_xlsx():
     if store: q += " AND store_name LIKE ?"; params.append(f"%{store}%")
     if date_from: q += " AND visit_date>=?"; params.append(date_from)
     if date_to: q += " AND visit_date<=?"; params.append(date_to)
-    q += " ORDER BY visit_date"
+    q += " ORDER BY brand, visit_date"
     rows = [dict(r) for r in conn.execute(q, params).fetchall()]
     conn.close()
 
@@ -5186,81 +5303,167 @@ def api_export_visit_report_xlsx():
 
     wb = openpyxl.Workbook()
 
-    # 1번 시트: 요약 목록
-    ws0 = wb.active; ws0.title = '방문보고서_목록'
-    ws0.merge_cells('A1:H1')
-    title = f"매장 방문 보고서 ({date_from or '전체'} ~ {date_to or '전체'})" if not store else f"'{store}' 방문 보고서"
-    c = ws0.cell(row=1, column=1, value=title)
-    c.font = Font(bold=True, size=13, name=FNAME, color='1F2937'); c.alignment = ctr
-    ws0.row_dimensions[1].height = 26
+    # 1번 시트: 브랜드별 방문현황 대시보드 (스크린샷 스타일)
+    ws_dash = wb.active; ws_dash.title = '매장별_방문현황'
+    _write_dashboard_sheet(ws_dash, rows, FNAME, mf, bdr, ctr, left)
 
-    headers = ['방문일','매장명','브랜드','지역','담당자','작성자','매장순위','요청사항 수']
-    for ci, h in enumerate(headers, 1):
-        c = ws0.cell(row=2, column=ci, value=h)
-        c.font = Font(bold=True, size=9, name=FNAME, color='374151'); c.fill = mf('F3F4F6'); c.border = bdr; c.alignment = ctr
-        ws0.column_dimensions[get_column_letter(ci)].width = [12,20,12,10,10,10,14,10][ci-1]
-    ws0.row_dimensions[2].height = 20
-
-    ri = 3
+    # 이후 시트: 각 방문건을 원본 그대로 재현
+    used_names = set()
     for r in rows:
-        try: req_cnt = len(json.loads(r.get('request_json') or '[]'))
-        except: req_cnt = 0
-        vals = [r['visit_date'], r['store_name'], r['brand'], r['region'], r['manager'], r['author'], r['store_rank'], req_cnt]
-        for ci, v in enumerate(vals, 1):
-            c = ws0.cell(row=ri, column=ci, value=v); c.font = Font(size=9, name=FNAME); c.border = bdr; c.alignment = ctr
-        ri += 1
-
-    # 2번 시트 이후: 각 방문건 상세
-    for r in rows:
-        sheet_name = f"{r['visit_date'][5:].replace('-','')}_{r['store_name']}"[:31]
+        base_name = f"{r['visit_date'][5:].replace('-','')}_{r['store_name']}"[:28]
+        sheet_name = base_name
+        suffix = 1
+        while sheet_name in used_names:
+            sheet_name = f"{base_name}_{suffix}"[:31]
+            suffix += 1
+        used_names.add(sheet_name)
         ws = wb.create_sheet(title=sheet_name)
-        try: content = json.loads(r.get('content_json') or '{}')
-        except: content = {}
-        try: reqs = json.loads(r.get('request_json') or '[]')
-        except: reqs = []
-
-        ws.merge_cells('A1:B1')
-        c = ws.cell(row=1, column=1, value=f"{r['store_name']} 방문 보고서 — {r['visit_date']}")
-        c.font = Font(bold=True, size=13, name=FNAME, color='1F2937'); c.alignment = left
-        ws.row_dimensions[1].height = 24
-        ri2 = 3
-        info_rows = [('담당자', r['manager']), ('작성자', r['author']), ('지역', r['region']),
-                     ('매장 순위', r['store_rank']), ('직원 현황', r['staff_info']), ('매장 규모', r['store_size'])]
-        for label, val in info_rows:
-            ws.cell(row=ri2, column=1, value=label).font = Font(bold=True, size=9, name=FNAME, color='6B7280')
-            ws.cell(row=ri2, column=2, value=val or '—').font = Font(size=9, name=FNAME)
-            ri2 += 1
-        ri2 += 1
-
-        c = ws.cell(row=ri2, column=1, value='■ 카테고리별 주요 내용'); c.font = Font(bold=True, size=11, name=FNAME); ri2 += 1
-        for cat, texts in content.items():
-            ws.cell(row=ri2, column=1, value=cat).font = Font(bold=True, size=9, name=FNAME, color='2563EB')
-            c2 = ws.cell(row=ri2, column=2, value='\n'.join(texts)); c2.font = Font(size=9, name=FNAME); c2.alignment = left
-            ws.row_dimensions[ri2].height = min(150, max(20, len('\n'.join(texts))//3))
-            ri2 += 1
-        ri2 += 1
-
-        c = ws.cell(row=ri2, column=1, value='■ 요청사항'); c.font = Font(bold=True, size=11, name=FNAME); ri2 += 1
-        if reqs:
-            for req in reqs:
-                ws.cell(row=ri2, column=1, value='•').font = Font(size=9, name=FNAME)
-                c2 = ws.cell(row=ri2, column=2, value=req); c2.font = Font(size=9, name=FNAME); c2.alignment = left
-                ri2 += 1
+        try:
+            raw_grid = json.loads(r.get('raw_grid_json') or '[]')
+            merged_cells = json.loads(r.get('merged_cells_json') or '[]')
+        except Exception:
+            raw_grid, merged_cells = [], []
+        if raw_grid:
+            _write_raw_grid_sheet(ws, raw_grid, merged_cells, FNAME)
         else:
-            ws.cell(row=ri2, column=2, value='없음').font = Font(size=9, name=FNAME, color='9CA3AF'); ri2 += 1
-        ri2 += 1
-
-        c = ws.cell(row=ri2, column=1, value='■ 타사 프로모션 및 후속조치'); c.font = Font(bold=True, size=11, name=FNAME); ri2 += 1
-        c2 = ws.cell(row=ri2, column=2, value=r.get('followup_text','') or '없음'); c2.font = Font(size=9, name=FNAME); c2.alignment = left
-        ws.row_dimensions[ri2].height = min(200, max(30, len(r.get('followup_text','') or '')//3))
-
-        ws.column_dimensions['A'].width = 16
-        ws.column_dimensions['B'].width = 70
+            # 원본 그리드가 없는 구버전 데이터 — 요약 형태로 대체
+            ws.cell(row=1, column=1, value=f"{r['store_name']} — {r['visit_date']}").font = Font(bold=True, size=12, name=FNAME)
+            ws.cell(row=3, column=1, value='원본 데이터가 저장되지 않은 보고서입니다. 다시 업로드해주세요.').font = Font(size=9, name=FNAME, color='9CA3AF')
 
     buf = io.BytesIO(); wb.save(buf); buf.seek(0)
     fname = f"방문보고서_{store or '전체'}_{date_from or ''}~{date_to or ''}.xlsx"
     return send_file(buf, mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
         as_attachment=True, download_name=fname)
+
+
+@app.route("/api/export/xlsx/visit-report/by-store", methods=["POST"])
+@login_required
+def api_export_visit_report_by_store():
+    """선택한 매장들만 원본 그대로 시트 분리하여 엑셀 다운로드"""
+    from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
+
+    d = request.json or {}
+    store_names = d.get('store_names', [])
+    if not store_names:
+        return jsonify({'ok': False, 'msg': '매장을 선택해주세요'}), 400
+
+    conn = get_db()
+    placeholders = ','.join('?' for _ in store_names)
+    rows = [dict(r) for r in conn.execute(
+        f"SELECT * FROM store_visit_report WHERE store_name IN ({placeholders}) ORDER BY store_name, visit_date",
+        store_names).fetchall()]
+    conn.close()
+
+    if not rows:
+        return jsonify({'ok': False, 'msg': '해당 매장의 방문 보고서가 없습니다'}), 404
+
+    FNAME = '맑은 고딕'
+    def mf(h): return PatternFill("solid", fgColor=h)
+    thin = Side(style='thin', color='E5E7EB')
+    bdr  = Border(left=thin, right=thin, top=thin, bottom=thin)
+    ctr  = Alignment(horizontal='center', vertical='center', wrap_text=True)
+    left = Alignment(horizontal='left', vertical='top', wrap_text=True)
+
+    wb = openpyxl.Workbook()
+    ws_dash = wb.active; ws_dash.title = '매장별_방문현황'
+    _write_dashboard_sheet(ws_dash, rows, FNAME, mf, bdr, ctr, left)
+
+    used_names = set()
+    for r in rows:
+        base_name = f"{r['store_name']}_{r['visit_date'][5:].replace('-','')}"[:28]
+        sheet_name = base_name
+        suffix = 1
+        while sheet_name in used_names:
+            sheet_name = f"{base_name}_{suffix}"[:31]; suffix += 1
+        used_names.add(sheet_name)
+        ws = wb.create_sheet(title=sheet_name)
+        try:
+            raw_grid = json.loads(r.get('raw_grid_json') or '[]')
+            merged_cells = json.loads(r.get('merged_cells_json') or '[]')
+        except Exception:
+            raw_grid, merged_cells = [], []
+        if raw_grid:
+            _write_raw_grid_sheet(ws, raw_grid, merged_cells, FNAME)
+
+    buf = io.BytesIO(); wb.save(buf); buf.seek(0)
+    fname = f"방문보고서_매장별_{'_'.join(store_names[:3])}.xlsx"
+    return send_file(buf, mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        as_attachment=True, download_name=fname)
+
+
+@app.route("/api/visit-report/requests")
+@login_required
+def api_visit_report_requests():
+    """전체 요청사항 상세 목록 (매장/날짜 컨텍스트 포함)"""
+    brand = request.args.get('brand', '').strip()
+    conn = get_db()
+    q = "SELECT id, visit_date, store_name, brand, manager, request_json FROM store_visit_report WHERE request_json!='[]' AND request_json!=''"
+    params = []
+    if brand: q += " AND brand=?"; params.append(brand)
+    q += " ORDER BY visit_date DESC"
+    rows = conn.execute(q, params).fetchall()
+    conn.close()
+
+    result = []
+    for r in rows:
+        try: reqs = json.loads(r[5] or '[]')
+        except: reqs = []
+        for req in reqs:
+            result.append({
+                'report_id': r[0], 'visit_date': r[1], 'store_name': r[2],
+                'brand': r[3], 'manager': r[4], 'request_text': req,
+            })
+    return jsonify(result)
+
+
+@app.route("/api/export/xlsx/visit-report/requests")
+@login_required
+def api_export_visit_report_requests_xlsx():
+    """누적 요청사항 전체를 엑셀로 다운로드"""
+    from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
+    from openpyxl.utils import get_column_letter
+
+    conn = get_db()
+    rows = conn.execute("""
+        SELECT visit_date, store_name, brand, manager, request_json FROM store_visit_report
+        WHERE request_json!='[]' AND request_json!='' ORDER BY visit_date DESC""").fetchall()
+    conn.close()
+
+    FNAME = '맑은 고딕'
+    def mf(h): return PatternFill("solid", fgColor=h)
+    thin = Side(style='thin', color='E5E7EB')
+    bdr  = Border(left=thin, right=thin, top=thin, bottom=thin)
+    ctr  = Alignment(horizontal='center', vertical='center', wrap_text=True)
+    left = Alignment(horizontal='left', vertical='center', wrap_text=True)
+
+    wb = openpyxl.Workbook(); ws = wb.active; ws.title = '누적_요청사항'
+    ws.merge_cells('A1:E1')
+    c = ws.cell(row=1, column=1, value='누적 요청사항 전체 현황')
+    c.font = Font(bold=True, size=13, name=FNAME, color='1F2937'); c.alignment = ctr
+    ws.row_dimensions[1].height = 26
+
+    headers = ['방문일', '매장명', '브랜드', '담당자', '요청 내용']
+    for ci, h in enumerate(headers, 1):
+        c = ws.cell(row=2, column=ci, value=h)
+        c.font = Font(bold=True, size=9, name=FNAME, color='374151'); c.fill = mf('F3F4F6'); c.border = bdr; c.alignment = ctr
+        ws.column_dimensions[get_column_letter(ci)].width = [12, 20, 12, 10, 60][ci-1]
+    ws.row_dimensions[2].height = 20
+
+    ri = 3
+    for r in rows:
+        try: reqs = json.loads(r[4] or '[]')
+        except: reqs = []
+        for req in reqs:
+            vals = [r[0], r[1], r[2], r[3], req]
+            for ci, v in enumerate(vals, 1):
+                c = ws.cell(row=ri, column=ci, value=v)
+                c.font = Font(size=9, name=FNAME); c.border = bdr
+                c.alignment = ctr if ci != 5 else left
+            ri += 1
+
+    buf = io.BytesIO(); wb.save(buf); buf.seek(0)
+    return send_file(buf, mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        as_attachment=True, download_name='누적_요청사항.xlsx')
 
 
 # ── 타사 비교 API ────────────────────────────────

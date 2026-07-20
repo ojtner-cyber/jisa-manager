@@ -1849,16 +1849,73 @@ function renderVrStats(){
   const totalRequests = vrAllReports.reduce((s,r)=>s+(r.requests?.length||0),0);
 
   const stats = [
-    {label:'전체 방문 건수', value:`${totalVisits}건`, color:'#2563EB'},
-    {label:'방문 매장 수', value:`${uniqueStores}곳`, color:'#16A34A'},
-    {label:'이번 달 방문', value:`${monthVisits}건`, color:'#D97706'},
-    {label:'누적 요청사항', value:`${totalRequests}건`, color:'#7C3AED'},
+    {label:'전체 방문 건수', value:`${totalVisits}건`, color:'#2563EB', onclick:''},
+    {label:'방문 매장 수', value:`${uniqueStores}곳`, color:'#16A34A', onclick:''},
+    {label:'이번 달 방문', value:`${monthVisits}건`, color:'#D97706', onclick:''},
+    {label:'누적 요청사항', value:`${totalRequests}건`, color:'#7C3AED', onclick:'openVrRequestsModal()'},
   ];
   document.getElementById('vr-stats-bar').innerHTML = stats.map(s=>`
-    <div style="background:var(--paper);border:1px solid var(--border);border-left:3px solid ${s.color};border-radius:10px;padding:14px 16px">
-      <div style="font-size:11px;color:var(--t-400);font-weight:600;margin-bottom:5px">${s.label}</div>
+    <div onclick="${s.onclick}" style="background:var(--paper);border:1px solid var(--border);border-left:3px solid ${s.color};border-radius:10px;padding:14px 16px;${s.onclick?'cursor:pointer;transition:.15s':''}"
+      ${s.onclick?`onmouseenter="this.style.boxShadow='0 2px 8px rgba(0,0,0,.08)'" onmouseleave="this.style.boxShadow='none'"`:''}>
+      <div style="display:flex;justify-content:space-between;align-items:center">
+        <div style="font-size:11px;color:var(--t-400);font-weight:600;margin-bottom:5px">${s.label}</div>
+        ${s.onclick?'<span style="font-size:10px;color:var(--t-300)">상세보기 →</span>':''}
+      </div>
       <div style="font-size:20px;font-weight:800;color:var(--t-900)">${s.value}</div>
     </div>`).join('');
+}
+
+async function openVrRequestsModal(){
+  const overlay = document.getElementById('vr-detail-overlay');
+  const body = document.getElementById('vr-detail-body');
+  body.innerHTML = `<div style="padding:60px;text-align:center;color:var(--t-300)">불러오는 중...</div>`;
+  overlay.style.display = 'flex';
+
+  const brand = document.getElementById('vr-brand-filter').value;
+  const q = new URLSearchParams({brand});
+  const reqs = await api(`/api/visit-report/requests?${q}`) || [];
+
+  let html = `
+    <div style="padding:20px 24px;border-bottom:1px solid var(--border);background:linear-gradient(135deg,#7C3AED12,#7C3AED05);display:flex;justify-content:space-between;align-items:center">
+      <div>
+        <div style="font-size:16px;font-weight:800;color:var(--t-900)">누적 요청사항</div>
+        <div style="font-size:12px;color:var(--t-500);margin-top:2px">전체 ${reqs.length}건</div>
+      </div>
+      <div style="display:flex;gap:8px;align-items:center">
+        <button onclick="downloadVrRequestsXlsx()" style="font-size:11px;font-weight:700;color:#7C3AED;background:#7C3AED12;border:none;padding:7px 14px;border-radius:8px;cursor:pointer">📥 엑셀 다운로드</button>
+        <button onclick="closeVrDetail()" style="background:none;border:none;font-size:18px;color:var(--t-400);cursor:pointer">✕</button>
+      </div>
+    </div>
+    <div style="padding:16px 24px;max-height:60vh;overflow-y:auto">`;
+
+  if(!reqs.length){
+    html += `<div style="text-align:center;padding:40px;color:var(--t-300);font-size:12.5px">등록된 요청사항이 없습니다</div>`;
+  } else {
+    // 날짜별 그룹핑
+    const byDate = {};
+    reqs.forEach(r=>{
+      if(!byDate[r.visit_date]) byDate[r.visit_date] = [];
+      byDate[r.visit_date].push(r);
+    });
+    Object.keys(byDate).sort().reverse().forEach(date=>{
+      html += `<div style="margin-bottom:14px">
+        <div style="font-size:11.5px;font-weight:700;color:var(--t-400);margin-bottom:6px">${date}</div>`;
+      byDate[date].forEach(r=>{
+        html += `<div style="display:flex;gap:10px;padding:9px 12px;background:var(--bg);border-radius:8px;margin-bottom:6px;align-items:flex-start">
+          <span style="font-size:10.5px;font-weight:700;color:var(--p);background:var(--p-lt);padding:2px 8px;border-radius:6px;flex-shrink:0;white-space:nowrap">${r.store_name}</span>
+          <span style="font-size:12px;color:var(--t-700);line-height:1.6">${r.request_text}</span>
+        </div>`;
+      });
+      html += `</div>`;
+    });
+  }
+  html += `</div>`;
+  body.innerHTML = html;
+}
+
+function downloadVrRequestsXlsx(){
+  window.location.href = '/api/export/xlsx/visit-report/requests';
+  toast('요청사항 엑셀 다운로드 중...');
 }
 
 const VR_BRAND_COLOR = {'베이비하우스':'#2563EB','링크맘':'#16A34A','베이비파크':'#D97706'};
@@ -1903,10 +1960,21 @@ function renderVrStoreView(){
     </div>`;
     return;
   }
-  el.innerHTML = `<div style="background:var(--paper);border:1px solid var(--border);border-radius:12px;overflow:hidden">
+  el.innerHTML = `
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+      <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--t-500);cursor:pointer">
+        <input type="checkbox" id="vr-select-all" onchange="toggleVrSelectAll(this)"> 전체 선택
+      </label>
+      <button onclick="downloadVrSelectedStores()" id="vr-download-selected-btn" disabled
+        style="font-size:11.5px;font-weight:700;padding:7px 16px;border-radius:8px;border:1px solid var(--border-md);background:var(--bg);color:var(--t-400);cursor:not-allowed">
+        📥 선택 매장 엑셀 다운로드 (<span id="vr-selected-count">0</span>)
+      </button>
+    </div>
+    <div style="background:var(--paper);border:1px solid var(--border);border-radius:12px;overflow:hidden">
     <table style="width:100%;border-collapse:collapse">
       <thead>
         <tr style="background:var(--bg)">
+          <th style="padding:10px 12px;width:36px;border-bottom:1.5px solid var(--border)"></th>
           <th style="padding:10px 14px;text-align:left;font-size:11px;font-weight:700;color:var(--t-500);border-bottom:1.5px solid var(--border)">매장명</th>
           <th style="padding:10px 14px;text-align:center;font-size:11px;font-weight:700;color:var(--t-500);border-bottom:1.5px solid var(--border)">브랜드</th>
           <th style="padding:10px 14px;text-align:center;font-size:11px;font-weight:700;color:var(--t-500);border-bottom:1.5px solid var(--border)">지역</th>
@@ -1918,9 +1986,12 @@ function renderVrStoreView(){
       <tbody>
         ${vrAllStores.map(s=>{
           const col = VR_BRAND_COLOR[s.brand] || '#6B7280';
-          return `<tr style="cursor:pointer;transition:.15s" onclick="openVrStoreHistory('${s.store_name.replace(/'/g,"\\'")}')"
-            onmouseenter="this.style.background='var(--bg)'" onmouseleave="this.style.background='none'">
-            <td style="padding:10px 14px;font-size:13px;font-weight:700;color:var(--t-900);border-bottom:1px solid var(--border)">${s.store_name}</td>
+          const safeName = s.store_name.replace(/'/g,"\\'").replace(/"/g,'&quot;');
+          return `<tr style="transition:.15s" onmouseenter="this.style.background='var(--bg)'" onmouseleave="this.style.background='none'">
+            <td style="padding:10px 12px;text-align:center;border-bottom:1px solid var(--border)" onclick="event.stopPropagation()">
+              <input type="checkbox" class="vr-store-check" value="${safeName}" onchange="updateVrSelectedCount()">
+            </td>
+            <td style="padding:10px 14px;font-size:13px;font-weight:700;color:var(--t-900);border-bottom:1px solid var(--border);cursor:pointer" onclick="openVrStoreHistory('${safeName}')">${s.store_name}</td>
             <td style="padding:10px 14px;text-align:center;border-bottom:1px solid var(--border)"><span style="font-size:10.5px;font-weight:700;color:${col};background:${col}15;padding:2px 8px;border-radius:6px">${s.brand||'—'}</span></td>
             <td style="padding:10px 14px;text-align:center;font-size:12px;color:var(--t-500);border-bottom:1px solid var(--border)">${s.region||'—'}</td>
             <td style="padding:10px 14px;text-align:center;font-size:13px;font-weight:800;color:var(--p);border-bottom:1px solid var(--border)">${s.cnt}회</td>
@@ -1931,6 +2002,43 @@ function renderVrStoreView(){
       </tbody>
     </table>
   </div>`;
+}
+
+function toggleVrSelectAll(checkbox){
+  document.querySelectorAll('.vr-store-check').forEach(c=>c.checked = checkbox.checked);
+  updateVrSelectedCount();
+}
+
+function updateVrSelectedCount(){
+  const checked = document.querySelectorAll('.vr-store-check:checked');
+  const btn = document.getElementById('vr-download-selected-btn');
+  document.getElementById('vr-selected-count').textContent = checked.length;
+  const active = checked.length > 0;
+  btn.disabled = !active;
+  btn.style.cursor = active ? 'pointer' : 'not-allowed';
+  btn.style.color = active ? 'var(--p)' : 'var(--t-400)';
+  btn.style.background = active ? 'var(--p-lt)' : 'var(--bg)';
+  btn.style.borderColor = active ? 'var(--p)' : 'var(--border-md)';
+}
+
+async function downloadVrSelectedStores(){
+  const checked = [...document.querySelectorAll('.vr-store-check:checked')].map(c=>c.value);
+  if(!checked.length) return;
+  toast('선택한 매장의 엑셀을 생성하는 중입니다...');
+  const resp = await fetch('/api/export/xlsx/visit-report/by-store', {
+    method: 'POST', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({store_names: checked})
+  });
+  if(resp.ok){
+    const blob = await resp.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = `방문보고서_매장별_${checked.length}곳.xlsx`;
+    document.body.appendChild(a); a.click(); a.remove();
+    URL.revokeObjectURL(url);
+  } else {
+    toast('다운로드에 실패했습니다', false);
+  }
 }
 
 function renderVrCard(r){
