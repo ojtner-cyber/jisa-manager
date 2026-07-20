@@ -362,6 +362,7 @@ td.center{text-align:center}
       <a onclick="showPage('script')" id="nav-script"><span class="ni">💬</span>매장 분석</a>
       <a onclick="showPage('comm')" id="nav-comm"><span class="ni">✉</span>매장과의 소통</a>
       <a onclick="showPage('competitor')" id="nav-competitor"><span class="ni">⚔</span>타사 비교</a>
+      <a onclick="showPage('visitreport')" id="nav-visitreport"><span class="ni">📋</span>매장 방문 보고서</a>
       <a onclick="showPage('sns')" id="nav-sns"><span class="ni">◆</span>SNS 활용 매장</a>
       <a onclick="showPage('ace')" id="nav-ace"><span class="ni">▶</span>영업 실행 포인트</a>
       <a onclick="showPage('stock')" id="nav-stock"><span class="ni">◻</span>재고 현황</a>
@@ -863,6 +864,62 @@ td.center{text-align:center}
 
     <!-- ██ 매장과의 소통 ██ -->
     <!-- ██ 타사 비교 ██ -->
+    <!-- ██ 매장 방문 보고서 ██ -->
+    <div class="page" id="page-visitreport">
+      <div class="ph">
+        <div><h2>매장 방문 보고서</h2><p>현장 방문 기록을 날짜별 · 매장별로 관리하고 누적 현황을 한눈에 확인합니다</p></div>
+        <div class="ph-r">
+          <button class="btn btn-ghost btn-sm" onclick="document.getElementById('vr-file-input').click()">📤 보고서 업로드 (xlsx/zip)</button>
+          <input type="file" id="vr-file-input" accept=".xlsx,.xls,.zip" multiple style="display:none" onchange="uploadVisitReports(event)">
+        </div>
+      </div>
+
+      <!-- 통계 요약 -->
+      <div id="vr-stats-bar" style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:20px"></div>
+
+      <!-- 뷰 전환 탭 -->
+      <div style="display:flex;gap:0;border-bottom:1.5px solid var(--border);margin-bottom:18px">
+        <button id="vr-tab-date" onclick="switchVrTab('date')"
+          style="padding:10px 22px;font-size:13px;font-weight:600;border:none;background:none;cursor:pointer;color:var(--p);border-bottom:2.5px solid var(--p);margin-bottom:-1.5px">
+          📅 날짜별 보기
+        </button>
+        <button id="vr-tab-store" onclick="switchVrTab('store')"
+          style="padding:10px 22px;font-size:13px;font-weight:600;border:none;background:none;cursor:pointer;color:var(--t-300);border-bottom:2.5px solid transparent;margin-bottom:-1.5px">
+          🏬 매장별 누적 현황
+        </button>
+      </div>
+
+      <!-- 필터 바 -->
+      <div class="fb" style="margin-bottom:18px;gap:10px;flex-wrap:wrap">
+        <span class="flbl">브랜드</span>
+        <select class="fs" id="vr-brand-filter" onchange="reloadVisitReportView()">
+          <option value="">전체</option>
+        </select>
+        <span class="flbl">매장명</span>
+        <input class="fs" id="vr-store-filter" placeholder="매장명 검색" style="width:160px" onkeydown="if(event.key==='Enter')reloadVisitReportView()">
+        <span class="flbl" id="vr-date-label">기간</span>
+        <input class="fs" type="date" id="vr-date-from" onchange="reloadVisitReportView()">
+        <span style="color:var(--t-300)">~</span>
+        <input class="fs" type="date" id="vr-date-to" onchange="reloadVisitReportView()">
+        <button class="btn btn-ghost btn-sm" onclick="resetVrFilters()">필터 초기화</button>
+        <div style="flex:1"></div>
+        <button class="btn btn-primary btn-sm" onclick="downloadVisitReportXlsx()">📥 엑셀 다운로드</button>
+      </div>
+
+      <!-- 날짜별 뷰 -->
+      <div id="vr-date-view"></div>
+
+      <!-- 매장별 뷰 -->
+      <div id="vr-store-view" style="display:none"></div>
+    </div>
+
+    <!-- 방문 보고서 상세 모달 -->
+    <div id="vr-detail-overlay" style="display:none;position:fixed;inset:0;background:rgba(15,23,42,.5);backdrop-filter:blur(2px);z-index:1000;align-items:center;justify-content:center;padding:20px">
+      <div style="background:var(--paper);border-radius:16px;width:720px;max-width:100%;max-height:90vh;overflow-y:auto;box-shadow:0 25px 60px -12px rgba(0,0,0,.35)">
+        <div id="vr-detail-body"></div>
+      </div>
+    </div>
+
     <div class="page" id="page-competitor">
       <!-- 헤더: 절제된 스타일 -->
       <div class="ph">
@@ -1586,7 +1643,7 @@ function showPage(n){
   ({dashboard:loadDash,branches:loadBranches,sales:loadSalesPage,
     users:loadUsers,salesdata:loadSalesData,products:loadProducts,
     script:initScriptPage,sns:loadSNS,stock:loadStock,display:loadDisplay,ace:loadAce,
-    comm:loadComm,competitor:loadCompetitorPage}[n]||function(){})();
+    comm:loadComm,competitor:loadCompetitorPage,visitreport:loadVisitReportPage}[n]||function(){})();
   if(n==='upload') cancelUpload();
 }
 
@@ -1729,6 +1786,277 @@ async function saveCheckResult(){
             status:'completed',reason:r.reason,check_points:r.check_points,result_memo:memo};
   const res=await api('/api/visit/save',{method:'POST',body:d});
   if(res&&res.ok){ document.getElementById('check-modal').style.display='none'; loadVisit(); toast('완료 처리됐습니다'); }
+}
+
+// ── 매장 방문 보고서 ────────────────────────────────
+let vrCurrentTab = 'date';
+let vrAllReports = [];
+let vrAllStores = [];
+
+async function loadVisitReportPage(){
+  const brands = await api('/api/visit-report/brands') || [];
+  const brandSel = document.getElementById('vr-brand-filter');
+  brandSel.innerHTML = '<option value="">전체</option>' + brands.map(b=>`<option value="${b}">${b}</option>`).join('');
+  await reloadVisitReportView();
+}
+
+function switchVrTab(tab){
+  vrCurrentTab = tab;
+  document.getElementById('vr-tab-date').style.color = tab==='date' ? 'var(--p)' : 'var(--t-300)';
+  document.getElementById('vr-tab-date').style.borderBottomColor = tab==='date' ? 'var(--p)' : 'transparent';
+  document.getElementById('vr-tab-store').style.color = tab==='store' ? 'var(--p)' : 'var(--t-300)';
+  document.getElementById('vr-tab-store').style.borderBottomColor = tab==='store' ? 'var(--p)' : 'transparent';
+  document.getElementById('vr-date-view').style.display = tab==='date' ? 'block' : 'none';
+  document.getElementById('vr-store-view').style.display = tab==='store' ? 'block' : 'none';
+  document.getElementById('vr-date-label').textContent = '기간';
+  reloadVisitReportView();
+}
+
+function resetVrFilters(){
+  document.getElementById('vr-brand-filter').value = '';
+  document.getElementById('vr-store-filter').value = '';
+  document.getElementById('vr-date-from').value = '';
+  document.getElementById('vr-date-to').value = '';
+  reloadVisitReportView();
+}
+
+async function reloadVisitReportView(){
+  const brand = document.getElementById('vr-brand-filter').value;
+  const store = document.getElementById('vr-store-filter').value.trim();
+  const dateFrom = document.getElementById('vr-date-from').value;
+  const dateTo = document.getElementById('vr-date-to').value;
+
+  const q = new URLSearchParams({brand, store, date_from: dateFrom, date_to: dateTo, group_by: vrCurrentTab});
+  vrAllReports = await api(`/api/visit-report/list?${q}`) || [];
+
+  renderVrStats();
+
+  if(vrCurrentTab === 'date'){
+    renderVrDateView();
+  } else {
+    const qs = new URLSearchParams({brand});
+    vrAllStores = await api(`/api/visit-report/stores?${qs}`) || [];
+    if(store) vrAllStores = vrAllStores.filter(s=>s.store_name.includes(store));
+    renderVrStoreView();
+  }
+}
+
+function renderVrStats(){
+  const totalVisits = vrAllReports.length;
+  const uniqueStores = new Set(vrAllReports.map(r=>r.store_name)).size;
+  const thisMonth = new Date().toISOString().slice(0,7);
+  const monthVisits = vrAllReports.filter(r=>r.visit_date?.startsWith(thisMonth)).length;
+  const totalRequests = vrAllReports.reduce((s,r)=>s+(r.requests?.length||0),0);
+
+  const stats = [
+    {label:'전체 방문 건수', value:`${totalVisits}건`, color:'#2563EB'},
+    {label:'방문 매장 수', value:`${uniqueStores}곳`, color:'#16A34A'},
+    {label:'이번 달 방문', value:`${monthVisits}건`, color:'#D97706'},
+    {label:'누적 요청사항', value:`${totalRequests}건`, color:'#7C3AED'},
+  ];
+  document.getElementById('vr-stats-bar').innerHTML = stats.map(s=>`
+    <div style="background:var(--paper);border:1px solid var(--border);border-left:3px solid ${s.color};border-radius:10px;padding:14px 16px">
+      <div style="font-size:11px;color:var(--t-400);font-weight:600;margin-bottom:5px">${s.label}</div>
+      <div style="font-size:20px;font-weight:800;color:var(--t-900)">${s.value}</div>
+    </div>`).join('');
+}
+
+const VR_BRAND_COLOR = {'베이비하우스':'#2563EB','링크맘':'#16A34A','베이비파크':'#D97706'};
+
+function renderVrDateView(){
+  const el = document.getElementById('vr-date-view');
+  if(!vrAllReports.length){
+    el.innerHTML = `<div style="text-align:center;padding:60px;color:var(--t-300)">
+      <div style="font-size:13px;font-weight:600">조건에 맞는 방문 보고서가 없습니다</div>
+    </div>`;
+    return;
+  }
+  // 날짜별 그룹핑
+  const byDate = {};
+  vrAllReports.forEach(r=>{
+    if(!byDate[r.visit_date]) byDate[r.visit_date] = [];
+    byDate[r.visit_date].push(r);
+  });
+  const dates = Object.keys(byDate).sort().reverse();
+
+  el.innerHTML = dates.map(date=>{
+    const items = byDate[date];
+    const dObj = new Date(date);
+    const dayLabel = ['일','월','화','수','목','금','토'][dObj.getDay()];
+    return `<div style="margin-bottom:16px">
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px">
+        <div style="font-size:13.5px;font-weight:800;color:var(--t-900)">${date} <span style="font-weight:600;color:var(--t-400);font-size:12px">(${dayLabel})</span></div>
+        <div style="font-size:11px;color:var(--t-300);background:var(--bg);padding:2px 8px;border-radius:10px">${items.length}개 매장</div>
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:10px">
+        ${items.map(r=>renderVrCard(r)).join('')}
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function renderVrStoreView(){
+  const el = document.getElementById('vr-store-view');
+  if(!vrAllStores.length){
+    el.innerHTML = `<div style="text-align:center;padding:60px;color:var(--t-300)">
+      <div style="font-size:13px;font-weight:600">조건에 맞는 매장이 없습니다</div>
+    </div>`;
+    return;
+  }
+  el.innerHTML = `<div style="background:var(--paper);border:1px solid var(--border);border-radius:12px;overflow:hidden">
+    <table style="width:100%;border-collapse:collapse">
+      <thead>
+        <tr style="background:var(--bg)">
+          <th style="padding:10px 14px;text-align:left;font-size:11px;font-weight:700;color:var(--t-500);border-bottom:1.5px solid var(--border)">매장명</th>
+          <th style="padding:10px 14px;text-align:center;font-size:11px;font-weight:700;color:var(--t-500);border-bottom:1.5px solid var(--border)">브랜드</th>
+          <th style="padding:10px 14px;text-align:center;font-size:11px;font-weight:700;color:var(--t-500);border-bottom:1.5px solid var(--border)">지역</th>
+          <th style="padding:10px 14px;text-align:center;font-size:11px;font-weight:700;color:var(--t-500);border-bottom:1.5px solid var(--border)">방문 횟수</th>
+          <th style="padding:10px 14px;text-align:left;font-size:11px;font-weight:700;color:var(--t-500);border-bottom:1.5px solid var(--border)">방문일</th>
+          <th style="padding:10px 14px;text-align:center;font-size:11px;font-weight:700;color:var(--t-500);border-bottom:1.5px solid var(--border)">최근 방문</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${vrAllStores.map(s=>{
+          const col = VR_BRAND_COLOR[s.brand] || '#6B7280';
+          return `<tr style="cursor:pointer;transition:.15s" onclick="openVrStoreHistory('${s.store_name.replace(/'/g,"\\'")}')"
+            onmouseenter="this.style.background='var(--bg)'" onmouseleave="this.style.background='none'">
+            <td style="padding:10px 14px;font-size:13px;font-weight:700;color:var(--t-900);border-bottom:1px solid var(--border)">${s.store_name}</td>
+            <td style="padding:10px 14px;text-align:center;border-bottom:1px solid var(--border)"><span style="font-size:10.5px;font-weight:700;color:${col};background:${col}15;padding:2px 8px;border-radius:6px">${s.brand||'—'}</span></td>
+            <td style="padding:10px 14px;text-align:center;font-size:12px;color:var(--t-500);border-bottom:1px solid var(--border)">${s.region||'—'}</td>
+            <td style="padding:10px 14px;text-align:center;font-size:13px;font-weight:800;color:var(--p);border-bottom:1px solid var(--border)">${s.cnt}회</td>
+            <td style="padding:10px 14px;font-size:11.5px;color:var(--t-500);border-bottom:1px solid var(--border)">${s.dates}</td>
+            <td style="padding:10px 14px;text-align:center;font-size:11.5px;color:var(--t-400);border-bottom:1px solid var(--border)">${s.last_date}</td>
+          </tr>`;
+        }).join('')}
+      </tbody>
+    </table>
+  </div>`;
+}
+
+function renderVrCard(r){
+  const col = VR_BRAND_COLOR[r.brand] || '#6B7280';
+  const catCount = Object.keys(r.content||{}).length;
+  const reqCount = (r.requests||[]).length;
+  return `<div onclick="openVrDetail(${r.id})"
+    style="background:var(--paper);border:1px solid var(--border);border-radius:10px;padding:14px;cursor:pointer;transition:.15s"
+    onmouseenter="this.style.borderColor='var(--p)';this.style.boxShadow='0 2px 8px rgba(0,0,0,.06)'"
+    onmouseleave="this.style.borderColor='var(--border)';this.style.boxShadow='none'">
+    <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:8px">
+      <div style="font-size:13px;font-weight:800;color:var(--t-900)">${r.store_name}</div>
+      <span style="font-size:9.5px;font-weight:700;color:${col};background:${col}15;padding:2px 7px;border-radius:5px;flex-shrink:0">${r.brand||'기타'}</span>
+    </div>
+    <div style="font-size:11px;color:var(--t-400);margin-bottom:8px">${r.manager?`담당 ${r.manager}`:''}${r.store_rank?` · ${r.store_rank}`:''}</div>
+    <div style="display:flex;gap:6px;flex-wrap:wrap">
+      ${catCount?`<span style="font-size:10px;background:var(--bg);color:var(--t-500);padding:2px 7px;border-radius:5px">주요내용 ${catCount}개</span>`:''}
+      ${reqCount?`<span style="font-size:10px;background:#FEF3C7;color:#D97706;padding:2px 7px;border-radius:5px;font-weight:700">요청 ${reqCount}건</span>`:''}
+    </div>
+  </div>`;
+}
+
+async function openVrDetail(rid){
+  const overlay = document.getElementById('vr-detail-overlay');
+  const body = document.getElementById('vr-detail-body');
+  body.innerHTML = `<div style="padding:60px;text-align:center;color:var(--t-300)">불러오는 중...</div>`;
+  overlay.style.display = 'flex';
+
+  const r = await api(`/api/visit-report/${rid}`);
+  if(!r || r.ok === false){ body.innerHTML = `<div style="padding:40px;text-align:center;color:var(--red)">불러오지 못했습니다</div>`; return; }
+
+  const col = VR_BRAND_COLOR[r.brand] || '#6B7280';
+  let html = `
+    <div style="padding:20px 24px;border-bottom:1px solid var(--border);background:linear-gradient(135deg,${col}12,${col}05);display:flex;justify-content:space-between;align-items:flex-start">
+      <div>
+        <div style="font-size:16px;font-weight:800;color:var(--t-900);margin-bottom:4px">${r.store_name}</div>
+        <div style="font-size:12px;color:var(--t-500)">${r.visit_date} · 담당 ${r.manager||'—'} ${r.store_rank?`· ${r.store_rank}`:''}</div>
+      </div>
+      <button onclick="closeVrDetail()" style="background:none;border:none;font-size:18px;color:var(--t-400);cursor:pointer">✕</button>
+    </div>
+    <div style="padding:20px 24px">
+      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:18px">
+        <div style="background:var(--bg);border-radius:8px;padding:10px"><div style="font-size:10px;color:var(--t-400)">지역</div><div style="font-size:12.5px;font-weight:700;color:var(--t-800)">${r.region||'—'}</div></div>
+        <div style="background:var(--bg);border-radius:8px;padding:10px"><div style="font-size:10px;color:var(--t-400)">직원현황</div><div style="font-size:12.5px;font-weight:700;color:var(--t-800)">${r.staff_info||'—'}</div></div>
+        <div style="background:var(--bg);border-radius:8px;padding:10px"><div style="font-size:10px;color:var(--t-400)">매장규모</div><div style="font-size:12.5px;font-weight:700;color:var(--t-800);white-space:pre-wrap">${r.store_size||'—'}</div></div>
+      </div>`;
+
+  const content = r.content || {};
+  if(Object.keys(content).length){
+    html += `<div style="font-size:12.5px;font-weight:800;color:var(--t-900);margin-bottom:10px">📋 카테고리별 주요 내용</div>`;
+    Object.entries(content).forEach(([cat, texts])=>{
+      html += `<div style="margin-bottom:12px">
+        <div style="font-size:11.5px;font-weight:700;color:var(--p);margin-bottom:4px">${cat}</div>
+        <div style="font-size:12px;color:var(--t-700);line-height:1.7;white-space:pre-wrap;background:var(--bg);border-radius:8px;padding:10px 12px">${(texts||[]).join('\n')}</div>
+      </div>`;
+    });
+  }
+
+  if((r.requests||[]).length){
+    html += `<div style="font-size:12.5px;font-weight:800;color:var(--t-900);margin:16px 0 10px">✅ 요청사항</div>`;
+    r.requests.forEach(req=>{
+      html += `<div style="font-size:12px;color:var(--t-700);line-height:1.6;margin-bottom:6px">• ${req}</div>`;
+    });
+  }
+
+  if(r.followup_text){
+    html += `<div style="font-size:12.5px;font-weight:800;color:var(--t-900);margin:16px 0 10px">📌 타사 프로모션 및 후속조치</div>
+      <div style="font-size:12px;color:var(--t-700);line-height:1.7;white-space:pre-wrap;background:var(--bg);border-radius:8px;padding:10px 12px">${r.followup_text}</div>`;
+  }
+
+  html += `<div style="display:flex;justify-content:flex-end;margin-top:20px">
+    <button onclick="deleteVrReport(${r.id})" style="font-size:11px;color:var(--red);background:none;border:1px solid var(--border-md);padding:6px 14px;border-radius:7px;cursor:pointer">이 보고서 삭제</button>
+  </div></div>`;
+
+  body.innerHTML = html;
+}
+
+function closeVrDetail(){
+  document.getElementById('vr-detail-overlay').style.display = 'none';
+}
+
+async function deleteVrReport(rid){
+  if(!confirm('이 방문 보고서를 삭제하시겠습니까?')) return;
+  const r = await api(`/api/visit-report/${rid}`, {method:'DELETE'});
+  if(r?.ok){
+    toast('삭제되었습니다');
+    closeVrDetail();
+    reloadVisitReportView();
+  }
+}
+
+async function openVrStoreHistory(storeName){
+  document.getElementById('vr-store-filter').value = storeName;
+  switchVrTab('date');
+}
+
+async function uploadVisitReports(e){
+  const files = e.target.files;
+  if(!files.length) return;
+  const formData = new FormData();
+  for(const f of files) formData.append('file', f);
+
+  toast('방문 보고서를 업로드하고 있습니다...');
+  try{
+    const resp = await fetch('/api/visit-report/upload', {method:'POST', body:formData});
+    const r = await resp.json();
+    if(r.ok){
+      toast(`업로드 완료 — 신규 ${r.inserted}건, 갱신 ${r.updated}건`);
+      if(r.errors?.length) console.warn('업로드 오류:', r.errors);
+      loadVisitReportPage();
+    } else {
+      toast(r.msg || '업로드에 실패했습니다', false);
+    }
+  } catch(err){
+    toast('업로드 중 오류가 발생했습니다', false);
+  }
+  e.target.value = '';
+}
+
+function downloadVisitReportXlsx(){
+  const store = document.getElementById('vr-store-filter').value.trim();
+  const dateFrom = document.getElementById('vr-date-from').value;
+  const dateTo = document.getElementById('vr-date-to').value;
+  const q = new URLSearchParams({store, date_from: dateFrom, date_to: dateTo});
+  window.location.href = `/api/export/xlsx/visit-report?${q}`;
+  toast('방문 보고서 엑셀 다운로드 중...');
 }
 
 // ── 타사 비교 ────────────────────────────────

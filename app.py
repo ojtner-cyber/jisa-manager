@@ -263,6 +263,25 @@ def init_db():
             conn.execute("ALTER TABLE competitor_comparison ADD COLUMN competitor_product TEXT DEFAULT ''")
     except Exception:
         pass
+    conn.execute("""CREATE TABLE IF NOT EXISTS store_visit_report (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        visit_date TEXT NOT NULL,
+        store_name TEXT NOT NULL,
+        brand TEXT DEFAULT '',
+        region TEXT DEFAULT '',
+        manager TEXT DEFAULT '',
+        author TEXT DEFAULT '',
+        store_rank TEXT DEFAULT '',
+        staff_info TEXT DEFAULT '',
+        store_size TEXT DEFAULT '',
+        content_json TEXT DEFAULT '',
+        request_json TEXT DEFAULT '',
+        followup_text TEXT DEFAULT '',
+        memo_text TEXT DEFAULT '',
+        source_filename TEXT DEFAULT '',
+        uploaded_at TEXT DEFAULT '',
+        UNIQUE(visit_date, store_name)
+    )""")
     conn.execute("""CREATE TABLE IF NOT EXISTS store_communication (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         seller_name TEXT NOT NULL,
@@ -4798,6 +4817,452 @@ def api_export_communication_xlsx():
         as_attachment=True, download_name=fname)
 
 
+# ── 매장 방문 보고서 API ────────────────────────────────
+import re as _re_visit
+
+def _parse_visit_report_sheet(ws, source_filename=''):
+    """오프라인 매장 방문 보고서 시트를 파싱 — 두 가지 포맷(개별 파일형 / 집계파일 내 시트형) 모두 지원"""
+    def cell(r, c):
+        try: return ws.cell(r, c).value
+        except: return None
+
+    def find_label_row(label_keywords, max_row=20):
+        """1열 또는 2열에서 라벨을 찾아 그 행 번호 반환"""
+        for ri in range(1, min(max_row, ws.max_row+1)):
+            for ci in [2, 1]:
+                v = cell(ri, ci)
+                if v and any(kw in str(v) for kw in label_keywords):
+                    return ri
+        return None
+
+    def find_value_near(label_row, label_keywords):
+        """해당 라벨이 있는 행에서, 라벨 뒤쪽 열들 중 첫 non-null 값을 찾음"""
+        if not label_row: return ''
+        for ci in range(1, min(ws.max_column+1, 20)):
+            v = cell(label_row, ci)
+            if v and any(kw in str(v) for kw in label_keywords):
+                for cj in range(ci+1, min(ws.max_column+1, 20)):
+                    v2 = cell(label_row, cj)
+                    if v2 is not None and str(v2).strip():
+                        return v2
+        return ''
+
+    # 작성일 / 방문일 (datetime 객체 또는 "5월 7일" 형태 텍스트 모두 지원)
+    date_row = find_label_row(['작성일', '방문일'])
+    visit_date_raw = find_value_near(date_row, ['방문일']) or find_value_near(date_row, ['작성일'])
+    if hasattr(visit_date_raw, 'strftime'):
+        visit_date = visit_date_raw.strftime('%Y-%m-%d')
+    else:
+        raw_str = str(visit_date_raw or '').strip()
+        m = _re_visit.search(r'(\d{1,2})\s*월\s*(\d{1,2})\s*일', raw_str)
+        if m:
+            mo, dy = int(m.group(1)), int(m.group(2))
+            # 연도 추정: 파일명에 연도가 있으면 사용, 없으면 현재 연도
+            yr_m = _re_visit.search(r'(20\d{2})', source_filename)
+            yr = int(yr_m.group(1)) if yr_m else datetime.now().year
+            visit_date = f"{yr}-{mo:02d}-{dy:02d}"
+        else:
+            visit_date = raw_str[:10]
+
+    # 매장명
+    store_row = find_label_row(['매장명'])
+    store_raw = str(find_value_near(store_row, ['매장명']) or '').strip()
+    # "베이비하우스 청라점 (35위/100위) (※ 레카로 인센티브 매장)" 형태에서 순위/부가정보 분리
+    store_rank_match = _re_visit.search(r'\((\d+위\s*/\s*\d+위)\)', store_raw)
+    store_rank = store_rank_match.group(1) if store_rank_match else ''
+    store_name = _re_visit.sub(r'\s*\([^)]*\)', '', store_raw).strip()
+
+    # 담당자 / 작성자
+    manager_row = find_label_row(['담당자'])
+    manager = str(find_value_near(manager_row, ['담당자']) or '').strip()
+    author_row = find_label_row(['작성자'])
+    author = str(find_value_near(author_row, ['작성자']) or '').strip()
+
+    # 지역 — 원본 텍스트("경기도" 등)보다 매장명 기반 표준 지역 분류를 우선 사용 (경기북부/남부 등 일관성)
+    region = detect_region_from_name(store_name) or ''
+    if not region:
+        region_row = find_label_row(['지역'])
+        region = str(find_value_near(region_row, ['지역']) or '').strip()
+
+    # 브랜드 추정 (매장명 기반)
+    brand = ''
+    for b in ['베이비하우스', '링크맘', '베이비파크', '베네피아', '베이비세븐', '베이비스토리', '베이비스토어']:
+        if b in store_name:
+            brand = b; break
+
+    # 직원현황 / 매장규모
+    staff_row = find_label_row(['직원수', '직원현황'])
+    staff_info = str(find_value_near(staff_row, ['직원수', '직원현황']) or '').strip()
+    size_row = find_label_row(['매장규모', '매장현황'])
+    store_size = str(find_value_near(size_row, ['매장규모', '매장현황']) or '').strip()
+
+    # 주요 내용 (유모차/카시트/식탁의자/용품/웨건/기타 카테고리별 텍스트)
+    content = {}
+    content_start = None
+    for ri in range(1, min(ws.max_row+1, 100)):
+        v = cell(ri, 2)
+        if v and ('주요 내용' in str(v) or '주요내용' in str(v)):
+            content_start = ri; break
+    if content_start:
+        cur_cat = None
+        stop_labels = ['진열 현황', '마케팅 요청', '영업지원 요청', '요청사항', '타사 프로모션', '후속조치']
+        for ri in range(content_start+1, min(content_start+60, ws.max_row+1)):
+            label = cell(ri, 2)
+            if label and any(sl in str(label) for sl in stop_labels):
+                break
+            v_cat = cell(ri, 3)
+            if v_cat and str(v_cat).strip() in ['유모차','카시트','식탁의자','용품','웨건','기타']:
+                cur_cat = str(v_cat).strip()
+                txt = cell(ri, 4)
+                if txt and str(txt).strip():
+                    content.setdefault(cur_cat, []).append(str(txt).strip())
+            elif cur_cat:
+                # 다음 카테고리 열(3번)이 비어있고, 텍스트가 4번 열에 이어지는 경우
+                txt = cell(ri, 4) or cell(ri, 3)
+                if txt and str(txt).strip():
+                    content.setdefault(cur_cat, []).append(str(txt).strip())
+
+    # 요청사항 (마케팅/영업지원) — 헤더 라벨 행은 제외하고 실제 요청 내용만 수집
+    requests_list = []
+    HEADER_JUNK = {'요청 내용', '요청자', '목적/배경', '우선순위', '담당부서', '희망 완료일',
+                   '진행상태', '요청 여부', '없음', ''}
+    for ri in range(1, ws.max_row+1):
+        v = cell(ri, 2)
+        if v and ('마케팅 요청' in str(v) or '영업지원 요청' in str(v) or
+                  (str(v).strip().startswith(('3.','4.')) and '요청사항' in str(v))):
+            for rj in range(ri+1, min(ri+15, ws.max_row+1)):
+                nxt_label = cell(rj, 2)
+                if nxt_label and any(sl in str(nxt_label) for sl in ['타사 프로모션', '후속조치', '영업지원 요청']):
+                    break
+                content_v = cell(rj, 4) or cell(rj, 3)
+                if content_v and str(content_v).strip() and str(content_v).strip() not in HEADER_JUNK:
+                    requests_list.append(str(content_v).strip())
+
+    # 타사 프로모션
+    promo_start = None
+    for ri in range(1, ws.max_row+1):
+        v = cell(ri, 2)
+        if v and '타사 프로모션' in str(v):
+            promo_start = ri; break
+    promo_text = ''
+    if promo_start:
+        parts = []
+        for ri in range(promo_start+1, min(promo_start+8, ws.max_row+1)):
+            label = cell(ri, 2)
+            if label and '후속조치' in str(label):
+                break
+            for ci in range(2, 6):
+                v = cell(ri, ci)
+                if v and str(v).strip() not in ('내용',):
+                    parts.append(str(v).strip())
+        promo_text = '\n'.join(parts)
+
+    # 후속조치 및 메모 — 라벨 행 자체는 제외하고 그 다음 내용만
+    followup_start = None
+    for ri in range(1, ws.max_row+1):
+        v = cell(ri, 2)
+        if v and '후속조치' in str(v):
+            followup_start = ri; break
+    followup_text = ''
+    if followup_start:
+        parts = []
+        for ri in range(followup_start+1, min(followup_start+30, ws.max_row+1)):
+            for ci in range(2, 12):
+                v = cell(ri, ci)
+                if v and str(v).strip() and '후속조치 계획' not in str(v) and '기타 메모' not in str(v):
+                    parts.append(str(v).strip())
+        followup_text = '\n'.join(parts)
+
+    if not visit_date or not store_name:
+        return None
+
+    return {
+        'visit_date': visit_date, 'store_name': store_name, 'brand': brand,
+        'region': region or '', 'manager': manager, 'author': author,
+        'store_rank': store_rank, 'staff_info': staff_info, 'store_size': store_size,
+        'content': content, 'requests': requests_list,
+        'followup_text': (promo_text + '\n' + followup_text).strip(),
+        'source_filename': source_filename,
+    }
+
+
+@app.route("/api/visit-report/upload", methods=["POST"])
+@login_required
+def api_visit_report_upload():
+    """매장 방문 보고서 업로드 — 단일 xlsx, 여러 xlsx, 또는 zip(여러 xlsx 포함) 모두 지원"""
+    if 'file' not in request.files:
+        return jsonify({'ok': False, 'msg': '파일이 없습니다'}), 400
+
+    files = request.files.getlist('file')
+    conn = get_db()
+    now_str = datetime.now().strftime('%Y-%m-%d %H:%M')
+    inserted, updated, skipped = 0, 0, 0
+    errors = []
+
+    def _process_workbook(wb, fname):
+        nonlocal inserted, updated, skipped
+        for sh_name in wb.sheetnames:
+            if sh_name.strip() in ('매장별 방문현황',):
+                continue  # 집계 시트는 건너뜀 (개별 보고서 시트만 파싱)
+            ws = wb[sh_name]
+            try:
+                parsed = _parse_visit_report_sheet(ws, fname)
+            except Exception as e:
+                errors.append(f"{fname}/{sh_name}: {e}")
+                continue
+            if not parsed:
+                skipped += 1
+                continue
+            existing = conn.execute(
+                "SELECT id FROM store_visit_report WHERE visit_date=? AND store_name=?",
+                (parsed['visit_date'], parsed['store_name'])).fetchone()
+            content_json = json.dumps(parsed['content'], ensure_ascii=False)
+            request_json = json.dumps(parsed['requests'], ensure_ascii=False)
+            if existing:
+                conn.execute("""UPDATE store_visit_report SET
+                    brand=?, region=?, manager=?, author=?, store_rank=?, staff_info=?, store_size=?,
+                    content_json=?, request_json=?, followup_text=?, source_filename=?, uploaded_at=?
+                    WHERE id=?""",
+                    (parsed['brand'], parsed['region'], parsed['manager'], parsed['author'],
+                     parsed['store_rank'], parsed['staff_info'], parsed['store_size'],
+                     content_json, request_json, parsed['followup_text'], parsed['source_filename'],
+                     now_str, existing[0]))
+                updated += 1
+            else:
+                conn.execute("""INSERT INTO store_visit_report
+                    (visit_date, store_name, brand, region, manager, author, store_rank,
+                     staff_info, store_size, content_json, request_json, followup_text,
+                     source_filename, uploaded_at)
+                    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    (parsed['visit_date'], parsed['store_name'], parsed['brand'], parsed['region'],
+                     parsed['manager'], parsed['author'], parsed['store_rank'], parsed['staff_info'],
+                     parsed['store_size'], content_json, request_json, parsed['followup_text'],
+                     parsed['source_filename'], now_str))
+                inserted += 1
+
+    for f in files:
+        fname = f.filename or ''
+        data = f.read()
+        try:
+            if fname.lower().endswith('.zip'):
+                import zipfile
+                with zipfile.ZipFile(io.BytesIO(data)) as z:
+                    for inner_name in z.namelist():
+                        if not inner_name.lower().endswith(('.xlsx', '.xls')):
+                            continue
+                        inner_data = z.read(inner_name)
+                        try:
+                            wb = openpyxl.load_workbook(io.BytesIO(inner_data), data_only=True)
+                            _process_workbook(wb, inner_name)
+                        except Exception as e:
+                            errors.append(f"{inner_name}: {e}")
+            else:
+                wb = openpyxl.load_workbook(io.BytesIO(data), data_only=True)
+                _process_workbook(wb, fname)
+        except Exception as e:
+            errors.append(f"{fname}: {e}")
+
+    conn.commit(); conn.close()
+    return jsonify({'ok': True, 'inserted': inserted, 'updated': updated, 'skipped': skipped,
+                     'errors': errors[:10]})
+
+
+@app.route("/api/visit-report/list")
+@login_required
+def api_visit_report_list():
+    """방문 보고서 목록 조회 — 날짜별/매장별 필터 및 정렬 지원"""
+    store = request.args.get('store', '').strip()
+    brand = request.args.get('brand', '').strip()
+    date_from = request.args.get('date_from', '').strip()
+    date_to = request.args.get('date_to', '').strip()
+    group_by = request.args.get('group_by', 'date')  # 'date' or 'store'
+
+    conn = get_db()
+    q = "SELECT * FROM store_visit_report WHERE 1=1"
+    params = []
+    if store: q += " AND store_name LIKE ?"; params.append(f"%{store}%")
+    if brand: q += " AND brand=?"; params.append(brand)
+    if date_from: q += " AND visit_date>=?"; params.append(date_from)
+    if date_to: q += " AND visit_date<=?"; params.append(date_to)
+    q += " ORDER BY visit_date DESC" if group_by == 'date' else " ORDER BY store_name, visit_date DESC"
+    rows = [dict(r) for r in conn.execute(q, params).fetchall()]
+    conn.close()
+
+    for r in rows:
+        try: r['content'] = json.loads(r.get('content_json') or '{}')
+        except: r['content'] = {}
+        try: r['requests'] = json.loads(r.get('request_json') or '[]')
+        except: r['requests'] = []
+
+    return jsonify(rows)
+
+
+@app.route("/api/visit-report/stores")
+@login_required
+def api_visit_report_stores():
+    """매장별 방문 누적 현황 (요청하신 '매장별 방문현황' 첫 탭 형태 재현)"""
+    brand = request.args.get('brand', '').strip()
+    conn = get_db()
+    q = """SELECT store_name, brand, region, COUNT(*) cnt,
+                  GROUP_CONCAT(visit_date) dates, MAX(visit_date) last_date
+           FROM store_visit_report WHERE 1=1"""
+    params = []
+    if brand: q += " AND brand=?"; params.append(brand)
+    q += " GROUP BY store_name, brand ORDER BY cnt DESC, store_name"
+    rows = [dict(r) for r in conn.execute(q, params).fetchall()]
+    conn.close()
+    for r in rows:
+        dates = sorted((r['dates'] or '').split(','))
+        r['dates_list'] = dates
+        r['dates'] = ', '.join(d[5:].replace('-', '/') for d in dates if d)
+    return jsonify(rows)
+
+
+@app.route("/api/visit-report/<int:rid>")
+@login_required
+def api_visit_report_detail(rid):
+    """방문 보고서 상세 조회"""
+    conn = get_db()
+    row = conn.execute("SELECT * FROM store_visit_report WHERE id=?", (rid,)).fetchone()
+    conn.close()
+    if not row:
+        return jsonify({'ok': False, 'msg': '찾을 수 없습니다'}), 404
+    r = dict(row)
+    try: r['content'] = json.loads(r.get('content_json') or '{}')
+    except: r['content'] = {}
+    try: r['requests'] = json.loads(r.get('request_json') or '[]')
+    except: r['requests'] = []
+    return jsonify(r)
+
+
+@app.route("/api/visit-report/<int:rid>", methods=["DELETE"])
+@login_required
+def api_visit_report_delete(rid):
+    conn = get_db()
+    conn.execute("DELETE FROM store_visit_report WHERE id=?", (rid,))
+    conn.commit(); conn.close()
+    return jsonify({'ok': True})
+
+
+@app.route("/api/visit-report/brands")
+@login_required
+def api_visit_report_brands():
+    conn = get_db()
+    rows = conn.execute("SELECT DISTINCT brand FROM store_visit_report WHERE brand!='' ORDER BY brand").fetchall()
+    conn.close()
+    return jsonify([r[0] for r in rows])
+
+
+@app.route("/api/export/xlsx/visit-report")
+@login_required
+def api_export_visit_report_xlsx():
+    """방문 보고서 엑셀 다운로드 — 날짜 범위 또는 매장명 필터 지원, 심플 전문가용 디자인"""
+    from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
+    from openpyxl.utils import get_column_letter
+
+    store = request.args.get('store', '').strip()
+    date_from = request.args.get('date_from', '').strip()
+    date_to = request.args.get('date_to', '').strip()
+
+    conn = get_db()
+    q = "SELECT * FROM store_visit_report WHERE 1=1"
+    params = []
+    if store: q += " AND store_name LIKE ?"; params.append(f"%{store}%")
+    if date_from: q += " AND visit_date>=?"; params.append(date_from)
+    if date_to: q += " AND visit_date<=?"; params.append(date_to)
+    q += " ORDER BY visit_date"
+    rows = [dict(r) for r in conn.execute(q, params).fetchall()]
+    conn.close()
+
+    if not rows:
+        return jsonify({'ok': False, 'msg': '조건에 맞는 방문 보고서가 없습니다'}), 404
+
+    FNAME = '맑은 고딕'
+    def mf(h): return PatternFill("solid", fgColor=h)
+    thin = Side(style='thin', color='E5E7EB')
+    bdr  = Border(left=thin, right=thin, top=thin, bottom=thin)
+    ctr  = Alignment(horizontal='center', vertical='center', wrap_text=True)
+    left = Alignment(horizontal='left', vertical='top', wrap_text=True)
+
+    wb = openpyxl.Workbook()
+
+    # 1번 시트: 요약 목록
+    ws0 = wb.active; ws0.title = '방문보고서_목록'
+    ws0.merge_cells('A1:H1')
+    title = f"매장 방문 보고서 ({date_from or '전체'} ~ {date_to or '전체'})" if not store else f"'{store}' 방문 보고서"
+    c = ws0.cell(row=1, column=1, value=title)
+    c.font = Font(bold=True, size=13, name=FNAME, color='1F2937'); c.alignment = ctr
+    ws0.row_dimensions[1].height = 26
+
+    headers = ['방문일','매장명','브랜드','지역','담당자','작성자','매장순위','요청사항 수']
+    for ci, h in enumerate(headers, 1):
+        c = ws0.cell(row=2, column=ci, value=h)
+        c.font = Font(bold=True, size=9, name=FNAME, color='374151'); c.fill = mf('F3F4F6'); c.border = bdr; c.alignment = ctr
+        ws0.column_dimensions[get_column_letter(ci)].width = [12,20,12,10,10,10,14,10][ci-1]
+    ws0.row_dimensions[2].height = 20
+
+    ri = 3
+    for r in rows:
+        try: req_cnt = len(json.loads(r.get('request_json') or '[]'))
+        except: req_cnt = 0
+        vals = [r['visit_date'], r['store_name'], r['brand'], r['region'], r['manager'], r['author'], r['store_rank'], req_cnt]
+        for ci, v in enumerate(vals, 1):
+            c = ws0.cell(row=ri, column=ci, value=v); c.font = Font(size=9, name=FNAME); c.border = bdr; c.alignment = ctr
+        ri += 1
+
+    # 2번 시트 이후: 각 방문건 상세
+    for r in rows:
+        sheet_name = f"{r['visit_date'][5:].replace('-','')}_{r['store_name']}"[:31]
+        ws = wb.create_sheet(title=sheet_name)
+        try: content = json.loads(r.get('content_json') or '{}')
+        except: content = {}
+        try: reqs = json.loads(r.get('request_json') or '[]')
+        except: reqs = []
+
+        ws.merge_cells('A1:B1')
+        c = ws.cell(row=1, column=1, value=f"{r['store_name']} 방문 보고서 — {r['visit_date']}")
+        c.font = Font(bold=True, size=13, name=FNAME, color='1F2937'); c.alignment = left
+        ws.row_dimensions[1].height = 24
+        ri2 = 3
+        info_rows = [('담당자', r['manager']), ('작성자', r['author']), ('지역', r['region']),
+                     ('매장 순위', r['store_rank']), ('직원 현황', r['staff_info']), ('매장 규모', r['store_size'])]
+        for label, val in info_rows:
+            ws.cell(row=ri2, column=1, value=label).font = Font(bold=True, size=9, name=FNAME, color='6B7280')
+            ws.cell(row=ri2, column=2, value=val or '—').font = Font(size=9, name=FNAME)
+            ri2 += 1
+        ri2 += 1
+
+        c = ws.cell(row=ri2, column=1, value='■ 카테고리별 주요 내용'); c.font = Font(bold=True, size=11, name=FNAME); ri2 += 1
+        for cat, texts in content.items():
+            ws.cell(row=ri2, column=1, value=cat).font = Font(bold=True, size=9, name=FNAME, color='2563EB')
+            c2 = ws.cell(row=ri2, column=2, value='\n'.join(texts)); c2.font = Font(size=9, name=FNAME); c2.alignment = left
+            ws.row_dimensions[ri2].height = min(150, max(20, len('\n'.join(texts))//3))
+            ri2 += 1
+        ri2 += 1
+
+        c = ws.cell(row=ri2, column=1, value='■ 요청사항'); c.font = Font(bold=True, size=11, name=FNAME); ri2 += 1
+        if reqs:
+            for req in reqs:
+                ws.cell(row=ri2, column=1, value='•').font = Font(size=9, name=FNAME)
+                c2 = ws.cell(row=ri2, column=2, value=req); c2.font = Font(size=9, name=FNAME); c2.alignment = left
+                ri2 += 1
+        else:
+            ws.cell(row=ri2, column=2, value='없음').font = Font(size=9, name=FNAME, color='9CA3AF'); ri2 += 1
+        ri2 += 1
+
+        c = ws.cell(row=ri2, column=1, value='■ 타사 프로모션 및 후속조치'); c.font = Font(bold=True, size=11, name=FNAME); ri2 += 1
+        c2 = ws.cell(row=ri2, column=2, value=r.get('followup_text','') or '없음'); c2.font = Font(size=9, name=FNAME); c2.alignment = left
+        ws.row_dimensions[ri2].height = min(200, max(30, len(r.get('followup_text','') or '')//3))
+
+        ws.column_dimensions['A'].width = 16
+        ws.column_dimensions['B'].width = 70
+
+    buf = io.BytesIO(); wb.save(buf); buf.seek(0)
+    fname = f"방문보고서_{store or '전체'}_{date_from or ''}~{date_to or ''}.xlsx"
+    return send_file(buf, mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        as_attachment=True, download_name=fname)
+
+
 # ── 타사 비교 API ────────────────────────────────
 COMPETITOR_CATEGORIES = {
     '유모차': ['실버크로스','잉글레시나','뉴나','조이','부가부','시크','미마','스토케','타보','리안','에그','오르빗','오이스터','와이업'],
@@ -5181,6 +5646,8 @@ def _extract_pros_cons(brand, product_name, category, titles,
 5. 단점 정보가 부족하면, 이 카테고리 제품군에서 해당 타입 제품이 일반적으로 갖는 한계를 전문가 관점에서 신중하게 짚고 reason에 왜 그런 한계가 생기는지 설명하세요.
 6. 태그는 [소재/디자인] [기능성] [무게/휴대성] [안전성] [내구성] [편의성] [브랜드신뢰도] 중 선택하세요.
 7. 가격은 언급하지 마세요.
+8. 매우 중요: 블로그 도입부 인사말("안녕하세요"), 홍보성 해시태그, "~소개해드릴게요", "추천드립니다", "구매했어요" 같은 광고/서두 문구는 절대 장점/단점으로 취급하지 마세요. 실질적인 제품 정보(기능·소재·사용감·불편함)가 담긴 내용만 반영하세요.
+9. 자사 제품과 경쟁 제품의 장점/단점이 서로 겹치지 않도록, 각 제품 고유의 특징 위주로 작성하세요.
 
 다음 JSON 형식으로만 답하세요 (설명 없이 JSON만):
 {{
@@ -5210,9 +5677,30 @@ pros/cons는 각각 최대 3개, 언급 빈도 높은 순."""
         except Exception:
             pass
 
-    # Fallback: API 키가 없을 때 — 빈도 기반 TOP3 (키워드 중복도가 높은 문장 우선) + 근거 문장 첨부
+    # Fallback: API 키가 없을 때 — 보일러플레이트(인사말/광고성 문구) 제거 후 빈도 기반 TOP3 선별
+    import re as _re_module
+
+    # 블로그 도입부/인사말/광고성 상투 문구 패턴 — 실질적 정보가 아니므로 제외
+    BOILERPLATE_PATTERNS = [
+        r'안녕하세요', r'^오늘은', r'소개해드릴게요', r'소개해드리겠습니다', r'포스팅',
+        r'추천드립니다$', r'추천드려요$', r'추천드리고 싶어요', r'가져왔습니다',
+        r'찾아봤는데', r'찾아보았는데', r'^구매했어요', r'^구매했습니다',
+        r'해시태그', r'^<<.*>>$', r'^#', r'꼭.*추천', r'글에서는', r'글을 통해',
+        r'궁금하시다면', r'감사합니다$', r'봐주세요$', r'마무리하겠습니다',
+        r'다음 포스팅', r'다음글', r'^저는', r'^제가.*결정', r'^제가.*골랐',
+        r'결국.*이다!?$', r'^올인원', r'최종 선택',
+    ]
+    def _is_boilerplate(s):
+        return any(_re_module.search(pat, s) for pat in BOILERPLATE_PATTERNS)
+
+    def _clean_candidates(snippets):
+        """보일러플레이트 제거 + 너무 짧은 문장 제외"""
+        return [s for s in snippets if not _is_boilerplate(s) and len(s) >= 12]
+
     def _frequency_top_with_reason(snippets, n):
-        """단어 집합 유사도로 클러스터링해 대표 문장(point) + 유사 문장 1개(reason 근거)를 함께 반환"""
+        """보일러플레이트를 제외한 뒤, 단어 집합 유사도로 대표 문장(point) + 근거(reason)를 선정
+        중복/유사 문장은 엄격하게 배제(임계값 0.35)해 같은 내용 반복 노출 방지"""
+        snippets = _clean_candidates(snippets)
         if not snippets:
             return []
         word_sets = []
@@ -5224,12 +5712,13 @@ pros/cons는 각각 최대 3개, 언급 빈도 높은 순."""
             overlap = sum(len(ws & other) for j, other in enumerate(word_sets) if i != j)
             scores.append((overlap, i))
         scores.sort(reverse=True)
-        picked_idx, used_words = [], set()
+        picked_idx = []
         for _, idx in scores:
             if len(picked_idx) >= n:
                 break
             ws = word_sets[idx]
-            if picked_idx and any(len(ws & word_sets[p]) / max(len(ws),1) > 0.6 for p in picked_idx):
+            # 이미 뽑은 문장과 35% 이상 단어가 겹치면 같은 내용으로 간주해 제외 (엄격한 중복 배제)
+            if picked_idx and any(len(ws & word_sets[p]) / max(len(ws),1) > 0.35 for p in picked_idx):
                 continue
             picked_idx.append(idx)
 
@@ -5237,17 +5726,18 @@ pros/cons는 각각 최대 3개, 언급 빈도 높은 순."""
         for idx in picked_idx:
             point = snippets[idx]
             ws = word_sets[idx]
-            # 같은 의미로 겹치는 다른 문장을 근거(reason)로 추가 제시
             related = [snippets[j] for j, other in enumerate(word_sets)
-                       if j != idx and len(ws & other) >= 2][:2]
-            reason = ' '.join(related) if related else '여러 사용자 후기에서 반복적으로 언급된 내용입니다.'
+                       if j != idx and j not in picked_idx and len(ws & other) >= 2][:2]
+            reason = ' '.join(related) if related else '여러 사용자 후기에서 공통적으로 확인된 내용입니다.'
             results.append({'tag': '', 'point': point, 'reason': reason})
         return results
 
-    import re as _re_module
     pros = _frequency_top_with_reason(pro_snippets + review_snippets, 3)
+    # 단점은 con_snippets에서만 선별 (허위 채움 금지) — 데이터 부족 시 정직하게 빈 상태 표시
     cons = _frequency_top_with_reason(con_snippets, 3)
-    description = (official_snippets + review_snippets)[0] if (official_snippets or review_snippets) else ''
+    clean_official = _clean_candidates(official_snippets)
+    clean_reviews  = _clean_candidates(review_snippets)
+    description = (clean_official + clean_reviews)[0] if (clean_official or clean_reviews) else ''
     return pros, cons, description
 
 
@@ -5708,6 +6198,8 @@ def generate_comparison(category, our_brand, our_product, our_data,
 4. 실제 데이터에 없는 내용은 지어내지 마세요. 완결된 문장으로 다듬는 것은 필수입니다.
 5. 가격은 절대 언급하지 마세요.
 6. 영업 포인트는 반드시 위에서 도출한 TOP3 장단점(특히 reason)을 근거로, "고객이 경쟁사 제품을 언급하며 망설일 때 이렇게 응대하라"는 구체적 실전 화법으로 작성하세요. 일반론 금지, 왜 그렇게 응대해야 하는지 이유가 드러나야 합니다.
+7. 원본 리뷰 조각 중 블로그 인사말("안녕하세요"), 홍보 해시태그, "~추천드립니다", "구매했어요" 같은 광고성/서두 문구는 절대 장점·단점 내용으로 쓰지 마세요.
+8. 같은 제품의 장점과 단점이 서로 겹치는 내용이 되지 않게 하고, 자사와 경쟁사의 장점끼리도 동일한 문구가 반복되지 않게 각각 고유한 포인트로 작성하세요.
 
 다음 JSON 형식으로만 답하세요 (설명 없이 JSON만):
 {{
