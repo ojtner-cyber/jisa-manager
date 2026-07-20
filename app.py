@@ -283,12 +283,13 @@ def init_db():
         raw_grid_json TEXT DEFAULT '',
         merged_cells_json TEXT DEFAULT '',
         sheet_title TEXT DEFAULT '',
+        raw_xlsx_b64 TEXT DEFAULT '',
         UNIQUE(visit_date, store_name)
     )""")
     try:
         svr_cols = [r[1] for r in conn.execute("PRAGMA table_info(store_visit_report)").fetchall()]
         for col, typ in [('raw_grid_json',"TEXT DEFAULT ''"), ('merged_cells_json',"TEXT DEFAULT ''"),
-                          ('sheet_title',"TEXT DEFAULT ''")]:
+                          ('sheet_title',"TEXT DEFAULT ''"), ('raw_xlsx_b64',"TEXT DEFAULT ''")]:
             if col not in svr_cols:
                 conn.execute(f"ALTER TABLE store_visit_report ADD COLUMN {col} {typ}")
     except Exception:
@@ -4831,6 +4832,52 @@ def api_export_communication_xlsx():
 # ── 매장 방문 보고서 API ────────────────────────────────
 import re as _re_visit
 
+def _copy_sheet_with_style(src_ws, dst_ws):
+    """시트를 값+서식(폰트/배경색/테두리/정렬/병합/열너비/행높이)까지 통째로 복사"""
+    from copy import copy as _copy_style
+    for row in src_ws.iter_rows():
+        for cell in row:
+            new_cell = dst_ws.cell(row=cell.row, column=cell.column, value=cell.value)
+            if cell.has_style:
+                new_cell.font = _copy_style(cell.font)
+                new_cell.border = _copy_style(cell.border)
+                new_cell.fill = _copy_style(cell.fill)
+                new_cell.number_format = cell.number_format
+                new_cell.protection = _copy_style(cell.protection)
+                new_cell.alignment = _copy_style(cell.alignment)
+    for col_letter, dim in src_ws.column_dimensions.items():
+        if dim.width:
+            dst_ws.column_dimensions[col_letter].width = dim.width
+        if dim.hidden:
+            dst_ws.column_dimensions[col_letter].hidden = dim.hidden
+    for row_idx, dim in src_ws.row_dimensions.items():
+        if dim.height:
+            dst_ws.row_dimensions[row_idx].height = dim.height
+    for merged_range in src_ws.merged_cells.ranges:
+        try: dst_ws.merge_cells(str(merged_range))
+        except Exception: pass
+    try:
+        dst_ws.freeze_panes = src_ws.freeze_panes
+    except Exception:
+        pass
+    try:
+        dst_ws.sheet_view.showGridLines = src_ws.sheet_view.showGridLines
+    except Exception:
+        pass
+
+
+def _extract_single_sheet_xlsx_b64(src_ws):
+    """특정 시트 하나를 서식 그대로 유지한 채 독립된 xlsx 파일(base64)로 추출"""
+    import base64
+    new_wb = openpyxl.Workbook()
+    new_ws = new_wb.active
+    new_ws.title = (src_ws.title or 'Sheet1')[:31]
+    _copy_sheet_with_style(src_ws, new_ws)
+    buf = io.BytesIO()
+    new_wb.save(buf)
+    return base64.b64encode(buf.getvalue()).decode('ascii')
+
+
 def _parse_visit_report_sheet(ws, source_filename=''):
     """오프라인 매장 방문 보고서 시트를 파싱 — 두 가지 포맷(개별 파일형 / 집계파일 내 시트형) 모두 지원"""
     def cell(r, c):
@@ -5040,6 +5087,11 @@ def api_visit_report_upload():
             if not parsed:
                 skipped += 1
                 continue
+            try:
+                raw_xlsx_b64 = _extract_single_sheet_xlsx_b64(ws)
+            except Exception as e:
+                raw_xlsx_b64 = ''
+                errors.append(f"{fname}/{sh_name} 서식 저장 실패: {e}")
             existing = conn.execute(
                 "SELECT id FROM store_visit_report WHERE visit_date=? AND store_name=?",
                 (parsed['visit_date'], parsed['store_name'])).fetchone()
@@ -5052,23 +5104,24 @@ def api_visit_report_upload():
                 conn.execute("""UPDATE store_visit_report SET
                     brand=?, region=?, manager=?, author=?, store_rank=?, staff_info=?, store_size=?,
                     content_json=?, request_json=?, followup_text=?, source_filename=?, uploaded_at=?,
-                    raw_grid_json=?, merged_cells_json=?, sheet_title=?
+                    raw_grid_json=?, merged_cells_json=?, sheet_title=?, raw_xlsx_b64=?
                     WHERE id=?""",
                     (parsed['brand'], parsed['region'], parsed['manager'], parsed['author'],
                      parsed['store_rank'], parsed['staff_info'], parsed['store_size'],
                      content_json, request_json, parsed['followup_text'], parsed['source_filename'],
-                     now_str, raw_grid_json, merged_cells_json, sheet_title, existing[0]))
+                     now_str, raw_grid_json, merged_cells_json, sheet_title, raw_xlsx_b64, existing[0]))
                 updated += 1
             else:
                 conn.execute("""INSERT INTO store_visit_report
                     (visit_date, store_name, brand, region, manager, author, store_rank,
                      staff_info, store_size, content_json, request_json, followup_text,
-                     source_filename, uploaded_at, raw_grid_json, merged_cells_json, sheet_title)
-                    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                     source_filename, uploaded_at, raw_grid_json, merged_cells_json, sheet_title, raw_xlsx_b64)
+                    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                     (parsed['visit_date'], parsed['store_name'], parsed['brand'], parsed['region'],
                      parsed['manager'], parsed['author'], parsed['store_rank'], parsed['staff_info'],
                      parsed['store_size'], content_json, request_json, parsed['followup_text'],
-                     parsed['source_filename'], now_str, raw_grid_json, merged_cells_json, sheet_title))
+                     parsed['source_filename'], now_str, raw_grid_json, merged_cells_json, sheet_title,
+                     raw_xlsx_b64))
                 inserted += 1
 
     for f in files:
@@ -5307,7 +5360,7 @@ def api_export_visit_report_xlsx():
     ws_dash = wb.active; ws_dash.title = '매장별_방문현황'
     _write_dashboard_sheet(ws_dash, rows, FNAME, mf, bdr, ctr, left)
 
-    # 이후 시트: 각 방문건을 원본 그대로 재현
+    # 이후 시트: 각 방문건을 원본 그대로(서식까지) 재현
     used_names = set()
     for r in rows:
         base_name = f"{r['visit_date'][5:].replace('-','')}_{r['store_name']}"[:28]
@@ -5318,6 +5371,19 @@ def api_export_visit_report_xlsx():
             suffix += 1
         used_names.add(sheet_name)
         ws = wb.create_sheet(title=sheet_name)
+
+        raw_xlsx_b64 = r.get('raw_xlsx_b64')
+        if raw_xlsx_b64:
+            try:
+                import base64
+                src_bytes = base64.b64decode(raw_xlsx_b64)
+                src_wb = openpyxl.load_workbook(io.BytesIO(src_bytes))
+                src_ws = src_wb[src_wb.sheetnames[0]]
+                _copy_sheet_with_style(src_ws, ws)
+                continue
+            except Exception:
+                pass
+        # 서식 원본이 없는 구버전 데이터 — 값만이라도 표시
         try:
             raw_grid = json.loads(r.get('raw_grid_json') or '[]')
             merged_cells = json.loads(r.get('merged_cells_json') or '[]')
@@ -5326,7 +5392,6 @@ def api_export_visit_report_xlsx():
         if raw_grid:
             _write_raw_grid_sheet(ws, raw_grid, merged_cells, FNAME)
         else:
-            # 원본 그리드가 없는 구버전 데이터 — 요약 형태로 대체
             ws.cell(row=1, column=1, value=f"{r['store_name']} — {r['visit_date']}").font = Font(bold=True, size=12, name=FNAME)
             ws.cell(row=3, column=1, value='원본 데이터가 저장되지 않은 보고서입니다. 다시 업로드해주세요.').font = Font(size=9, name=FNAME, color='9CA3AF')
 
@@ -5377,6 +5442,18 @@ def api_export_visit_report_by_store():
             sheet_name = f"{base_name}_{suffix}"[:31]; suffix += 1
         used_names.add(sheet_name)
         ws = wb.create_sheet(title=sheet_name)
+
+        raw_xlsx_b64 = r.get('raw_xlsx_b64')
+        if raw_xlsx_b64:
+            try:
+                import base64
+                src_bytes = base64.b64decode(raw_xlsx_b64)
+                src_wb = openpyxl.load_workbook(io.BytesIO(src_bytes))
+                src_ws = src_wb[src_wb.sheetnames[0]]
+                _copy_sheet_with_style(src_ws, ws)
+                continue
+            except Exception:
+                pass
         try:
             raw_grid = json.loads(r.get('raw_grid_json') or '[]')
             merged_cells = json.loads(r.get('merged_cells_json') or '[]')
