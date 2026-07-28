@@ -5924,8 +5924,9 @@ def _classify_product_type(category, brand, product_name, titles, snippets):
 def _extract_pros_cons(brand, product_name, category, titles,
                          review_snippets=None, pro_snippets=None, con_snippets=None, official_snippets=None):
     """수집된 검색결과(후기/장점/단점/공식정보 각각 분리, 이미 완결 문장으로 정제됨)에서 TOP3 장단점을
-    '이유/근거'까지 포함한 구조로 정리 (Claude API 우선 — 언급 빈도 기준 TOP3, 실패 시 빈도 기반 규칙 선별)
-    반환 형식: pros/cons는 [{"tag":str, "point":str, "reason":str}, ...] 구조"""
+    '짧고 명확한 핵심 문구'로 요약 (Claude API 우선, 실패 시 테마 기반 키워드 분석)
+    반환 형식: pros/cons는 [{"tag":str, "point":str, "reason":str}, ...] 구조
+    point는 "작고 가볍다" 같이 5~15자 내외의 핵심 요약 문구, reason은 그 근거 설명"""
     review_snippets = review_snippets or []
     pro_snippets = pro_snippets or []
     con_snippets = con_snippets or []
@@ -5939,44 +5940,43 @@ def _extract_pros_cons(brand, product_name, category, titles,
     if api_key:
         try:
             import requests
-            prompt = f"""당신은 유아용품 업계 15년차 상품기획/영업 전문가이자 마케터입니다. 이 분석은 실제 매장 영업 현장에서 고객 응대용으로 쓰일 자료이므로, "왜 그런지" 이유가 빠지면 안 됩니다.
-'{brand} {product_name}' ({category})에 대해 인터넷에서 실제 수집한 정보를 분야별로 드립니다 (이미 완결된 문장 단위로 정제되어 있습니다).
+            prompt = f"""당신은 유아용품 업계 15년차 리서치/데이터 분석 전문가입니다. 이 분석은 매장 영업 현장에서 즉시 활용할 요약 자료이므로, 장황한 문장이 아니라 "딱 봐도 이해되는 짧고 명확한 핵심 문구"로 정리해야 합니다.
+'{brand} {product_name}' ({category})에 대해 인터넷에서 방대하게 수집한 원문 자료를 드립니다.
 
 [제품/판매 정보]
 {' / '.join(titles[:8])}
 
-[일반 사용후기에서 발견된 완결 문장들 — 총 {len(review_snippets)}개]
+[일반 사용후기 — 총 {len(review_snippets)}개]
 {' / '.join(review_snippets[:15]) or '(수집된 후기 없음)'}
 
-[장점/추천이유 관련 완결 문장들 — 총 {len(pro_snippets)}개]
+[장점/추천이유 관련 — 총 {len(pro_snippets)}개]
 {' / '.join(pro_snippets[:12]) or '(수집된 정보 없음)'}
 
-[단점/아쉬운점/불편 관련 완결 문장들 — 총 {len(con_snippets)}개]
+[단점/아쉬운점 관련 — 총 {len(con_snippets)}개]
 {' / '.join(con_snippets[:12]) or '(수집된 정보 없음)'}
 
-[제품 특징/스펙/소재 관련 완결 문장들 — 총 {len(official_snippets)}개]
+[제품 특징/스펙 관련 — 총 {len(official_snippets)}개]
 {' / '.join(official_snippets[:12]) or '(수집된 정보 없음)'}
 
-작성 원칙 (매우 중요):
-1. 방대한 자료 전체를 종합했을 때 "의미가 겹치는 문장이 가장 많이 나오는" 순서로 장점 TOP3, 단점 TOP3를 선별하세요.
-2. 각 장점/단점은 반드시 point(무엇이 좋은지/아쉬운지 한 줄 요약)와 reason(왜 그런지, 실사용에서 구체적으로 어떤 상황·어떤 사용자에게 이점/불편이 되는지 설명) 두 부분으로 나눠 작성하세요.
-   - 나쁜 예: point="휴대성이 좋음" reason="편리해서" (너무 뭉뚱그림)
-   - 좋은 예: point="원터치 폴딩으로 휴대성이 뛰어남" reason="한 손으로 3초 만에 접혀 대중교통 이용이나 차량 트렁크 적재 시 실질적으로 유용하다는 후기가 다수 확인됨"
-3. 리뷰 원문을 그대로 복사하지 마세요. 여러 문장에서 공통되는 의미를 전문가가 종합·재작성하세요.
-4. 뭉뚱그린 표현("품질이 좋다", "인기가 많다") 대신, 구체적 사실(소재, 무게, 크기, 접이식 여부, 회전 기능, 통기성, 안전 인증, 조립 난이도 등)을 짚어주세요.
-5. 단점 정보가 부족하면, 이 카테고리 제품군에서 해당 타입 제품이 일반적으로 갖는 한계를 전문가 관점에서 신중하게 짚고 reason에 왜 그런 한계가 생기는지 설명하세요.
-6. 태그는 [소재/디자인] [기능성] [무게/휴대성] [안전성] [내구성] [편의성] [브랜드신뢰도] 중 선택하세요.
-7. 가격은 언급하지 마세요.
-8. 매우 중요: 블로그 도입부 인사말("안녕하세요"), 홍보성 해시태그, "~소개해드릴게요", "추천드립니다", "구매했어요" 같은 광고/서두 문구는 절대 장점/단점으로 취급하지 마세요. 실질적인 제품 정보(기능·소재·사용감·불편함)가 담긴 내용만 반영하세요.
-9. 자사 제품과 경쟁 제품의 장점/단점이 서로 겹치지 않도록, 각 제품 고유의 특징 위주로 작성하세요.
+작성 원칙 (매우 중요 — 반드시 지킬 것):
+1. 방대한 원문을 전부 읽고, 반복적으로 나타나는 "핵심 테마"를 파악하세요 (예: 무게, 접이식, 시트감, 소재, 디자인, 안전성, 수납, 조립, 회전기능, 바퀴 등).
+2. point는 절대 원문 문장을 그대로 쓰지 말고, 테마를 압축한 짧은 핵심 문구로 작성하세요. 길이는 5~15자 내외.
+   - 나쁜 예 (금지): "결국 큰맘 먹고 줄즈 에어2를 구매하게 되었습니다" ← 원문 그대로, 의미 없음
+   - 좋은 예: "작고 가볍다" / "폴딩이 쉽다" / "해먹시트가 편하다" / "통기성이 좋다" / "색상이 예쁘다"
+3. reason에는 point를 뒷받침하는 근거를 한 문장으로 (원문에서 확인된 구체적 사실 인용).
+4. 장점 TOP3, 단점 TOP3는 원문 전체에서 "가장 많이 반복되는 테마" 순서로 선정하세요.
+5. 블로그 인사말, 구매 결정 서사("~ 하다가 결국 구매했습니다" 류), 광고 해시태그는 테마로 취급하지 마세요.
+6. 단점 정보가 부족하면, 이 카테고리 제품이 일반적으로 갖는 한계를 전문가 관점에서 짧게 짚어주세요.
+7. 태그는 [소재/디자인] [기능성] [무게/휴대성] [안전성] [내구성] [편의성] [브랜드신뢰도] 중 선택하세요.
+8. 가격은 언급하지 마세요.
 
 다음 JSON 형식으로만 답하세요 (설명 없이 JSON만):
 {{
-  "pros": [{{"tag":"태그", "point":"무엇이 좋은지 한 줄", "reason":"왜 좋은지, 어떤 상황/사용자에게 이점인지 구체적 설명"}}],
-  "cons": [{{"tag":"태그", "point":"무엇이 아쉬운지 한 줄", "reason":"왜 아쉬운지, 어떤 상황/사용자에게 불편한지 구체적 설명"}}],
+  "pros": [{{"tag":"태그", "point":"5~15자 핵심 문구", "reason":"근거 한 문장"}}],
+  "cons": [{{"tag":"태그", "point":"5~15자 핵심 문구", "reason":"근거 한 문장"}}],
   "description": "제품 특징을 압축한 1~2문장"
 }}
-pros/cons는 각각 최대 3개, 언급 빈도 높은 순."""
+pros/cons는 각각 최대 3개, 테마 언급 빈도 높은 순."""
             resp = requests.post(
                 "https://api.anthropic.com/v1/messages",
                 headers={"x-api-key": api_key, "anthropic-version": "2023-06-01", "content-type": "application/json"},
@@ -5991,74 +5991,98 @@ pros/cons는 각각 최대 3개, 언급 빈도 높은 순."""
                 parsed = json.loads(raw)
                 pros = parsed.get('pros', [])[:3]
                 cons = parsed.get('cons', [])[:3]
-                # 형식 검증 — dict가 아니면 문자열을 point로 감싸서 호환
                 pros = [p if isinstance(p, dict) else {'tag':'', 'point':str(p), 'reason':''} for p in pros]
                 cons = [c if isinstance(c, dict) else {'tag':'', 'point':str(c), 'reason':''} for c in cons]
                 return pros, cons, parsed.get('description', '')
         except Exception:
             pass
 
-    # Fallback: API 키가 없을 때 — 보일러플레이트(인사말/광고성 문구) 제거 후 빈도 기반 TOP3 선별
-    import re as _re_module
+    # Fallback: API 키가 없을 때 — 테마(속성) 사전 기반 키워드 매칭 + 감성 분류로 짧은 핵심 문구 생성
+    return _theme_based_fallback(all_snippets, review_snippets, pro_snippets, con_snippets, official_snippets)
 
-    # 블로그 도입부/인사말/광고성 상투 문구 패턴 — 실질적 정보가 아니므로 제외
+
+# 유아용품 공통 속성 테마 사전 — 리서치 전문가 관점에서 자주 언급되는 속성 16종
+PRODUCT_THEMES = [
+    {'id':'weight',    'kw':['가볍','가벼운','가벼워','경량','무게가 적','무게 적'], 'neg_kw':['무겁','무거워','무게가 있','묵직'],
+     'pro':'작고 가볍다', 'con':'무게가 있는 편이다', 'tag':'무게/휴대성'},
+    {'id':'fold',      'kw':['폴딩','접이','원터치','한손으로 접','접기 쉽','접는게 쉽'], 'neg_kw':['접기 어렵','접는게 불편','폴딩이 불편','접이가 힘'],
+     'pro':'폴딩이 쉽다', 'con':'접이식 조작이 불편하다', 'tag':'기능성'},
+    {'id':'seat',      'kw':['해먹시트','시트감','착석감','앉는 느낌이 편','시트가 편'], 'neg_kw':['시트가 좁','시트가 딱딱','착석감이 별로'],
+     'pro':'해먹시트가 편하다', 'con':'시트 착석감이 아쉽다', 'tag':'편의성'},
+    {'id':'breath',    'kw':['통풍','통기성','매쉬','시원하','바람이 잘 통'], 'neg_kw':['덥다','통풍이 안','땀이 차'],
+     'pro':'통기성이 좋다', 'con':'통풍이 다소 아쉽다', 'tag':'소재/디자인'},
+    {'id':'design',    'kw':['디자인이 예쁘','색상이 예쁘','예뻐서','디자인 만족','색감이 좋'], 'neg_kw':['디자인이 아쉽','색상 선택지가 적','칙칙'],
+     'pro':'디자인·색감이 예쁘다', 'con':'색상 선택지가 제한적이다', 'tag':'소재/디자인'},
+    {'id':'durability','kw':['튼튼','내구성이 좋','견고','단단하'], 'neg_kw':['내구성이 아쉽','약하다','금방 헐거워'],
+     'pro':'프레임이 튼튼하다', 'con':'내구성이 다소 아쉽다', 'tag':'내구성'},
+    {'id':'safety',    'kw':['안전벨트','안전하','충돌 보호','안전성이 좋'], 'neg_kw':['안전벨트가 불편','안전성이 아쉽'],
+     'pro':'안전 기능이 우수하다', 'con':'안전 기능이 다소 미흡하다', 'tag':'안전성'},
+    {'id':'storage',   'kw':['수납공간이 넉넉','바구니가 크','수납이 좋','짐 많이'], 'neg_kw':['수납공간이 작','수납이 부족','바구니가 작'],
+     'pro':'수납공간이 넉넉하다', 'con':'수납공간이 부족하다', 'tag':'편의성'},
+    {'id':'rotation',  'kw':['360도 회전','회전이 부드럽','방향전환이 쉽'], 'neg_kw':['회전이 뻑뻑','방향전환이 불편'],
+     'pro':'360도 회전이 편리하다', 'con':'회전 조작이 뻑뻑하다', 'tag':'기능성'},
+    {'id':'assembly',  'kw':['조립이 간단','조립이 쉽','설치가 쉬'], 'neg_kw':['조립이 복잡','조립이 어렵','설치가 오래'],
+     'pro':'조립이 간단하다', 'con':'조립이 복잡한 편이다', 'tag':'편의성'},
+    {'id':'wheel',     'kw':['바퀴가 부드럽','주행감이 좋','승차감이 좋'], 'neg_kw':['바퀴가 작','승차감이 아쉽','덜컹거려'],
+     'pro':'바퀴 주행감이 좋다', 'con':'바퀴 승차감이 아쉽다', 'tag':'기능성'},
+    {'id':'handle',    'kw':['손잡이 높이조절','손잡이가 편'], 'neg_kw':['손잡이가 불편','높이조절이 안'],
+     'pro':'손잡이 높이조절이 편리하다', 'con':'손잡이 조작이 불편하다', 'tag':'편의성'},
+    {'id':'size',      'kw':['부피가 작','콤팩트','크기가 작아 보관'], 'neg_kw':['부피가 커','크기가 커서 보관','자리를 많이'],
+     'pro':'부피가 작아 보관이 쉽다', 'con':'부피가 커서 보관이 불편하다', 'tag':'무게/휴대성'},
+    {'id':'service',   'kw':['as가 빠르','as 응대가 좋','서비스가 친절'], 'neg_kw':['as가 느리','문의 응대가 아쉽'],
+     'pro':'A/S 대응이 빠르다', 'con':'A/S 대응이 느린 편이다', 'tag':'브랜드신뢰도'},
+    {'id':'material',  'kw':['소재가 좋','원단이 고급','촉감이 좋'], 'neg_kw':['소재가 아쉽','원단이 얇','촉감이 별로'],
+     'pro':'소재/원단 품질이 좋다', 'con':'소재가 다소 아쉽다', 'tag':'소재/디자인'},
+    {'id':'space',     'kw':['공간을 적게','실내에서도 편','좁은 곳에서도'], 'neg_kw':['공간을 많이 차지','좁은 곳에서 불편'],
+     'pro':'공간을 적게 차지한다', 'con':'실내 공간을 많이 차지한다', 'tag':'무게/휴대성'},
+]
+
+
+def _theme_based_fallback(all_snippets, review_snippets, pro_snippets, con_snippets, official_snippets):
+    """리서치 전문가 방식의 테마 사전 매칭 — 원문을 그대로 노출하지 않고, 감지된 속성을 짧은 핵심 문구로 변환.
+    긍정/부정 키워드 등장 빈도를 세어 TOP3 테마를 선정한다."""
+    combined_pro_pool = ' '.join(pro_snippets + review_snippets + official_snippets)
+    combined_con_pool = ' '.join(con_snippets + review_snippets)
+
+    pro_scores, con_scores = [], []
+    for theme in PRODUCT_THEMES:
+        pro_hits = sum(combined_pro_pool.count(kw) for kw in theme['kw'])
+        con_hits = sum(combined_con_pool.count(kw) for kw in theme['neg_kw'])
+        con_hits += sum(combined_pro_pool.count(kw) for kw in theme['neg_kw'])
+        if pro_hits > 0:
+            pro_scores.append((pro_hits, theme))
+        if con_hits > 0:
+            con_scores.append((con_hits, theme))
+
+    pro_scores.sort(key=lambda x: -x[0])
+    con_scores.sort(key=lambda x: -x[0])
+
+    def _to_items(scores, key):
+        items = []
+        for hits, theme in scores[:3]:
+            items.append({
+                'tag': theme['tag'],
+                'point': theme[key],
+                'reason': f"수집된 자료 {hits}건에서 관련 언급이 확인됨",
+            })
+        return items
+
+    pros = _to_items(pro_scores, 'pro')
+    cons = _to_items(con_scores, 'con')
+
+    import re as _re_module
     BOILERPLATE_PATTERNS = [
         r'안녕하세요', r'^오늘은', r'소개해드릴게요', r'소개해드리겠습니다', r'포스팅',
-        r'추천드립니다$', r'추천드려요$', r'추천드리고 싶어요', r'가져왔습니다',
-        r'찾아봤는데', r'찾아보았는데', r'^구매했어요', r'^구매했습니다',
-        r'해시태그', r'^<<.*>>$', r'^#', r'꼭.*추천', r'글에서는', r'글을 통해',
-        r'궁금하시다면', r'감사합니다$', r'봐주세요$', r'마무리하겠습니다',
-        r'다음 포스팅', r'다음글', r'^저는', r'^제가.*결정', r'^제가.*골랐',
-        r'결국.*이다!?$', r'^올인원', r'최종 선택',
+        r'추천드립니다$', r'추천드려요$', r'가져왔습니다', r'^구매했어요', r'^구매했습니다',
+        r'해시태그', r'^<<.*>>$', r'^#', r'결국.*이다!?$', r'최종 선택',
+        r'큰맘 먹고', r'구매하게 되었습니다', r'구매하게 됐습니다', r'구입하게 되었습니다',
+        r'결정하게 되었습니다', r'선택하게 되었습니다', r'고민 끝에', r'고민하다가',
     ]
     def _is_boilerplate(s):
         return any(_re_module.search(pat, s) for pat in BOILERPLATE_PATTERNS)
+    clean_desc_pool = [s for s in (official_snippets + review_snippets) if not _is_boilerplate(s) and len(s) >= 12]
+    description = clean_desc_pool[0] if clean_desc_pool else ''
 
-    def _clean_candidates(snippets):
-        """보일러플레이트 제거 + 너무 짧은 문장 제외"""
-        return [s for s in snippets if not _is_boilerplate(s) and len(s) >= 12]
-
-    def _frequency_top_with_reason(snippets, n):
-        """보일러플레이트를 제외한 뒤, 단어 집합 유사도로 대표 문장(point) + 근거(reason)를 선정
-        중복/유사 문장은 엄격하게 배제(임계값 0.35)해 같은 내용 반복 노출 방지"""
-        snippets = _clean_candidates(snippets)
-        if not snippets:
-            return []
-        word_sets = []
-        for s in snippets:
-            words = set(w for w in _re_module.findall(r'[가-힣A-Za-z]{2,}', s))
-            word_sets.append(words)
-        scores = []
-        for i, ws in enumerate(word_sets):
-            overlap = sum(len(ws & other) for j, other in enumerate(word_sets) if i != j)
-            scores.append((overlap, i))
-        scores.sort(reverse=True)
-        picked_idx = []
-        for _, idx in scores:
-            if len(picked_idx) >= n:
-                break
-            ws = word_sets[idx]
-            # 이미 뽑은 문장과 35% 이상 단어가 겹치면 같은 내용으로 간주해 제외 (엄격한 중복 배제)
-            if picked_idx and any(len(ws & word_sets[p]) / max(len(ws),1) > 0.35 for p in picked_idx):
-                continue
-            picked_idx.append(idx)
-
-        results = []
-        for idx in picked_idx:
-            point = snippets[idx]
-            ws = word_sets[idx]
-            related = [snippets[j] for j, other in enumerate(word_sets)
-                       if j != idx and j not in picked_idx and len(ws & other) >= 2][:2]
-            reason = ' '.join(related) if related else '여러 사용자 후기에서 공통적으로 확인된 내용입니다.'
-            results.append({'tag': '', 'point': point, 'reason': reason})
-        return results
-
-    pros = _frequency_top_with_reason(pro_snippets + review_snippets, 3)
-    # 단점은 con_snippets에서만 선별 (허위 채움 금지) — 데이터 부족 시 정직하게 빈 상태 표시
-    cons = _frequency_top_with_reason(con_snippets, 3)
-    clean_official = _clean_candidates(official_snippets)
-    clean_reviews  = _clean_candidates(review_snippets)
-    description = (clean_official + clean_reviews)[0] if (clean_official or clean_reviews) else ''
     return pros, cons, description
 
 
@@ -6584,14 +6608,32 @@ def api_sns_search():
 
     def strip_tags(s): return re.sub('<[^>]+>', '', s or '')
 
-    def naver_blog(query, display=20, sort='date'):
-        url = ('https://openapi.naver.com/v1/search/blog.json?query='
+    def naver_endpoint(endpoint, query, display=20, sort='date'):
+        url = (f'https://openapi.naver.com/v1/search/{endpoint}.json?query='
                + urllib.parse.quote(query) + f'&display={display}&sort={sort}')
         req = urllib.request.Request(url)
         req.add_header('X-Naver-Client-Id',     client_id)
         req.add_header('X-Naver-Client-Secret', client_secret)
         with urllib.request.urlopen(req, timeout=10) as r:
             return json.loads(r.read().decode('utf-8'))
+
+    def naver_blog(query, display=20, sort='date'):
+        """수정1: 네이버 블로그 + 카페(커뮤니티 후기) + 웹문서(인스타/유튜브 등 외부 링크 포함) 통합 검색
+        — 네이버는 인스타그램 공식 검색 API를 제공하지 않으므로, 카페·웹문서 검색으로 커버리지를 넓힘"""
+        total = 0
+        all_items = []
+        for endpoint, per_display in [('blog', display), ('cafearticle', max(display//2, 5)), ('webkr', max(display//2, 5))]:
+            try:
+                res = naver_endpoint(endpoint, query, display=per_display, sort=sort if endpoint=='blog' else 'sim')
+                total += res.get('total', 0)
+                for item in res.get('items', []):
+                    item['_source'] = endpoint
+                    all_items.append(item)
+            except Exception:
+                continue
+        # 블로그 우선, 날짜 최신순 정렬 시도 (postdate 없는 카페/웹 항목은 뒤로)
+        all_items.sort(key=lambda x: x.get('postdate', ''), reverse=True)
+        return {'total': total, 'items': all_items}
 
     def parse_date(s):
         try: return f"{s[:4]}-{s[4:6]}-{s[6:8]}"
@@ -6702,17 +6744,21 @@ def api_sns_search():
             promo_latest = promo_posts[0]['date'] if promo_posts else ''
             promo_json   = _json.dumps(promo_posts[:10], ensure_ascii=False)
 
-            # 블로그 플랫폼 파악
+            # 플랫폼 파악 (수정1: 블로그/카페/웹문서 통합 소스 기반, 인스타·유튜브 링크는 어느 소스에서든 감지)
             platforms = []
             for i in items:
                 link = i.get('link', '')
-                if 'blog.naver' in link: platforms.append('네이버')
-                elif 'tistory' in link:  platforms.append('티스토리')
-                elif 'brunch' in link:   platforms.append('브런치')
-                elif 'instagram' in link: platforms.append('인스타')
-                elif 'youtube' in link:  platforms.append('유튜브')
+                src = i.get('_source', 'blog')
+                if 'instagram' in link:      platforms.append('인스타그램')
+                elif 'youtube' in link:      platforms.append('유튜브')
+                elif 'blog.naver' in link:   platforms.append('네이버블로그')
+                elif 'tistory' in link:      platforms.append('티스토리')
+                elif 'brunch' in link:       platforms.append('브런치')
+                elif src == 'cafearticle':   platforms.append('네이버카페')
+                elif src == 'webkr':         platforms.append('웹문서')
+                else:                        platforms.append('기타블로그')
             from collections import Counter
-            platform_str = ', '.join(f"{k}({v})" for k,v in Counter(platforms).most_common(3))
+            platform_str = ', '.join(f"{k}({v})" for k,v in Counter(platforms).most_common(5))
 
             # 최근 제목 5개 (수정2)
             titles = [strip_tags(i.get('title',''))[:40] for i in items[:5]]
