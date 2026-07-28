@@ -1038,6 +1038,17 @@ SELLER_ALIAS = {
     '베네피아 창원점':          '링크맘 창원점',
     # 수정3-14: 링크맘 하남초일점 → 링크맘 하남점
     '링크맘 하남초일점':        '링크맘 하남점',
+    # 신규: 링크맘 부산점 송정 → 링크맘 부산점
+    '링크맘 부산점 송정':       '링크맘 부산점',
+    '링크맘 부산점송정':        '링크맘 부산점',
+    # 신규: 링크맘 판교 → 베이비스토리 판교 → 베이비스토리(판교점)
+    '링크맘 판교':              '베이비스토리 판교점',
+    '베이비스토리 판교':        '베이비스토리 판교점',
+    # 신규: 링크맘 대전점 → 베이비페어365 대전점
+    '링크맘 대전점':            '베이비페어365 대전점',
+    # 신규: 부천디에스컴퍼니 → 베이비하우스 부천점
+    '부천디에스컴퍼니':          '베이비하우스 부천점',
+    '주식회사 부천디에스컴퍼니': '베이비하우스 부천점',
     # 은평점 (베이비파크 은평 = 베이비하우스 은평점, 같은 매장)
     '베이비파크 은평':          '베이비하우스 은평점',
     '베이비파크 은평점':        '베이비하우스 은평점',
@@ -8063,15 +8074,28 @@ def api_display_scores():
         """, (campaign_id,)).fetchall()]
     else:
         # 전체 캠페인 합산
+        # 수정3: 같은 매장이 같은 제품(product_name)으로 여러 캠페인에 중복 기록되어 있으면
+        # 점수를 더하지 않고 "더 높은 점수" 하나만 채택 (이미 참여한 매장이 재업로드로 중복 집계되는 것 방지)
         records = [dict(r) for r in conn.execute("""
-            SELECT dr.seller_name,
-                   SUM(dr.score) total_score,
-                   COUNT(CASE WHEN dr.has_display=1 THEN 1 END) display_cnt,
-                   GROUP_CONCAT(dc.campaign_name || '§' || dr.product_name || '§' || dr.score, '|') detail_raw
-            FROM display_record dr
-            JOIN display_campaign dc ON dr.campaign_id=dc.id
-            WHERE dr.has_display=1
-            GROUP BY dr.seller_name ORDER BY total_score DESC
+            WITH best_per_product AS (
+                SELECT dr.seller_name, dr.product_name,
+                       MAX(dr.score) AS best_score,
+                       (SELECT dc2.campaign_name FROM display_record dr2
+                        JOIN display_campaign dc2 ON dr2.campaign_id=dc2.id
+                        WHERE dr2.seller_name=dr.seller_name AND dr2.product_name=dr.product_name
+                              AND dr2.has_display=1
+                        ORDER BY dr2.score DESC LIMIT 1) AS best_campaign_name,
+                       MAX(dr.has_display) AS has_display
+                FROM display_record dr
+                WHERE dr.has_display=1
+                GROUP BY dr.seller_name, dr.product_name
+            )
+            SELECT seller_name,
+                   SUM(best_score) total_score,
+                   COUNT(*) display_cnt,
+                   GROUP_CONCAT(best_campaign_name || '§' || product_name || '§' || best_score, '|') detail_raw
+            FROM best_per_product
+            GROUP BY seller_name ORDER BY total_score DESC
         """).fetchall()]
 
     # 판매 데이터 — 연매출 조회용 (실적용거래처명 → real_seller 매핑 포함)
@@ -8235,13 +8259,25 @@ def api_display_export_ranking():
     year = request.args.get('year', str(datetime.now().year))
 
     conn = get_db()
-    # 점수 있는 매장
+    # 수정3: 점수 있는 매장 — 같은 제품에 중복 참여 기록이 있으면 더 높은 점수만 채택 (합산 아님)
     records = [dict(r) for r in conn.execute("""
-        SELECT dr.seller_name, SUM(dr.score) total_score,
-               COUNT(CASE WHEN dr.has_display=1 THEN 1 END) display_cnt,
-               GROUP_CONCAT(dc.campaign_name || '|' || dr.product_name || '|' || dr.score, '§') detail_raw
-        FROM display_record dr JOIN display_campaign dc ON dr.campaign_id=dc.id
-        WHERE dr.has_display=1 GROUP BY dr.seller_name ORDER BY total_score DESC
+        WITH best_per_product AS (
+            SELECT dr.seller_name, dr.product_name,
+                   MAX(dr.score) AS best_score,
+                   (SELECT dc2.campaign_name FROM display_record dr2
+                    JOIN display_campaign dc2 ON dr2.campaign_id=dc2.id
+                    WHERE dr2.seller_name=dr.seller_name AND dr2.product_name=dr.product_name
+                          AND dr2.has_display=1
+                    ORDER BY dr2.score DESC LIMIT 1) AS best_campaign_name
+            FROM display_record dr
+            WHERE dr.has_display=1
+            GROUP BY dr.seller_name, dr.product_name
+        )
+        SELECT seller_name, SUM(best_score) total_score,
+               COUNT(*) display_cnt,
+               GROUP_CONCAT(best_campaign_name || '|' || product_name || '|' || best_score, '§') detail_raw
+        FROM best_per_product
+        GROUP BY seller_name ORDER BY total_score DESC
     """).fetchall()]
     # 점수 없는 매장 (진열 기록 있는 모든 매장)
     all_record_sellers = {r['seller_name'] for r in records}
