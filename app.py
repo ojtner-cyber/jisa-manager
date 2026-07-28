@@ -433,14 +433,12 @@ def api_dashboard():
         SELECT CAST(strftime('%m', sale_date) AS INTEGER) month, SUM(total) actual, COUNT(*) cnt
         FROM sales_data WHERE sale_date LIKE ? AND sale_date != ''
         GROUP BY month ORDER BY month""", (f"{y}%",)).fetchall()]
-    # 목표는 sales 테이블 유지
-    monthly_target = {r["month"]: r["target"] for r in conn.execute("""
-        SELECT month, SUM(target) target FROM sales WHERE year=?
-        GROUP BY month""", (y,)).fetchall()}
+    # 목표는 항상 15억으로 고정 (수정4)
+    MONTHLY_TARGET_FIXED = 1_500_000_000
     monthly = []
     for m in range(1, 13):
         sd_row = next((r for r in monthly_sd if r["month"]==m), None)
-        monthly.append({"month": m, "target": monthly_target.get(m, 0),
+        monthly.append({"month": m, "target": MONTHLY_TARGET_FIXED,
                         "actual": sd_row["actual"] if sd_row else 0})
 
     # TOP5 판매처 (real_seller 기준)
@@ -2721,16 +2719,18 @@ def export_xlsx_monthly():
 
     # ── 시트4: 월별 브랜드 요약 (세로형 — 출력 최적화) ──
     ws4 = wb.create_sheet("월별 브랜드 요약")
-    ws4.merge_cells("A1:G1")
+    ws4.merge_cells("A1:H1")
     c=ws4.cell(row=1,column=1,value=f"월별 브랜드 판매 요약_{year}")
     c.fill=mf(WHITE); c.font=mft(FONT_BLACK,True,12); c.alignment=center
     ws4.row_dimensions[1].height=26
-    m_hdrs=['월','브랜드','판매금액(원)','판매수량','비율(%)','월합계(원)','누계(원)']
+    m_hdrs=['월','브랜드','판매금액(원)','판매수량','비율(%)','월합계(원)','누계(원)','전달 대비']
     for ci,h in enumerate(m_hdrs,1):
         c=ws4.cell(row=2,column=ci,value=h)
         c.fill=mf(GRAY_LIGHT); c.font=mft(FONT_GRAY,True,10); c.alignment=center; c.border=bdr_left
     ws4.row_dimensions[2].height=20
     ri4=3; cum_m=0
+    # 수정5: 제품별 전달 대비 증감률 계산을 위해 이전 달 제품별 매출을 미리 캐시
+    prev_month_prod_totals = {}  # {(brand, product_norm): total}
     for mo in months:
         mo_total = sum(idx.get((s,mo,b),{}).get('total',0) for s in sellers_list for b in brands)
         mo_qty   = sum(idx.get((s,mo,b),{}).get('qty',0)   for s in sellers_list for b in brands)
@@ -2743,10 +2743,15 @@ def export_xlsx_monthly():
             c4.border=bdr_none; c4.alignment=right
             if ci in (3,6,7): c4.number_format=num_fmt
             if ci==5: c4.number_format='0.0'
+        ws4.cell(row=ri4,column=8,value='').fill=mf(GRAY_LIGHT)
         for ci in range(1,3):
             ws4.cell(row=ri4,column=ci).font=mft(FONT_GRAY,True,10)
             ws4.cell(row=ri4,column=ci).border=bdr_left
         ws4.row_dimensions[ri4].height=18; ri4+=1
+
+        # 이번 달 제품별 매출 (다음 달 비교용으로 갱신 예정)
+        this_month_prod_totals = {}
+
         for b in brands:
             bv=sum(idx.get((s,mo,b),{}).get('total',0) for s in sellers_list)
             bq=sum(idx.get((s,mo,b),{}).get('qty',0)   for s in sellers_list)
@@ -2776,15 +2781,37 @@ def export_xlsx_monthly():
                 for pnorm, pvals in sorted(prod_brand.items(), key=lambda x:-x[1]['total']):
                     if pvals['total']==0: continue
                     pname = pnorm.replace('['+b+']','').strip() if '['+b+']' in pnorm else pnorm
+                    prod_key = (b, pnorm)
+                    this_month_prod_totals[prod_key] = pvals['total']
+
                     ws4.cell(row=ri4,column=2,value=f"      · {pname}")
                     ws4.cell(row=ri4,column=2).font=mft(FONT_GRAY,False,8)
                     c4=ws4.cell(row=ri4,column=3,value=pvals['total'])
                     c4.font=mft(FONT_GRAY,False,8); c4.border=bdr_none; c4.alignment=right; c4.number_format=num_fmt
                     c4q=ws4.cell(row=ri4,column=4,value=pvals['qty'])
                     c4q.font=mft(FONT_GRAY,False,8); c4q.border=bdr_none; c4q.alignment=right
+
+                    # 수정5: 전달 대비 증감률
+                    prev_total = prev_month_prod_totals.get(prod_key)
+                    mom_cell = ws4.cell(row=ri4, column=8)
+                    if prev_total is None:
+                        mom_cell.value = '—'
+                        mom_cell.font = mft('999999', False, 8)
+                    elif prev_total == 0:
+                        mom_cell.value = '신규'
+                        mom_cell.font = mft('2563EB', True, 8)
+                    else:
+                        mom_pct = round((pvals['total'] - prev_total) / prev_total * 100, 1)
+                        mom_cell.value = f"{'▲' if mom_pct>=0 else '▼'} {abs(mom_pct)}%"
+                        mom_cell.font = mft('16A34A' if mom_pct>=0 else 'DC2626', True, 8)
+                    mom_cell.border = bdr_none
+                    mom_cell.alignment = right
+
                     ws4.row_dimensions[ri4].height=13; ri4+=1
+
+        prev_month_prod_totals = this_month_prod_totals
         ws4.row_dimensions[ri4].height=6; ri4+=1
-    for ci,ww in enumerate([8,18,16,10,10,16,16],1):
+    for ci,ww in enumerate([8,18,16,10,10,16,16,12],1):
         ws4.column_dimensions[get_column_letter(ci)].width=ww
 
     buf=io.BytesIO(); wb.save(buf); buf.seek(0)
@@ -5238,7 +5265,7 @@ def api_visit_report_brands():
 
 
 def _write_dashboard_sheet(ws, rows, FNAME, mf, bdr, ctr, left):
-    """스크린샷과 동일한 '브랜드별 매장 방문 현황' 대시보드 스타일 시트 작성"""
+    """매장 방문 현황 대시보드 시트 — 옅은 회색 헤더, A열 여백의 심플한 디자인"""
     from openpyxl.styles import Font, Alignment
     from openpyxl.utils import get_column_letter
 
@@ -5253,23 +5280,26 @@ def _write_dashboard_sheet(ws, rows, FNAME, mf, bdr, ctr, left):
         by_brand_store[key]['sheet_tabs'].append(r.get('sheet_title') or f"{r['store_name']}_{r['visit_date'][5:].replace('-','')}")
 
     brands = sorted(set(b for b, s in by_brand_store.keys()))
-    HEADER_BLUE = '4472C4'
+    HEADER_GRAY = 'F3F4F6'  # 옅은 회색 헤더 (진한 파란색 대신 절제된 톤)
+
+    # A열은 여백(spacer)로 비워두고 B열부터 시작
+    ws.column_dimensions['A'].width = 2
 
     ri = 1
     for brand in brands:
         stores_in_brand = [(s, v) for (b, s), v in by_brand_store.items() if b == brand]
         stores_in_brand.sort(key=lambda x: -len(x[1]['dates']))
 
-        ws.merge_cells(f'A{ri}:F{ri}')
-        c = ws.cell(row=ri, column=1, value=f"{brand} 매장별 방문 현황")
+        ws.merge_cells(f'B{ri}:F{ri}')
+        c = ws.cell(row=ri, column=2, value=f"{brand} 매장별 방문 현황")
         c.font = Font(bold=True, size=13, name=FNAME, color='1F2937'); c.alignment = left
         ws.row_dimensions[ri].height = 26
         ri += 1
 
-        headers = ['No.', '매장명', '방문 횟수', '방문일', '시트 탭', '']
-        for ci, h in enumerate(headers[:5], 1):
+        headers = ['No.', '매장명', '방문 횟수', '방문일', '시트 탭']
+        for ci, h in enumerate(headers, 2):
             c = ws.cell(row=ri, column=ci, value=h)
-            c.font = Font(bold=True, size=9, name=FNAME, color='FFFFFF'); c.fill = mf(HEADER_BLUE); c.border = bdr; c.alignment = ctr
+            c.font = Font(bold=True, size=9, name=FNAME, color='374151'); c.fill = mf(HEADER_GRAY); c.border = bdr; c.alignment = ctr
         ws.row_dimensions[ri].height = 20
         ri += 1
 
@@ -5278,16 +5308,16 @@ def _write_dashboard_sheet(ws, rows, FNAME, mf, bdr, ctr, left):
             dates_str = ', '.join(d[5:].replace('-', '/') for d in dates_sorted)
             tabs_str = ', '.join(v['sheet_tabs'])
             row_vals = [i, store_name, f"{len(v['dates'])}회", dates_str, tabs_str]
-            for ci, val in enumerate(row_vals, 1):
+            for ci, val in enumerate(row_vals, 2):
                 c = ws.cell(row=ri, column=ci, value=val)
                 c.font = Font(size=9, name=FNAME, color='1F2937')
                 c.border = bdr
-                c.alignment = ctr if ci in (1,3) else left
+                c.alignment = ctr if ci in (2,4) else left
             ws.row_dimensions[ri].height = 16
             ri += 1
         ri += 2  # 브랜드 간 여백
 
-    for ci, w in zip(range(1,6), [6, 22, 10, 26, 46]):
+    for ci, w in zip(range(2,7), [6, 22, 10, 26, 46]):
         ws.column_dimensions[get_column_letter(ci)].width = w
 
 
@@ -8246,74 +8276,75 @@ def api_display_export_ranking():
     ctr  = Alignment(horizontal='center', vertical='center')
     left = Alignment(horizontal='left', vertical='center')
     right_a = Alignment(horizontal='right', vertical='center')
-    GRADE_COLOR = {'A':'EFF6FF','B':'F0FDF4','C':'FFFBEB','D':'F9FAFB'}  # 수정4: 연한 배경
+    GRADE_COLOR = {'A':'EFF6FF','B':'F0FDF4','C':'FFFBEB','D':'F9FAFB'}
 
-    ws.merge_cells('A1:G1')
-    c = ws.cell(row=1,column=1,value=f'행사 및 진열 신청 전체 합산 랭킹 ({year}년)')
-    c.font=Font(bold=True,size=13,name='맑은 고딕',color='FFFFFF'); c.fill=mf('1E3A5F'); c.alignment=ctr
-    ws.row_dimensions[1].height=26
+    # A열은 여백(spacer)로 비워두고 B열부터 시작 — 심플하고 깔끔한 레이아웃
+    ws.column_dimensions['A'].width = 2
 
-    hdrs = ['순위','등급','매장명','누적 점수','참여 수','상세 내역','연매출']
+    ws.merge_cells('B1:H1')
+    c = ws.cell(row=1,column=2,value=f'행사 및 진열 신청 전체 합산 랭킹 ({year}년)')
+    c.font=Font(bold=True,size=13,name='맑은 고딕',color='1F2937'); c.fill=mf('FFFFFF'); c.alignment=ctr
+    ws.row_dimensions[1].height=28
+
+    hdrs = ['순위','등급','매장명','누적 점수','참여 수','참여 행사/진열 내역','연매출']
     widths = [8, 8, 26, 12, 10, 55, 18]
-    for ci,(h,w) in enumerate(zip(hdrs,widths),1):
+    for ci,(h,w) in enumerate(zip(hdrs,widths),2):
         c = ws.cell(row=2,column=ci,value=h)
-        c.font=Font(bold=True,size=10,name='맑은 고딕'); c.fill=mf('F1F5F9'); c.border=bdr; c.alignment=ctr
+        c.font=Font(bold=True,size=10,name='맑은 고딕',color='374151'); c.fill=mf('F3F4F6'); c.border=bdr; c.alignment=ctr
         ws.column_dimensions[get_column_letter(ci)].width=w
     ws.row_dimensions[2].height=20
 
     ri = 3
     for r in records:
         grade = r.get('grade','E'); score = r.get('total_score',0) or 0
-        # 수정3: 상세내역 = 캠페인명+점수pt 형식
-        parts = []
+        # 수정1: 점수 표시 없이 참여한 행사/진열명만 리스트로 (누적점수·참여수는 별도 컬럼으로 이미 구분)
+        camp_names = []
         for item in (r.get('detail_raw','') or '').split('§'):
             if item.count('|') >= 2:
                 try:
                     camp, prod, sc = item.split('|', 2)
-                    parts.append(f"{camp.strip()} +{sc}pt")
+                    camp_names.append(camp.strip())
                 except: pass
             elif '|' in item:
                 try:
                     prod, sc = item.split('|', 1)
-                    parts.append(f"{prod.strip()} +{sc}pt")
+                    camp_names.append(prod.strip())
                 except: pass
-        # 중복 제거 (같은 캠페인 여러 제품 → 첫 번째 점수)
-        seen_camps = {}
-        for p in parts:
-            camp_key = p.rsplit('+', 1)[0].strip()
-            if camp_key not in seen_camps:
-                seen_camps[camp_key] = p
-        unique_parts = list(seen_camps.values())
+        # 중복 제거 (순서 유지)
+        seen = set(); unique_names = []
+        for n in camp_names:
+            if n not in seen:
+                seen.add(n); unique_names.append(n)
         row_fill = mf(GRADE_COLOR.get(grade,'FFFFFF'))
         sales_val = get_sales(r['seller_name'])
         vals = [r.get('rank',''), grade, r['seller_name'], score,
-                r.get('display_cnt',0), ' / '.join(unique_parts[:4]), sales_val]
-        for ci,v in enumerate(vals,1):
+                r.get('display_cnt',0), ' / '.join(unique_names[:6]), sales_val]
+        for ci,v in enumerate(vals,2):
             c=ws.cell(row=ri,column=ci,value=v)
-            c.font=Font(size=9,name='맑은 고딕'); c.border=bdr
-            c.alignment=ctr if ci not in (3,6) else left
+            c.font=Font(size=9,name='맑은 고딕',color='1F2937'); c.border=bdr
+            c.alignment=ctr if ci not in (4,7) else left
             if grade in GRADE_COLOR and score>0: c.fill=row_fill
-            if ci==7:  # 수정3: 연매출 쉼표 형식
+            if ci==8:
                 c.number_format='#,##0'; c.alignment=right_a
         ws.row_dimensions[ri].height=15; ri+=1
 
-    # 수정1: 점수 없는 매장도 포함 (구분선 추가)
+    # 점수 없는 매장도 포함 (구분선 추가)
     if no_score:
-        c = ws.cell(row=ri,column=1,value='— 미참여 매장 —')
-        ws.merge_cells(f'A{ri}:G{ri}')
+        c = ws.cell(row=ri,column=2,value='— 미참여 매장 —')
+        ws.merge_cells(f'B{ri}:H{ri}')
         c.font=Font(size=9,name='맑은 고딕',color='9CA3AF',italic=True)
         c.fill=mf('F9FAFB'); c.alignment=ctr
         ws.row_dimensions[ri].height=13; ri+=1
         for r in no_score:
             seller = r['seller_name']
-            for ci,v in enumerate(['—', '—', seller, 0, 0, '미참여', get_sales(seller)],1):
+            for ci,v in enumerate(['—', '—', seller, 0, 0, '미참여', get_sales(seller)],2):
                 c=ws.cell(row=ri,column=ci,value=v)
                 c.font=Font(size=9,name='맑은 고딕',color='9CA3AF'); c.border=bdr
-                c.alignment=ctr if ci!=3 else left
-                if ci==7: c.number_format='#,##0'; c.alignment=right_a
+                c.alignment=ctr if ci!=4 else left
+                if ci==8: c.number_format='#,##0'; c.alignment=right_a
             ws.row_dimensions[ri].height=14; ri+=1
 
-    ws.freeze_panes='A3'
+    ws.freeze_panes='B3'
     buf=io.BytesIO(); wb.save(buf); buf.seek(0)
     return send_file(buf, mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
         as_attachment=True, download_name=f'행사진열_전체랭킹_{year}.xlsx')
