@@ -7941,18 +7941,28 @@ def api_display_upload():
 
         headers = [str(c or '').strip() for c in raw_rows[header_row_idx]]
 
-        # "Sheet1" 같은 일반 시트명이면, 헤더 행의 실제 제품명 컬럼으로 대체
-        if _re.match(r'^(sheet|시트)\s*\d*$', sheet_clean, _re.IGNORECASE):
-            for h in headers:
-                if h and h not in ('업체구분','거래처코드','거래처명','실적용거래처명','합계','No','번호'):
-                    sheet_clean = h
-                    break
-
-        # 색상 헤더 행 (헤더 바로 다음 줄에 색상명이 있는 구조)
+        # 색상 헤더 행 (헤더 바로 다음 줄에 색상명이 있는 구조) — Sheet1 대체 탐색에도 사용하므로 먼저 확보
         color_row_idx = header_row_idx + 1
         color_headers = []
         if color_row_idx < len(raw_rows):
             color_headers = [str(c or '').strip() for c in raw_rows[color_row_idx]]
+
+        # "Sheet1" 같은 일반 시트명이면, 헤더 행 → 색상 헤더 행 → 캠페인명 순으로 실제 제품명을 탐색
+        JUNK_HEADER_VALS = ('업체구분','거래처코드','거래처명','실적용거래처명','합계','No','번호','')
+        if _re.match(r'^(sheet|시트)\s*\d*$', sheet_clean, _re.IGNORECASE):
+            found = ''
+            for h in headers:
+                if h and h.strip() not in JUNK_HEADER_VALS:
+                    found = h.strip(); break
+            if not found:
+                for h in color_headers:
+                    if h and h.strip() not in JUNK_HEADER_VALS and h.strip() not in ('합계','총합계'):
+                        found = h.strip(); break
+            if not found:
+                # 최종 fallback: 캠페인명(브랜드 제외한 순수 이름)을 제품명으로 사용
+                camp_name_clean = _re.sub(r'\s*(진열|행사)?\s*신청.*$', '', campaign.get('campaign_name','') or '').strip()
+                found = camp_name_clean or campaign.get('brand','') or f"제품_{sheet_name}"
+            sheet_clean = found
 
         # 컬럼 인덱스 파악
         def find_col(keys, hdrs):
@@ -8432,6 +8442,81 @@ def api_display_export_ranking():
         as_attachment=True, download_name=f'행사진열_전체랭킹_{year}.xlsx')
 
 
+@app.route("/api/display/campaign/<int:campaign_id>/fix-product-names", methods=["POST"])
+@login_required
+def api_display_fix_product_names(campaign_id):
+    """캠페인 내에서 'Sheet1' 같은 일반 시트명으로 잘못 저장된 제품명을
+    올바른 제품명(다른 정상 제품명 또는 캠페인명)으로 병합 정리"""
+    import re as _re_fix
+
+    conn = get_db()
+    campaign = conn.execute("SELECT * FROM display_campaign WHERE id=?", (campaign_id,)).fetchone()
+    if not campaign:
+        conn.close()
+        return jsonify({'ok': False, 'msg': '캠페인을 찾을 수 없습니다'}), 404
+    campaign = dict(campaign)
+
+    all_products = [r[0] for r in conn.execute(
+        "SELECT DISTINCT product_name FROM display_upload WHERE campaign_id=?", (campaign_id,)).fetchall()]
+
+    JUNK_PATTERN = _re_fix.compile(r'^(sheet|시트)\s*\d*$', _re_fix.IGNORECASE)
+    junk_products = [p for p in all_products if JUNK_PATTERN.match(p or '')]
+    normal_products = [p for p in all_products if not JUNK_PATTERN.match(p or '')]
+
+    if not junk_products:
+        conn.close()
+        return jsonify({'ok': True, 'merged': 0, 'msg': '정리할 항목이 없습니다'})
+
+    # 병합 대상 결정: 정상 제품명이 정확히 1개면 그것으로, 여러 개/없으면 캠페인명으로
+    if len(normal_products) == 1:
+        target_name = normal_products[0]
+    else:
+        camp_name_clean = _re_fix.sub(r'\s*(진열|행사)?\s*신청.*$', '', campaign.get('campaign_name','') or '').strip()
+        target_name = camp_name_clean or campaign.get('brand','') or '통합제품'
+
+    merged_count = 0
+    for junk in junk_products:
+        if junk == target_name:
+            continue
+        # display_record 병합 — 매장별로 겹치면 더 높은 점수/수량 유지, UNIQUE(campaign_id,seller_name,product_name) 제약 고려
+        junk_records = conn.execute(
+            "SELECT id, seller_name, has_display, quantity, score, color_detail, applied_date FROM display_record "
+            "WHERE campaign_id=? AND product_name=?", (campaign_id, junk)).fetchall()
+        for jr in junk_records:
+            jr_id, seller, has_d, qty, score, color_detail, applied = jr
+            existing = conn.execute(
+                "SELECT id, has_display, quantity, score, applied_date FROM display_record "
+                "WHERE campaign_id=? AND seller_name=? AND product_name=?",
+                (campaign_id, seller, target_name)).fetchone()
+            if existing:
+                ex_id, ex_has, ex_qty, ex_score, ex_applied = existing
+                new_qty = (ex_qty or 0) + (qty or 0)
+                new_has = max(ex_has or 0, has_d or 0)
+                new_score = max(ex_score or 0, score or 0)
+                new_applied = ex_applied or applied
+                conn.execute("UPDATE display_record SET has_display=?, quantity=?, score=?, applied_date=? WHERE id=?",
+                             (new_has, new_qty, new_score, new_applied, ex_id))
+                conn.execute("DELETE FROM display_record WHERE id=?", (jr_id,))
+            else:
+                conn.execute("UPDATE display_record SET product_name=? WHERE id=?", (target_name, jr_id))
+            merged_count += 1
+
+        # display_upload 정리 — junk 업로드 이력을 target으로 통합(중복이면 삭제)
+        junk_uploads = conn.execute(
+            "SELECT id FROM display_upload WHERE campaign_id=? AND product_name=?", (campaign_id, junk)).fetchall()
+        target_upload = conn.execute(
+            "SELECT id FROM display_upload WHERE campaign_id=? AND product_name=?", (campaign_id, target_name)).fetchone()
+        for ju in junk_uploads:
+            if target_upload:
+                conn.execute("DELETE FROM display_upload WHERE id=?", (ju[0],))
+            else:
+                conn.execute("UPDATE display_upload SET product_name=? WHERE id=?", (target_name, ju[0]))
+
+    conn.commit(); conn.close()
+    return jsonify({'ok': True, 'merged': merged_count, 'target_name': target_name,
+                     'cleaned_products': junk_products})
+
+
 @app.route("/api/display/export/campaign")
 @login_required
 def api_display_export_campaign():
@@ -8484,7 +8569,10 @@ def api_display_export_campaign():
     FNAME='맑은 고딕'
 
     EXTRA_COLS = ['발주 수량','방문 및 설명\n(1차)','미신청 후 전화\n(2차)','비고']
-    col_count = 3 + len(products) + len(EXTRA_COLS)
+    # A열은 여백(spacer)으로 비워두고 B열부터 시작 — 깔끔한 레이아웃
+    ws.column_dimensions['A'].width = 2
+    COL0 = 2  # 실제 컨텐츠 시작 컬럼(B)
+    col_count = COL0 - 1 + 3 + len(products) + len(EXTRA_COLS)
 
     # 매장별 집계
     seller_map={}
@@ -8504,30 +8592,33 @@ def api_display_export_campaign():
     total_qty_sum     = sum(v['total_qty'] for v in seller_map.values())
 
     # ── 상단 타이틀 + KPI (절제된 색상) ─────────
-    ws.merge_cells(f'A1:{get_column_letter(col_count)}1')
+    ws.merge_cells(f'B1:{get_column_letter(col_count)}1')
     kpi_text = f"{camp_name} ({year}년)   ·   전체 {total_seller_cnt}개 매장 중 {participating_cnt}개 매장 진열 신청   ·   총 발주수량 {total_qty_sum:,}개"
-    c=ws.cell(row=1,column=1,value=kpi_text)
+    c=ws.cell(row=1,column=COL0,value=kpi_text)
     c.font=Font(bold=True,size=12,name=FNAME,color='FFFFFF'); c.fill=mf(NAVY); c.alignment=ctr
     ws.row_dimensions[1].height=28
 
     period=f"기한: {campaign.get('period_start','')} ~ {campaign.get('period_end','')}"
-    ws.merge_cells(f'A2:{get_column_letter(col_count)}2')
-    c=ws.cell(row=2,column=1,value=period); c.font=Font(size=9,name=FNAME,color='6B7280'); c.alignment=left
+    ws.merge_cells(f'B2:{get_column_letter(col_count)}2')
+    c=ws.cell(row=2,column=COL0,value=period); c.font=Font(size=9,name=FNAME,color='6B7280'); c.alignment=left
     ws.row_dimensions[2].height=16
 
     # ── 헤더 ──────────────────────────────────
     headers = ['구분','매장명','담당자'] + products + EXTRA_COLS
-    for ci,h in enumerate(headers,1):
+    for offset,h in enumerate(headers):
+        ci = COL0 + offset
         c=ws.cell(row=3,column=ci,value=h)
         c.font=Font(bold=True,size=9,name=FNAME,color='374151')
         c.fill=mf(HGRAY); c.border=bdr
         c.alignment=Alignment(horizontal='center',vertical='center',wrap_text=True)
     ws.row_dimensions[3].height=30
 
-    ws.column_dimensions['A'].width=12; ws.column_dimensions['B'].width=22; ws.column_dimensions['C'].width=12
+    ws.column_dimensions[get_column_letter(COL0)].width=12
+    ws.column_dimensions[get_column_letter(COL0+1)].width=22
+    ws.column_dimensions[get_column_letter(COL0+2)].width=12
     for pi in range(len(products)):
-        ws.column_dimensions[get_column_letter(4+pi)].width=max(16,len(products[pi])+4)
-    extra_start = 4+len(products)
+        ws.column_dimensions[get_column_letter(COL0+3+pi)].width=max(16,len(products[pi])+4)
+    extra_start = COL0+3+len(products)
     ws.column_dimensions[get_column_letter(extra_start)].width=10
     ws.column_dimensions[get_column_letter(extra_start+1)].width=14
     ws.column_dimensions[get_column_letter(extra_start+2)].width=14
@@ -8572,10 +8663,11 @@ def api_display_export_campaign():
         row.append('완료' if call_done else '')
         row.append(note_val)
 
-        for ci,v in enumerate(row,1):
+        for offset,v in enumerate(row):
+            ci = COL0 + offset
             c=ws.cell(row=ri,column=ci,value=v); c.font=Font(size=9,name=FNAME,color='1F2937'); c.border=bdr
-            c.alignment=ctr if ci!=2 else left
-            if ci==1 and v:  # 구분 강조 (그룹 첫 행)
+            c.alignment=ctr if offset!=1 else left
+            if offset==0 and v:  # 구분 강조 (그룹 첫 행)
                 c.font=Font(bold=True,size=9,name=FNAME,color='374151')
             if ci==extra_start:  # 발주 수량만 약하게 강조
                 c.font=Font(bold=True,size=9,name=FNAME,color='1F2937')
@@ -8584,10 +8676,10 @@ def api_display_export_campaign():
 
     # ── 하단 합계 (절제된 디자인) ────────────────
     grand_qty = sum(grp_total_qty.values()) or 1
-    ws.merge_cells(f'A{ri}:C{ri}')
-    c=ws.cell(row=ri,column=1,value='합계'); c.font=Font(bold=True,size=10,name=FNAME,color='374151')
+    ws.merge_cells(f'{get_column_letter(COL0)}{ri}:{get_column_letter(COL0+2)}{ri}')
+    c=ws.cell(row=ri,column=COL0,value='합계'); c.font=Font(bold=True,size=10,name=FNAME,color='374151')
     c.fill=mf(LGRAY); c.alignment=ctr; c.border=bdr
-    for ci in range(4, 4+len(products)):
+    for ci in range(COL0+3, COL0+3+len(products)):
         c=ws.cell(row=ri,column=ci,value=''); c.fill=mf(LGRAY); c.border=bdr
     c=ws.cell(row=ri,column=extra_start,value=grand_qty)
     c.font=Font(bold=True,size=10,name=FNAME,color='374151'); c.fill=mf(LGRAY); c.alignment=ctr; c.border=bdr
@@ -8599,18 +8691,18 @@ def api_display_export_campaign():
 
     # 업체구분별 비율 표
     if len(grp_total_qty) > 1:
-        ws.merge_cells(f'A{ri}:C{ri}')
-        c=ws.cell(row=ri,column=1,value='구분별 비중'); c.font=Font(bold=True,size=9,name=FNAME,color='9CA3AF')
+        ws.merge_cells(f'{get_column_letter(COL0)}{ri}:{get_column_letter(COL0+2)}{ri}')
+        c=ws.cell(row=ri,column=COL0,value='구분별 비중'); c.font=Font(bold=True,size=9,name=FNAME,color='9CA3AF')
         c.alignment=left
         ri += 1
         for g_name, g_qty in sorted(grp_total_qty.items(), key=lambda x:-x[1]):
             pct = round(g_qty/grand_qty*100,1)
-            ws.merge_cells(f'A{ri}:C{ri}')
-            c=ws.cell(row=ri,column=1,value=f'  {g_name}   {g_qty:,}개 ({pct}%)')
+            ws.merge_cells(f'{get_column_letter(COL0)}{ri}:{get_column_letter(COL0+2)}{ri}')
+            c=ws.cell(row=ri,column=COL0,value=f'  {g_name}   {g_qty:,}개 ({pct}%)')
             c.font=Font(size=9,name=FNAME,color='9CA3AF'); c.alignment=left
             ri += 1
 
-    ws.freeze_panes='A4'
+    ws.freeze_panes=f'{get_column_letter(COL0)}4'
     buf=io.BytesIO(); wb.save(buf); buf.seek(0)
     safe=campaign.get('campaign_name','캠페인').replace('/','_')
     return send_file(buf, mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',

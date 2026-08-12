@@ -1402,6 +1402,7 @@ td.center{text-align:center}
               <input type="file" id="display-file-input" accept=".xlsx,.xls" style="display:none" onchange="uploadDisplayFile(this)">
             </label>
             <button class="btn btn-ghost btn-sm" onclick="editCampaign()">⚙ 기간/점수 수정</button>
+            <button class="btn btn-ghost btn-sm" onclick="fixCampaignProductNames()" title="Sheet1 등 잘못된 제품명을 올바른 이름으로 통합">🔧 제품명 정리</button>
             <button class="btn btn-ghost btn-sm" onclick="downloadCampaignExcel()">📥 엑셀 다운로드</button>
             <button class="btn btn-xs" style="background:var(--red-lt);color:var(--red)" onclick="deleteCampaign()">삭제</button>
           </div>
@@ -3467,6 +3468,22 @@ function downloadCampaignExcel(){
   const year=document.getElementById('display-year')?.value||new Date().getFullYear();
   window.location.href=`/api/display/export/campaign?campaign_id=${currentCampaignId}&year=${year}`;
   toast('캠페인 엑셀 다운로드 중...');
+}
+
+async function fixCampaignProductNames(){
+  if(!currentCampaignId){toast('캠페인을 먼저 선택해주세요',false);return;}
+  if(!confirm('"Sheet1" 같은 일반 시트명으로 잘못 저장된 제품명을 올바른 제품명으로 통합할까요?\n(같은 매장의 발주 수량은 합산되고, 더 높은 점수가 유지됩니다)')) return;
+  const r = await api(`/api/display/campaign/${currentCampaignId}/fix-product-names`, {method:'POST'});
+  if(r?.ok){
+    if(r.merged > 0){
+      toast(`제품명 정리 완료 — "${r.cleaned_products.join(', ')}" → "${r.target_name}" (${r.merged}건 병합)`);
+      loadCampaignDetail(currentCampaignId);
+    } else {
+      toast(r.msg || '정리할 항목이 없습니다');
+    }
+  } else {
+    toast(r?.msg || '정리에 실패했습니다', false);
+  }
 }
 
 async function loadAllRanking(year){
