@@ -100,6 +100,8 @@ def init_db():
             conn.execute("ALTER TABLE sales_data ADD COLUMN note TEXT DEFAULT ''")
         if 'upload_batch' not in existing_cols:
             conn.execute("ALTER TABLE sales_data ADD COLUMN upload_batch TEXT DEFAULT ''")
+        if 'channel' not in existing_cols:
+            conn.execute("ALTER TABLE sales_data ADD COLUMN channel TEXT DEFAULT '오프라인'")
         # branches 테이블 마이그레이션
         branch_cols = [r[1] for r in conn.execute("PRAGMA table_info(branches)").fetchall()]
         for col in ['ceo','ceo_phone','store_manager','store_manager_phone','branch_code']:
@@ -731,12 +733,16 @@ def api_sales_by_store():
     year   = request.args.get("year",   str(datetime.now().year))
     seller = request.args.get("seller", "").strip()
     month  = request.args.get("month",  "").strip()
+    channel = request.args.get("channel", "").strip()  # '오프라인' / '백화점' / '' (전체)
     conn   = get_db()
 
     if month:
         date_cond = f"{year}-{month.zfill(2)}%"
     else:
         date_cond = f"{year}%"
+
+    channel_sql = " AND channel=?" if channel else ""
+    channel_params = [channel] if channel else []
 
     if seller:
         # aliases 포함 조회 (하남미시점 → 하남미사점 등)
@@ -747,17 +753,17 @@ def api_sales_by_store():
                    CAST(strftime('%m', sale_date) AS INTEGER) AS month,
                    COUNT(*) cnt, SUM(total) total, SUM(quantity) qty
             FROM sales_data
-            WHERE real_seller IN ({placeholders}) AND sale_date LIKE ? AND sale_date != ''
-            GROUP BY month ORDER BY month""", [seller] + db_names + [date_cond]).fetchall()]
+            WHERE real_seller IN ({placeholders}) AND sale_date LIKE ? AND sale_date != ''{channel_sql}
+            GROUP BY month ORDER BY month""", [seller] + db_names + [date_cond] + channel_params).fetchall()]
         conn.close()
         return jsonify(rows)
     else:
-        rows = [dict(r) for r in conn.execute("""
+        rows = [dict(r) for r in conn.execute(f"""
             SELECT real_seller AS seller_name,
                    COUNT(*) cnt, SUM(total) total, SUM(quantity) qty
             FROM sales_data
-            WHERE sale_date LIKE ? AND real_seller != '' AND real_seller IS NOT NULL
-            GROUP BY real_seller ORDER BY real_seller""", (date_cond,)).fetchall()]
+            WHERE sale_date LIKE ? AND real_seller != '' AND real_seller IS NOT NULL{channel_sql}
+            GROUP BY real_seller ORDER BY real_seller""", [date_cond] + channel_params).fetchall()]
         conn.close()
 
         # 표시명으로 그룹화 (베이비하우스 하남미시점 + 하남미사점 → 하남미사점으로 합산)
@@ -1134,6 +1140,20 @@ def resolve_seller(name):
     # 3. 앞뒤 공백 제거
     cleaned = cleaned.strip()
     return cleaned if cleaned else name
+
+# 백화점 운영사(거래처명 기준) — 오프라인 매장과 별도 채널로 구분
+DEPARTMENT_STORE_COMPANIES = [
+    '서양네트웍스', '서양네트웤스',
+    '가이아코퍼레이션', '가이아 코퍼레이션', '가이아코포레이션',
+]
+
+def detect_channel(seller_name_raw, real_seller=''):
+    """거래처명(원본 계약법인명) 또는 매장명 기준으로 채널(오프라인/백화점) 판별"""
+    combined = f"{seller_name_raw or ''} {real_seller or ''}"
+    for company in DEPARTMENT_STORE_COMPANIES:
+        if company in combined:
+            return '백화점'
+    return '오프라인'
 
 BRAND_ORDER = ['줄즈', '레카로', 'ABC디자인', '원더폴드', '카오스', '엔픽스', '타프토이즈']
 
@@ -3344,10 +3364,12 @@ def api_export_sellers_xlsx():
     cur_month = datetime.now().month  # 현재 월까지만 비교 (전년 동기)
 
     conn = get_db()
-    # 올해 매출: 연간 전체 표시용
+    # 올해 매출: 연간 전체 표시용 (채널도 함께 조회 — 매장별 대표 채널로 판정)
     rows = conn.execute("""
-        SELECT real_seller, COUNT(*) cnt, SUM(total) total, SUM(quantity) qty, MAX(sale_date) last_date
-        FROM sales_data WHERE real_seller != '' AND sale_date LIKE ?
+        SELECT real_seller, COUNT(*) cnt, SUM(total) total, SUM(quantity) qty, MAX(sale_date) last_date,
+               (SELECT channel FROM sales_data sd2 WHERE sd2.real_seller=sd1.real_seller
+                GROUP BY channel ORDER BY COUNT(*) DESC LIMIT 1) AS channel
+        FROM sales_data sd1 WHERE real_seller != '' AND sale_date LIKE ?
         GROUP BY real_seller ORDER BY real_seller
     """, (f"{year}%",)).fetchall()
 
@@ -3438,7 +3460,7 @@ def api_export_sellers_xlsx():
                 brand_marks[b] = 'O'
 
         seller_data.append({
-            'name': disp_name, 'region': region,
+            'name': disp_name, 'region': region, 'channel': r[5] or '오프라인',
             'ceo': strip_honorific(info.get('ceo','')), 'ceo_phone': info.get('ceo_phone',''),
             'address': info.get('address',''), 'manager': info.get('manager',''),
             'cnt': r[1], 'total': cur_total, 'qty': r[3] or 0,
@@ -3453,7 +3475,6 @@ def api_export_sellers_xlsx():
         REGION_ORDER.index(x['region']) if x['region'] in REGION_ORDER else 99, x['name']))
 
     wb = openpyxl.Workbook()
-    ws = wb.active; ws.title = f'판매처현황_{year}'
     FNAME = '맑은 고딕'
     def mf(h): return PatternFill("solid", fgColor=h)
     thin = Side(style='thin', color='E5E7EB')
@@ -3468,87 +3489,98 @@ def api_export_sellers_xlsx():
             '판매건수','판매수량','최근 거래일'] + BRANDS_ORDER
     widths = [8, 24, 10, 14, 32, 12, 16, 15, 15, 11, 9, 9, 12] + [12]*len(BRANDS_ORDER)
     NCOL = len(hdrs)
-
-    ws.merge_cells(f'A1:{get_column_letter(NCOL)}1')
-    c = ws.cell(row=1, column=1,
-        value=f'판매처 현황  ({year}년)   총 {len(seller_data)}개 매장   ·   전년동기대비 기준: {period_label}')
-    c.font=Font(bold=True, size=13, name=FNAME, color='1F2937'); c.fill=mf('FFFFFF'); c.alignment=ctr
-    ws.row_dimensions[1].height = 26
-
-    for ci, (h, w) in enumerate(zip(hdrs, widths), 1):
-        c = ws.cell(row=2, column=ci, value=h)
-        c.font=Font(bold=True, size=9, name=FNAME, color='374151')
-        c.fill=mf('F3F4F6'); c.border=bdr; c.alignment=ctr
-        ws.column_dimensions[get_column_letter(ci)].width = w
-    ws.row_dimensions[2].height = 20
-
     BRAND_COL_START = 14  # N열부터 브랜드 컬럼
 
-    region_totals = {}
-    ri = 3; prev_region = ''
+    def write_channel_sheet(ws, channel_label, data_list):
+        ws.merge_cells(f'A1:{get_column_letter(NCOL)}1')
+        c = ws.cell(row=1, column=1,
+            value=f'판매처 현황 — {channel_label}  ({year}년)   총 {len(data_list)}개 매장   ·   전년동기대비 기준: {period_label}')
+        c.font=Font(bold=True, size=13, name=FNAME, color='1F2937'); c.fill=mf('FFFFFF'); c.alignment=ctr
+        ws.row_dimensions[1].height = 26
 
-    def write_subtotal(ri, region_name, rt):
+        for ci, (h, w) in enumerate(zip(hdrs, widths), 1):
+            c = ws.cell(row=2, column=ci, value=h)
+            c.font=Font(bold=True, size=9, name=FNAME, color='374151')
+            c.fill=mf('F3F4F6'); c.border=bdr; c.alignment=ctr
+            ws.column_dimensions[get_column_letter(ci)].width = w
+        ws.row_dimensions[2].height = 20
+
+        region_totals = {}
+        ri = 3; prev_region = ''
+
+        def write_subtotal(ri, region_name, rt):
+            ws.merge_cells(f'A{ri}:{get_column_letter(NCOL)}{ri}')
+            c = ws.cell(row=ri, column=1,
+                value=f'{region_name} 소계  ({rt["stores"]}개 매장  /  {rt["total"]:,}원)')
+            c.font=Font(bold=True, size=9, name=FNAME, color='6B7280')
+            c.fill=mf('F9FAFB'); c.alignment=left; c.border=bdr
+            ws.row_dimensions[ri].height = 14
+
+        for s in data_list:
+            region = s['region']
+            if region != prev_region:
+                if prev_region and prev_region in region_totals:
+                    write_subtotal(ri, prev_region, region_totals[prev_region]); ri += 1
+                ws.merge_cells(f'A{ri}:{get_column_letter(NCOL)}{ri}')
+                c = ws.cell(row=ri, column=1, value=f'▌ {region}')
+                c.font=Font(bold=True, size=10, name=FNAME, color='1F2937')
+                c.fill=mf('E5E7EB'); c.alignment=left
+                ws.row_dimensions[ri].height = 18; ri += 1
+                prev_region = region
+                if region not in region_totals:
+                    region_totals[region] = {'total': 0, 'stores': 0}
+
+            yoy_str = f"{'+' if s['yoy']>=0 else ''}{s['yoy']}%" if s['yoy'] is not None else '—'
+            row_vals = [region, s['name'], s['ceo'], s['ceo_phone'], s['address'], s['manager'],
+                        s['total'], s['cur_period_total'], s['prev_period_total'], yoy_str,
+                        s['cnt'], s['qty'], s['last']]
+            row_vals += [s['brands'][b] for b in BRANDS_ORDER]
+
+            for ci, v in enumerate(row_vals, 1):
+                c = ws.cell(row=ri, column=ci, value=v); c.border=bdr
+                c.font=Font(size=9, name=FNAME, color='1F2937')
+                if   ci == 1: c.alignment=ctr; c.font=Font(size=9, name=FNAME, color='9CA3AF')
+                elif ci == 2: c.alignment=left
+                elif ci in (3,6): c.alignment=ctr
+                elif ci == 4: c.alignment=ctr; c.font=Font(size=8, name=FNAME, color='6B7280')
+                elif ci == 5: c.alignment=left; c.font=Font(size=8, name=FNAME, color='6B7280')
+                elif ci in (7,8,9): c.alignment=rgt; c.number_format='#,##0'
+                elif ci == 10:
+                    c.alignment=ctr
+                    if s['yoy'] is not None:
+                        c.font=Font(size=9, name=FNAME, bold=True,
+                                    color='16A34A' if s['yoy']>=0 else 'DC2626')
+                elif ci in (11,12): c.alignment=ctr
+                elif ci == 13: c.alignment=ctr; c.font=Font(size=8, name=FNAME, color='9CA3AF')
+                elif ci >= BRAND_COL_START: c.alignment=ctr
+            ws.row_dimensions[ri].height = 15; ri += 1
+
+            region_totals[region]['total']  += s['total']
+            region_totals[region]['stores'] += 1
+
+        if prev_region and prev_region in region_totals:
+            write_subtotal(ri, prev_region, region_totals[prev_region]); ri += 1
+
+        grand_total = sum(s['total'] for s in data_list)
         ws.merge_cells(f'A{ri}:{get_column_letter(NCOL)}{ri}')
         c = ws.cell(row=ri, column=1,
-            value=f'{region_name} 소계  ({rt["stores"]}개 매장  /  {rt["total"]:,}원)')
-        c.font=Font(bold=True, size=9, name=FNAME, color='6B7280')
-        c.fill=mf('F9FAFB'); c.alignment=left; c.border=bdr
-        ws.row_dimensions[ri].height = 14
+            value=f'전체 합계  ({len(data_list)}개 매장)     {grand_total:,}원')
+        c.font=Font(bold=True, size=10, name=FNAME, color='1F2937')
+        c.fill=mf('F3F4F6'); c.alignment=left; c.border=bdr
+        ws.row_dimensions[ri].height = 22
+        ws.freeze_panes = 'C3'
 
-    for s in seller_data:
-        region = s['region']
-        if region != prev_region:
-            if prev_region and prev_region in region_totals:
-                write_subtotal(ri, prev_region, region_totals[prev_region]); ri += 1
-            ws.merge_cells(f'A{ri}:{get_column_letter(NCOL)}{ri}')
-            c = ws.cell(row=ri, column=1, value=f'▌ {region}')
-            c.font=Font(bold=True, size=10, name=FNAME, color='1F2937')
-            c.fill=mf('E5E7EB'); c.alignment=left
-            ws.row_dimensions[ri].height = 18; ri += 1
-            prev_region = region
-            if region not in region_totals:
-                region_totals[region] = {'total': 0, 'stores': 0}
+    # 수정: 오프라인 매장과 백화점(서양네트웍스/가이아코퍼레이션)을 별도 시트로 분리
+    offline_data = [s for s in seller_data if s.get('channel','오프라인') != '백화점']
+    dept_data    = [s for s in seller_data if s.get('channel','오프라인') == '백화점']
 
-        yoy_str = f"{'+' if s['yoy']>=0 else ''}{s['yoy']}%" if s['yoy'] is not None else '—'
-        row_vals = [region, s['name'], s['ceo'], s['ceo_phone'], s['address'], s['manager'],
-                    s['total'], s['cur_period_total'], s['prev_period_total'], yoy_str,
-                    s['cnt'], s['qty'], s['last']]
-        row_vals += [s['brands'][b] for b in BRANDS_ORDER]
+    ws1 = wb.active; ws1.title = '오프라인매장'
+    write_channel_sheet(ws1, '오프라인 매장', offline_data)
 
-        for ci, v in enumerate(row_vals, 1):
-            c = ws.cell(row=ri, column=ci, value=v); c.border=bdr
-            c.font=Font(size=9, name=FNAME, color='1F2937')
-            if   ci == 1: c.alignment=ctr; c.font=Font(size=9, name=FNAME, color='9CA3AF')
-            elif ci == 2: c.alignment=left
-            elif ci in (3,6): c.alignment=ctr
-            elif ci == 4: c.alignment=ctr; c.font=Font(size=8, name=FNAME, color='6B7280')
-            elif ci == 5: c.alignment=left; c.font=Font(size=8, name=FNAME, color='6B7280')
-            elif ci in (7,8,9): c.alignment=rgt; c.number_format='#,##0'
-            elif ci == 10:
-                c.alignment=ctr
-                if s['yoy'] is not None:
-                    c.font=Font(size=9, name=FNAME, bold=True,
-                                color='16A34A' if s['yoy']>=0 else 'DC2626')
-            elif ci in (11,12): c.alignment=ctr
-            elif ci == 13: c.alignment=ctr; c.font=Font(size=8, name=FNAME, color='9CA3AF')
-            elif ci >= BRAND_COL_START: c.alignment=ctr
-        ws.row_dimensions[ri].height = 15; ri += 1
+    if dept_data:
+        ws2 = wb.create_sheet('백화점')
+        write_channel_sheet(ws2, '백화점', dept_data)
 
-        region_totals[region]['total']  += s['total']
-        region_totals[region]['stores'] += 1
-
-    if prev_region and prev_region in region_totals:
-        write_subtotal(ri, prev_region, region_totals[prev_region]); ri += 1
-
-    grand_total = sum(s['total'] for s in seller_data)
-    ws.merge_cells(f'A{ri}:{get_column_letter(NCOL)}{ri}')
-    c = ws.cell(row=ri, column=1,
-        value=f'전체 합계  ({len(seller_data)}개 매장)     {grand_total:,}원')
-    c.font=Font(bold=True, size=10, name=FNAME, color='1F2937')
-    c.fill=mf('F3F4F6'); c.alignment=left; c.border=bdr
-    ws.row_dimensions[ri].height = 22
-
-    ws.freeze_panes = 'C3'
     buf = io.BytesIO(); wb.save(buf); buf.seek(0)
     return send_file(buf, mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
         as_attachment=True, download_name=f'판매처현황_{year}.xlsx')
@@ -3969,9 +4001,13 @@ def parse_xlsx_sales(file_bytes):
             # 별칭 처리: 위드에이컴퍼니 → 베이비하우스 관악점
             real_seller = resolve_seller(real_seller)
 
+            # 채널 판별 (오프라인/백화점) — 원본 거래처명(C열) 기준
+            seller_name_raw = row_vals.get('C', '').strip()
+            channel = detect_channel(seller_name_raw, real_seller)
+
             results.append({
                 'sale_date':    sale_date,
-                'seller_name':  row_vals.get('C', '').strip(),
+                'seller_name':  seller_name_raw,
                 'item_code':    row_vals.get('G', '').strip(),
                 'item_name':    row_vals.get('H', '').strip(),
                 'item_group':   row_vals.get('AA', '').strip(),
@@ -3984,6 +4020,7 @@ def parse_xlsx_sales(file_bytes):
                 'buyer_phone':  row_vals.get('E', '').strip(),
                 'real_seller':  real_seller,
                 'note':         note,
+                'channel':      channel,
             })
     return results
 
@@ -4070,12 +4107,12 @@ def upload_xlsx_commit():
     for r in rows:
         conn.execute("""INSERT INTO sales_data
             (sale_date,seller_name,item_code,item_name,item_group,quantity,
-             unit_price,supply_price,vat,total,buyer,buyer_phone,real_seller,upload_batch,note)
-            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+             unit_price,supply_price,vat,total,buyer,buyer_phone,real_seller,upload_batch,note,channel)
+            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (r['sale_date'], r['seller_name'], r['item_code'], r['item_name'],
              r['item_group'], r['quantity'], r['unit_price'], r['supply_price'],
              r['vat'], r['total'], r['buyer'], r['buyer_phone'],
-             r['real_seller'], batch, r.get('note', '')))
+             r['real_seller'], batch, r.get('note', ''), r.get('channel', '오프라인')))
 
     conn.commit(); conn.close()
     return jsonify({"ok": True, "rows": len(rows), "months": months, "batch": batch})
@@ -4299,6 +4336,7 @@ def sales_data_weekly():
     year   = request.args.get("year",   str(datetime.now().year))
     month  = request.args.get("month",  "").strip()
     seller = request.args.get("seller", "").strip()
+    channel = request.args.get("channel", "").strip()
     conn   = get_db()
 
     params = []
@@ -4314,6 +4352,10 @@ def sales_data_weekly():
     if seller:
         conds.append("real_seller = ?")
         params.append(seller)
+
+    if channel:
+        conds.append("channel = ?")
+        params.append(channel)
 
     where = " AND ".join(conds)
 

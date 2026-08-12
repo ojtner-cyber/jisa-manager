@@ -471,6 +471,11 @@ td.center{text-align:center}
       <div class="ph">
         <div><h2>판매실적</h2><p>판매현황 데이터 기반 실적 조회</p></div>
         <div class="ph-r">
+          <select class="ysel" id="sales-channel" onchange="loadSalesPage()">
+            <option value="">전체 채널</option>
+            <option value="오프라인">오프라인 매장</option>
+            <option value="백화점">백화점</option>
+          </select>
           <button class="btn btn-ghost btn-sm" onclick="exportSalesXlsx()" title="현재 탭 엑셀 내보내기">
             엑셀 내보내기 ↓
           </button>
@@ -5026,25 +5031,29 @@ async function loadSalesPage(){
   const month  = document.getElementById('sales-month')?.value||'';
   const selVal = document.getElementById('sales-branch')?.value||'';
   const seller = selVal ? decodeURIComponent(selVal) : '';
+  const channel = document.getElementById('sales-channel')?.value||'';
 
   // 매장 드롭다운 채우기
-  const allRows = await api(`/api/sales-by-store?year=${year}`);
+  const chParam = channel ? `&channel=${encodeURIComponent(channel)}` : '';
+  const allRows = await api(`/api/sales-by-store?year=${year}${chParam}`);
   if(!allRows) return;
   const sel=document.getElementById('sales-branch'), prev=sel.value;
   sel.innerHTML='<option value="">— 전체 매장 —</option>'+
     allRows.map(r=>`<option value="${encodeURIComponent(r.seller_name||'')}">${r.seller_name||'—'}</option>`).join('');
   if(prev) sel.value=prev;
 
-  if(salesTab==='monthly') await renderMonthly(year, month, seller);
-  else await renderWeekly(year, month, seller);
+  if(salesTab==='monthly') await renderMonthly(year, month, seller, channel);
+  else await renderWeekly(year, month, seller, channel);
 }
 
-async function renderMonthly(year, month, seller){
+async function renderMonthly(year, month, seller, channel){
+  const chParam = channel ? `&channel=${encodeURIComponent(channel)}` : '';
   const tbody=document.getElementById('sales-tbody');
   if(seller){
     // 특정 매장 → 월별 행 표시
     const params=new URLSearchParams({year, seller});
     if(month) params.set('month', month);
+    if(channel) params.set('channel', channel);
     const rows=await api(`/api/sales-by-store?${params}`);
     if(!rows) return;
     if(!rows.length){
@@ -5069,6 +5078,7 @@ async function renderMonthly(year, month, seller){
     // 전체 → 매장별 요약
     const params=new URLSearchParams({year});
     if(month) params.set('month', month);
+    if(channel) params.set('channel', channel);
     const rows=await api(`/api/sales-by-store?${params}`);
     if(!rows) return;
     if(!rows.length){
@@ -5096,10 +5106,11 @@ async function renderMonthly(year, month, seller){
   }
 }
 
-async function renderWeekly(year, month, seller){
+async function renderWeekly(year, month, seller, channel){
   const params=new URLSearchParams({year});
   if(month)  params.set('month',  month);
   if(seller) params.set('seller', seller);
+  if(channel) params.set('channel', channel);
   const rows=await api(`/api/sales-data/weekly?${params}`);
   const tbody=document.getElementById('weekly-tbody');
   if(!rows||!rows.length){
