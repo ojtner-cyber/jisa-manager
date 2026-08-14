@@ -2523,7 +2523,21 @@ def export_xlsx_monthly():
         if '베이비스토어' in nm_lower:  return (3,nm_lower)
         if '베이비세븐' in nm_lower:   return (4,nm_lower)
         return (9,nm_lower)
-    sellers_list.sort(key=brand_key)
+
+    # 매장별 채널(오프라인/백화점) — 백화점(서양네트웍스/가이아코퍼레이션)은 기타 다음 맨 아래 배치
+    seller_channel_m = {}
+    for r in conn.execute("""
+        SELECT real_seller, (SELECT channel FROM sales_data sd2 WHERE sd2.real_seller=sd1.real_seller
+               GROUP BY channel ORDER BY COUNT(*) DESC LIMIT 1) ch
+        FROM sales_data sd1 WHERE real_seller!='' GROUP BY real_seller""").fetchall():
+        seller_channel_m[r[0]] = r[1] or '오프라인'
+
+    def sort_key_m(s):
+        if seller_channel_m.get(s, '') == '백화점':
+            return (99, (s or '').lower())
+        return brand_key(s)
+
+    sellers_list.sort(key=sort_key_m)
 
     # 데이터 조회 — 매장×월×품목그룹 (item_group, item_name 모두 가져와 remap)
     data_rows = conn.execute(
@@ -2628,6 +2642,8 @@ def export_xlsx_monthly():
         # 데이터 행 (5행부터)
         # 업체구분: real_seller 이름에서 자동 파악
         def detect_group(seller_name):
+            if seller_channel_m.get(seller_name, '') == '백화점':
+                return '백화점'
             nm = (seller_name or '').lower().replace(' ','').replace('_','')
             if '베이비하우스' in nm: return '베이비하우스'
             if '링크맘' in nm or '베네피아' in nm or '베이비플러스' in nm: return '링크맘'
@@ -2897,18 +2913,45 @@ def export_xlsx_weekly():
         f"SELECT DISTINCT real_seller FROM sales_data WHERE real_seller!='' AND sale_date LIKE ? {seller_cond}",
         [pp[0]] + seller_params).fetchall()
     sellers_list = [r[0] for r in sellers_raw]
+
+    # 매장별 채널(오프라인/백화점) 조회 — 서양네트웍스/가이아코퍼레이션은 맨 아래 배치
+    seller_channel = {}
+    for r in conn.execute("""
+        SELECT real_seller, (SELECT channel FROM sales_data sd2 WHERE sd2.real_seller=sd1.real_seller
+               GROUP BY channel ORDER BY COUNT(*) DESC LIMIT 1) ch
+        FROM sales_data sd1 WHERE real_seller!='' GROUP BY real_seller""").fetchall():
+        seller_channel[r[0]] = r[1] or '오프라인'
+
     def bk(nm):
         nm=(nm or '').lower()
         if '베이비하우스' in nm: return (0,nm)
-        if '링크맘' in nm: return (1,nm)
+        if '링크맘' in nm or '베네피아' in nm or '베이비플러스' in nm: return (1,nm)
         if '베이비파크' in nm: return (2,nm)
+        if '베이비스토리' in nm or '베이비스토어' in nm: return (3,nm)
+        if '베이비세븐' in nm: return (4,nm)
         return (9,nm)
-    sellers_list.sort(key=bk)
 
-    # 업체구분 파악
-    branch_group = {}
-    for r in conn.execute("SELECT name,note FROM branches").fetchall():
-        branch_group[r[0]] = r[1] or ''
+    def sort_key(s):
+        # 백화점 채널은 항상 맨 아래(기타 다음)로 배치
+        if seller_channel.get(s, '') == '백화점':
+            return (99, (s or '').lower())
+        return bk(s)
+
+    sellers_list.sort(key=sort_key)
+
+    # 업체구분 파악 — 매장명 기반 정확한 브랜드/채널 감지 (branches.note는 자유 메모라 사용하지 않음)
+    def detect_group_for_export(seller_name):
+        if seller_channel.get(seller_name, '') == '백화점':
+            return '백화점'
+        nm = (seller_name or '').lower().replace(' ','').replace('_','')
+        if '베이비하우스' in nm: return '베이비하우스'
+        if '링크맘' in nm or '베네피아' in nm or '베이비플러스' in nm: return '링크맘'
+        if '베이비파크' in nm: return '베이비파크'
+        if '베이비스토리' in nm or '베이비스토어' in nm: return '베이비스토리'
+        if '베이비세븐' in nm: return '베이비세븐'
+        return '기타'
+
+    branch_group = {s: detect_group_for_export(s) for s in sellers_list}
 
     # ── idx: {(wk, brand, seller): {total, qty}} — 매장별 브랜드별 주차별 집계 ──
     idx_seller = {}  # (wk, brand, seller) → {total, qty}
