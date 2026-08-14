@@ -4029,7 +4029,7 @@ def api_me():
 
 # ── 엑셀(.xlsx) 판매현황 업로드 ───────────────
 def parse_xlsx_sales(file_bytes):
-    """xlsx 파싱 — 수량 -1 제외, 특이사항 '교환' 제외, 베이비하우스 본사 → 수취인으로 매장 파악"""
+    """xlsx 파싱 — 수량 -1 제외, 특이사항 '교환'/'샘플' 제외, 베이비하우스 본사 → 수취인으로 매장 파악"""
     import zipfile, xml.etree.ElementTree as ET, re
     from datetime import datetime as dt
 
@@ -4080,9 +4080,9 @@ def parse_xlsx_sales(file_bytes):
             if qty <= 0:
                 continue  # 수량 -1 또는 0 제외
 
-            # 특이사항(P열)에 '교환' 포함 시 제외
+            # 특이사항(P열)에 '교환' 또는 '샘플' 포함 시 제외
             note = row_vals.get('P', '').strip()
-            if '교환' in note:
+            if '교환' in note or '샘플' in note:
                 continue
 
             # 일자 파싱
