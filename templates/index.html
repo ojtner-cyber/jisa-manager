@@ -524,6 +524,16 @@ td.center{text-align:center}
                oninput="filterSalesTable()" onkeydown="if(event.key==='Enter')filterSalesTable()">
       </div>
 
+      <!-- 주별실적 전용: 엑셀 다운로드 날짜 범위 지정 -->
+      <div class="fb" id="weekly-daterange-bar" style="margin-bottom:14px;display:none">
+        <span class="flbl">📥 엑셀 다운로드 기간</span>
+        <input class="fi" type="date" id="weekly-date-from">
+        <span style="color:var(--ink-300)">~</span>
+        <input class="fi" type="date" id="weekly-date-to">
+        <button class="btn btn-ghost btn-sm" onclick="document.getElementById('weekly-date-from').value='';document.getElementById('weekly-date-to').value=''">기간 초기화</button>
+        <span style="font-size:11px;color:var(--ink-300)">지정 시 해당 기간의 주차만 엑셀에 포함됩니다 (미지정 시 연간 전체)</span>
+      </div>
+
       <!-- 월별 탭 -->
       <div id="sales-monthly-view">
         <div class="slbl">전체 매장 요약 <span style="font-size:11px;color:var(--ink-300);font-weight:400">(행 클릭 시 품목 세부 확인)</span></div>
@@ -4314,6 +4324,11 @@ function exportSalesXlsx(){
   const p=new URLSearchParams({year});
   if(month)  p.set('month',month);
   if(seller) p.set('seller',seller);
+  if(salesTab==='weekly'){
+    const dFrom=document.getElementById('weekly-date-from')?.value||'';
+    const dTo=document.getElementById('weekly-date-to')?.value||'';
+    if(dFrom && dTo){ p.set('date_from',dFrom); p.set('date_to',dTo); }
+  }
   const urls={monthly:`/api/export/xlsx/monthly?${p}`,weekly:`/api/export/xlsx/weekly?${p}`,ranking:`/api/export/xlsx/ranking?${p}`};
   window.location.href=urls[salesTab]||urls.monthly;
   toast('엑셀 다운로드 중...');
@@ -4648,6 +4663,8 @@ function switchSalesTab(tab){
   document.getElementById('sales-weekly-view').style.display =tab==='weekly' ?'block':'none';
   document.getElementById('sales-ranking-view').style.display=tab==='ranking'?'block':'none';
   document.getElementById('sales-trend-view').style.display=tab==='trend'?'block':'none';
+  const drBar = document.getElementById('weekly-daterange-bar');
+  if(drBar) drBar.style.display = tab==='weekly' ? 'flex' : 'none';
   if(tab==='trend') loadTrendData();
   else if(tab==='ranking') renderRanking();
   else loadSalesPage();

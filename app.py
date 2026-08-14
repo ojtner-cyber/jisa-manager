@@ -2872,12 +2872,18 @@ def export_xlsx_weekly():
     year   = request.args.get("year",   str(datetime.now().year))
     month  = request.args.get("month",  "")
     seller = request.args.get("seller", "").strip()
+    date_from = request.args.get("date_from", "").strip()  # 수정1: 날짜 범위 지정 다운로드
+    date_to   = request.args.get("date_to", "").strip()
     conn   = get_db()
 
     qp = ["sale_date != ''"]
     pp = []
-    if month: qp.append("sale_date LIKE ?"); pp.append(f"{year}-{month.zfill(2)}%")
-    else:     qp.append("sale_date LIKE ?"); pp.append(f"{year}%")
+    if date_from and date_to:
+        qp.append("sale_date >= ? AND sale_date <= ?"); pp.append(date_from); pp.append(date_to)
+    elif month:
+        qp.append("sale_date LIKE ?"); pp.append(f"{year}-{month.zfill(2)}%")
+    else:
+        qp.append("sale_date LIKE ?"); pp.append(f"{year}%")
     if seller: qp.append("real_seller = ?"); pp.append(seller)
 
     # 주차 목록
@@ -2895,6 +2901,29 @@ def export_xlsx_weekly():
     for r in week_rows:
         try: r['ws'], r['we'] = wr(r['md'])
         except: r['ws'] = r['we'] = ''
+
+    def month_week_label(ws_str):
+        """해당 주(일요일 시작)의 '월 몇째주'와 'M/D~M/D' 형식 라벨 계산
+        (예: 2026-08-09 시작 주 → '8월 2주차', 날짜는 '8/9 ~ 8/15')"""
+        try:
+            sun = dt2.strptime(ws_str, "%Y-%m-%d")
+        except Exception:
+            return '', ''
+        mo = sun.month
+        # 해당 월 1일이 속한 주의 일요일부터 세어, 몇 번째 일요일인지 계산
+        first_of_month = sun.replace(day=1)
+        first_sunday = first_of_month - timedelta(days=(first_of_month.weekday()+1) % 7)
+        week_no = (sun - first_sunday).days // 7 + 1
+        end = sun + timedelta(days=6)
+        date_range = f"{sun.month}/{sun.day} ~ {end.month}/{end.day}"
+        return f"{mo}월 {week_no}주차", date_range
+
+    # 단일 주(또는 지정 범위가 1주 이내)인 경우, 참조 양식과 동일한 타이틀 라벨 사용
+    single_week_label = ''
+    if len(week_rows) >= 1:
+        mw, dr = month_week_label(week_rows[0]['ws'])
+        if mw:
+            single_week_label = f"{mw} ({dr})"
 
     weeks = week_rows
     brands = BRAND_ORDER
@@ -3006,62 +3035,68 @@ def export_xlsx_weekly():
     mft = lambda h,b=False,s=10: Font(color=h,bold=b,size=s)
 
     wb  = openpyxl.Workbook()
-    col_start = 4  # A=업체구분, B=거래처명, C=실적용, D부터 데이터
+    col_start = 5  # A=여백, B=업체구분, C=거래처명, D=실적용, E부터 데이터
 
     def build_brand_sheet(wb_ref, title, field, is_first=False):
         ws = wb_ref.active if is_first else wb_ref.create_sheet(title)
         if is_first: ws.title = title
-        total_cols = 3 + len(weeks) * (len(brands)+1)
+        total_cols = col_start - 1 + len(weeks) * (len(brands)+1)
 
-        # 행1: 타이틀 — 흰색
-        ws.merge_cells(f"A1:{get_column_letter(total_cols)}1")
-        c = ws.cell(row=1,column=1,value=f"오프라인 주별 {'판매금액' if field=='total' else '판매수량'} 브랜드별 정리_{year}")
-        c.fill=mf(WHITE); c.font=mft(FONT_BLACK,True,12); c.alignment=center
-        ws.row_dimensions[1].height=26
+        ws.column_dimensions['A'].width = 2.5  # 수정1: A열 여백
 
-        # 행2: 고정 헤더 — 연한 회색
-        for ci,h in enumerate(["업체구분","거래처명","실적용거래처명"],1):
-            c = ws.cell(row=2,column=ci,value=h)
+        field_label = '판매금액' if field=='total' else '판매수량'
+        # 행2: 타이틀 — 참조 양식과 동일한 "※ 거래처별 브랜드 판매OO_N월 M주차 (M/D~M/D)" 형식
+        ws.merge_cells(f"B2:{get_column_letter(min(8,total_cols))}2")
+        title_text = f"※ 거래처별 브랜드 {field_label}_{single_week_label}" if single_week_label \
+            else f"오프라인 주별 {field_label} 브랜드별 정리_{year}"
+        c = ws.cell(row=2,column=2,value=title_text)
+        c.fill=mf(WHITE); c.font=mft(FONT_BLACK,True,12); c.alignment=left
+        ws.row_dimensions[2].height=22
+
+        # 행3: 고정 헤더 — 연한 회색 (B~D 세로 병합)
+        for ci,h in enumerate(["업체구분","거래처명","실적용거래처명"],2):
+            c = ws.cell(row=3,column=ci,value=h)
             c.fill=mf(GRAY_LIGHT); c.font=mft(FONT_GRAY,True,10); c.alignment=center; c.border=bdr_left
-        ws.merge_cells("A2:A3"); ws.merge_cells("B2:B3"); ws.merge_cells("C2:C3")
+        ws.merge_cells("B3:B4"); ws.merge_cells("C3:C4"); ws.merge_cells("D3:D4")
 
         # 주차 헤더
         col = col_start
         for i,r in enumerate(weeks):
             span = len(brands)+1
             end_col = col+span-1
-            ws.merge_cells(f"{get_column_letter(col)}2:{get_column_letter(end_col)}2")
-            label = f"{i+1}주차 ({r['ws']}~{r['we']})"
-            c = ws.cell(row=2,column=col,value=label)
+            mw, dr = month_week_label(r['ws'])
+            ws.merge_cells(f"{get_column_letter(col)}3:{get_column_letter(end_col)}3")
+            label = f"{mw} ({dr})" if mw else f"{i+1}주차 ({r['ws']}~{r['we']})"
+            c = ws.cell(row=3,column=col,value=label)
             c.fill=mf(GRAY_LIGHT); c.font=mft(FONT_GRAY,True,10); c.alignment=center; c.border=bdr_left
             for b in brands:
-                c2 = ws.cell(row=3,column=col,value=f"{b}{'금액' if field=='total' else '수량'}")
+                c2 = ws.cell(row=4,column=col,value=f"{b}{'금액' if field=='total' else '수량'}")
                 c2.fill=mf(GRAY_LIGHT); c2.font=mft(FONT_GRAY,False,9); c2.alignment=center; c2.border=bdr_none
                 col+=1
-            c2 = ws.cell(row=3,column=col,value="합계")
+            c2 = ws.cell(row=4,column=col,value="합계")
             c2.fill=mf(GRAY_LIGHT); c2.font=mft(FONT_GRAY,True,9); c2.alignment=center; c2.border=bdr_left
             col+=1
-        ws.row_dimensions[2].height=18; ws.row_dimensions[3].height=16
+        ws.row_dimensions[3].height=18; ws.row_dimensions[4].height=16
 
-        # 행4: 빈 구분행
+        # 행5: 빈 구분행
         for ci in range(1,total_cols+1):
-            ws.cell(row=4,column=ci,value="").fill=mf(WHITE)
-            ws.cell(row=4,column=ci).border=bdr_none
-        ws.row_dimensions[4].height=4
+            ws.cell(row=5,column=ci,value="").fill=mf(WHITE)
+            ws.cell(row=5,column=ci).border=bdr_none
+        ws.row_dimensions[5].height=4
 
         # 컬럼 너비
-        ws.column_dimensions['A'].width=12; ws.column_dimensions['B'].width=22; ws.column_dimensions['C'].width=24
+        ws.column_dimensions['B'].width=12; ws.column_dimensions['C'].width=22; ws.column_dimensions['D'].width=24
         for mo_i in range(len(weeks)):
             for b_i in range(len(brands)+1):
                 ws.column_dimensions[get_column_letter(col_start+mo_i*(len(brands)+1)+b_i)].width=10
 
-        # 데이터 행 (5행~)
+        # 데이터 행 (6행~)
         prev_grp = None
-        for ri,s in enumerate(sellers_list, 5):
+        for ri,s in enumerate(sellers_list, 6):
             grp = branch_group.get(s,''); gv = grp if grp!=prev_grp else ''; prev_grp=grp
-            for ci,val in enumerate([gv,s,s],1):
+            for ci,val in enumerate([gv,s,s],2):
                 c=ws.cell(row=ri,column=ci,value=val)
-                c.fill=mf(WHITE); c.border=bdr_left; c.font=mft(FONT_BLACK if ci>1 else FONT_GRAY,False,10)
+                c.fill=mf(WHITE); c.border=bdr_left; c.font=mft(FONT_BLACK if ci>2 else FONT_GRAY,False,10)
             col=col_start
             for wk_r in weeks:
                 wk = wk_r['wk']
@@ -3079,8 +3114,8 @@ def export_xlsx_weekly():
                 c.alignment=right; c.number_format=num_fmt; col+=1
 
         # 합계 행
-        tot_row = len(sellers_list)+5
-        for ci,val in enumerate(["합계","",""],1):
+        tot_row = len(sellers_list)+6
+        for ci,val in enumerate(["합계","",""],2):
             c=ws.cell(row=tot_row,column=ci,value=val)
             c.fill=mf(WHITE); c.border=bdr_left; c.font=mft(FONT_BLACK,True,10)
         col=col_start
@@ -3096,42 +3131,48 @@ def export_xlsx_weekly():
             c.fill=mf(WHITE); c.font=mft(FONT_BLACK,True,10)
             c.border=Border(left=thin_bdr,right=no_bdr,top=no_bdr,bottom=no_bdr)
             c.alignment=right; c.number_format=num_fmt; col+=1
-        ws.freeze_panes="D5"
+        ws.freeze_panes="E6"
 
     # ── 시트1: 주별 요약 (세로형 — 출력 최적화) ──
     ws_sum = wb.active; ws_sum.title="주별 요약"
+    ws_sum.column_dimensions['A'].width = 2.5
 
     # 타이틀
-    ws_sum.merge_cells("A1:G1")
-    c=ws_sum.cell(row=1,column=1,value=f"주별 판매 실적 요약_{year}")
-    c.fill=mf(WHITE); c.font=mft(FONT_BLACK,True,12); c.alignment=center
-    ws_sum.row_dimensions[1].height=26
+    ws_sum.merge_cells("B2:H2")
+    title_text_sum = f"※ 거래처별 브랜드 판매실적_{single_week_label}" if single_week_label \
+        else f"주별 판매 실적 요약_{year}"
+    c=ws_sum.cell(row=2,column=2,value=title_text_sum)
+    c.fill=mf(WHITE); c.font=mft(FONT_BLACK,True,12); c.alignment=left
+    ws_sum.row_dimensions[2].height=22
 
     # 헤더행
     sum_hdrs=['주차','기간','브랜드','판매금액(원)','판매수량','비율(%)','누계금액(원)']
-    for ci,h in enumerate(sum_hdrs,1):
-        c=ws_sum.cell(row=2,column=ci,value=h)
+    for ci,h in enumerate(sum_hdrs,2):
+        c=ws_sum.cell(row=3,column=ci,value=h)
         c.fill=mf(GRAY_LIGHT); c.font=mft(FONT_GRAY,True,10); c.alignment=center; c.border=bdr_left
-    ws_sum.row_dimensions[2].height=20
+    ws_sum.row_dimensions[3].height=20
 
-    ri=3
+    ri=4
     cumulative=0
     for i,r in enumerate(weeks):
         wk=r['wk']
         wk_total=r.get('total',0); wk_qty=r.get('qty',0); wk_cnt=r.get('cnt',0)
         cumulative+=wk_total
+        mw, dr = month_week_label(r['ws'])
+        wk_label = mw or f"{i+1}주차"
+        period_label = dr and f"{r['ws']}~{r['we']}" or f"{r['ws']}~{r['we']}"
 
         # 주차 소계 행
-        ws_sum.cell(row=ri,column=1,value=f"{i+1}주차").fill=mf(GRAY_LIGHT)
-        ws_sum.cell(row=ri,column=2,value=f"{r['ws']}~{r['we']}").fill=mf(GRAY_LIGHT)
-        ws_sum.cell(row=ri,column=3,value="전체 합계").fill=mf(GRAY_LIGHT)
-        for ci,val in [(4,wk_total),(5,wk_qty),(6,100.0),(7,cumulative)]:
+        ws_sum.cell(row=ri,column=2,value=wk_label).fill=mf(GRAY_LIGHT)
+        ws_sum.cell(row=ri,column=3,value=f"{r['ws']}~{r['we']}").fill=mf(GRAY_LIGHT)
+        ws_sum.cell(row=ri,column=4,value="전체 합계").fill=mf(GRAY_LIGHT)
+        for ci,val in [(5,wk_total),(6,wk_qty),(7,100.0),(8,cumulative)]:
             c=ws_sum.cell(row=ri,column=ci,value=val)
             c.fill=mf(GRAY_LIGHT); c.font=mft(FONT_GRAY,True,10)
             c.border=bdr_none; c.alignment=right
-            if ci in (4,7): c.number_format=num_fmt
-            if ci==6: c.number_format='0.0'
-        for ci in range(1,3):
+            if ci in (5,8): c.number_format=num_fmt
+            if ci==7: c.number_format='0.0'
+        for ci in range(2,4):
             ws_sum.cell(row=ri,column=ci).font=mft(FONT_GRAY,True,10)
             ws_sum.cell(row=ri,column=ci).border=bdr_left
         ws_sum.row_dimensions[ri].height=18
@@ -3143,14 +3184,14 @@ def export_xlsx_weekly():
             bq = sum(idx_seller.get((wk,b,s),{}).get('qty',0) for s in sellers_list)
             if bv == 0: continue
             pct = round(bv/wk_total*100,1) if wk_total else 0
-            ws_sum.cell(row=ri,column=1,value="")
             ws_sum.cell(row=ri,column=2,value="")
-            ws_sum.cell(row=ri,column=3,value=f"  └ {b}")
-            for ci,val in [(4,bv),(5,bq),(6,pct),(7,"")]:
+            ws_sum.cell(row=ri,column=3,value="")
+            ws_sum.cell(row=ri,column=4,value=f"  └ {b}")
+            for ci,val in [(5,bv),(6,bq),(7,pct),(8,"")]:
                 c=ws_sum.cell(row=ri,column=ci,value=val)
                 c.border=bdr_none; c.alignment=right
-                if ci==4 and isinstance(val,int): c.number_format=num_fmt
-                if ci==6: c.number_format='0.0'
+                if ci==5 and isinstance(val,int): c.number_format=num_fmt
+                if ci==7: c.number_format='0.0'
             ws_sum.row_dimensions[ri].height=16
             ri+=1
 
@@ -3158,33 +3199,25 @@ def export_xlsx_weekly():
         ws_sum.row_dimensions[ri].height=6; ri+=1
 
     # 열 너비
-    for ci,w in enumerate([10,28,18,16,10,10,16],1):
+    for ci,w in enumerate([10,28,18,16,10,10,16],2):
         ws_sum.column_dimensions[get_column_letter(ci)].width=w
+
+    # ── 시트2: 주별 브랜드 요약 (브랜드 아래 제품 표시) — 순서 조정: 요약 다음 바로 배치 ──
+    ws5 = wb.create_sheet("주별 브랜드 요약")
+    ws5.column_dimensions['A'].width = 2.5
 
     # ── 시트2: 브랜드별 금액 ──
     build_brand_sheet(wb, "브랜드별 금액", "total", False)
     # ── 시트3: 브랜드별 수량 ──
     build_brand_sheet(wb, "브랜드별 수량", "qty", False)
 
-    # ── 시트4: 제품별 상세 ──
-    ws4=wb.create_sheet("제품별 상세")
-    item_hdrs=['주차','기간','브랜드','제품명','판매수량','판매금액(원)']
-    for ci,h in enumerate(item_hdrs,1):
-        c=ws4.cell(row=1,column=ci,value=h)
-        c.fill=mf(GRAY_LIGHT); c.font=mft(FONT_GRAY,True,10); c.alignment=center; c.border=bdr_left if ci<=2 else bdr_none
-    ws4.row_dimensions[1].height=20
-    ri=2
-    for i,r in enumerate(weeks):
-        for k,item in sorted(items_by_week.get(r['wk'],{}).items(), key=lambda x:-x[1]['total']):
-            for ci,v in enumerate([f"{i+1}주차",f"{r['ws']}~{r['we']}",item['item_group'],item['item_name'],item['qty'],item['total']],1):
-                c=ws4.cell(row=ri,column=ci,value=v); c.border=bdr_left if ci<=2 else bdr_none
-                if ci>=5: c.alignment=right
-                if ci==6 and isinstance(v,int): c.number_format=num_fmt
-            ri+=1
-    for ci,w in enumerate([10,26,14,36,12,16],1): ws4.column_dimensions[get_column_letter(ci)].width=w
-
-    # ── 시트5: 주별 브랜드 요약 (브랜드 아래 제품 표시) ──
-    ws5 = wb.create_sheet("주별 브랜드 요약")
+    # ── 시트2(먼저 생성해둔 ws5)에 주별 브랜드 요약 내용 채우기 ──
+    ws5.merge_cells("B2:G2")
+    title_text_5 = f"※ 거래처별 브랜드 판매실적_{single_week_label}" if single_week_label \
+        else f"주별 브랜드 요약_{year}"
+    c=ws5.cell(row=2,column=2,value=title_text_5)
+    c.fill=mf(WHITE); c.font=mft(FONT_BLACK,True,12); c.alignment=left
+    ws5.row_dimensions[2].height=22
 
     # 전체 주별×브랜드×제품 집계
     brand_week_prod = {}   # {wk: {brand: {prod_norm: {qty, total}}}}
@@ -3208,28 +3241,29 @@ def export_xlsx_weekly():
 
     # 헤더
     ws5h = ['주차','기간','브랜드/제품','판매금액(원)','판매수량','비율(%)']
-    for ci,h in enumerate(ws5h,1):
-        c=ws5.cell(row=1,column=ci,value=h)
+    for ci,h in enumerate(ws5h,2):
+        c=ws5.cell(row=3,column=ci,value=h)
         c.fill=mf(GRAY_LIGHT); c.font=mft(FONT_GRAY,True,10)
         c.alignment=center; c.border=bdr_none
-    ws5.row_dimensions[1].height=20
+    ws5.row_dimensions[3].height=20
 
-    ri5=2
+    ri5=4
     for i, wk_info in enumerate(weeks):
         wk = wk_info['wk']
         wk_total_val = sum(v['total'] for v in brand_week_total.get(wk,{}).values()) or 1
-        wk_label = f"{i+1}주차"
+        mw, dr = month_week_label(wk_info['ws'])
+        wk_label = mw or f"{i+1}주차"
         period_label = f"{wk_info['ws']}~{wk_info['we']}"
 
         # 전체 합계행
         wk_sum = sum(v['total'] for v in brand_week_total.get(wk,{}).values())
         wk_qty = sum(v['qty'] for v in brand_week_total.get(wk,{}).values())
-        for ci,v in enumerate([wk_label, period_label, '전체 합계', wk_sum, wk_qty, 100.0],1):
+        for ci,v in enumerate([wk_label, period_label, '전체 합계', wk_sum, wk_qty, 100.0],2):
             c=ws5.cell(row=ri5,column=ci,value=v)
-            c.font=mft(FONT_BLACK,True,10); c.alignment=right if ci>=4 else (center if ci<=2 else left)
+            c.font=mft(FONT_BLACK,True,10); c.alignment=right if ci>=5 else (center if ci<=3 else left)
             c.fill=mf(GRAY_LIGHT)
-            if ci==4: c.number_format=num_fmt
-            if ci==6: c.number_format='0.0'
+            if ci==5: c.number_format=num_fmt
+            if ci==7: c.number_format='0.0'
         ws5.row_dimensions[ri5].height=18; ri5+=1
 
         for b in brands:
@@ -3238,11 +3272,11 @@ def export_xlsx_weekly():
             pct_b = round(bt['total']/wk_total_val*100,1)
 
             # 브랜드행
-            for ci,v in enumerate(['','', f'  └ {b}', bt['total'], bt['qty'], pct_b],1):
+            for ci,v in enumerate(['','', f'  └ {b}', bt['total'], bt['qty'], pct_b],2):
                 c=ws5.cell(row=ri5,column=ci,value=v)
-                c.font=mft(FONT_BLACK,True,9); c.alignment=right if ci>=4 else left
-                if ci==4: c.number_format=num_fmt
-                if ci==6: c.number_format='0.0'
+                c.font=mft(FONT_BLACK,True,9); c.alignment=right if ci>=5 else left
+                if ci==5: c.number_format=num_fmt
+                if ci==7: c.number_format='0.0'
             ws5.row_dimensions[ri5].height=16; ri5+=1
 
             # 타프토이즈 제외 브랜드만 제품 상세
@@ -3250,16 +3284,36 @@ def export_xlsx_weekly():
                 prods = brand_week_prod.get(wk,{}).get(b,{})
                 for pnorm, pv in sorted(prods.items(), key=lambda x:-x[1]['total']):
                     pname = pnorm.replace(f'[{b}]','').strip()
-                    for ci,v in enumerate(['','', f'      · {pname}', pv['total'], pv['qty'],''],1):
+                    for ci,v in enumerate(['','', f'      · {pname}', pv['total'], pv['qty'],''],2):
                         c=ws5.cell(row=ri5,column=ci,value=v)
-                        c.font=mft(FONT_GRAY,False,8); c.alignment=right if ci in (4,5) else left
-                        if ci==4: c.number_format=num_fmt
+                        c.font=mft(FONT_GRAY,False,8); c.alignment=right if ci in (5,6) else left
+                        if ci==5: c.number_format=num_fmt
                     ws5.row_dimensions[ri5].height=13; ri5+=1
 
         ws5.row_dimensions[ri5].height=6; ri5+=1  # 주간 구분
 
-    for ci,w in enumerate([10,26,24,18,12,10],1):
+    for ci,w in enumerate([10,26,24,18,12,10],2):
         ws5.column_dimensions[get_column_letter(ci)].width=w
+
+    # ── 시트5: 제품별 상세 (마지막 배치) ──
+    ws4=wb.create_sheet("제품별 상세")
+    ws4.column_dimensions['A'].width = 2.5
+    item_hdrs=['주차','기간','브랜드','제품명','판매수량','판매금액(원)']
+    for ci,h in enumerate(item_hdrs,2):
+        c=ws4.cell(row=1,column=ci,value=h)
+        c.fill=mf(GRAY_LIGHT); c.font=mft(FONT_GRAY,True,10); c.alignment=center; c.border=bdr_left if ci<=3 else bdr_none
+    ws4.row_dimensions[1].height=20
+    ri=2
+    for i,r in enumerate(weeks):
+        mw, dr = month_week_label(r['ws'])
+        wk_label = mw or f"{i+1}주차"
+        for k,item in sorted(items_by_week.get(r['wk'],{}).items(), key=lambda x:-x[1]['total']):
+            for ci,v in enumerate([wk_label,f"{r['ws']}~{r['we']}",item['item_group'],item['item_name'],item['qty'],item['total']],2):
+                c=ws4.cell(row=ri,column=ci,value=v); c.border=bdr_left if ci<=3 else bdr_none
+                if ci>=6: c.alignment=right
+                if ci==7 and isinstance(v,int): c.number_format=num_fmt
+            ri+=1
+    for ci,w in enumerate([10,26,14,36,12,16],2): ws4.column_dimensions[get_column_letter(ci)].width=w
 
     buf=io.BytesIO(); wb.save(buf); buf.seek(0)
     fname=f"주별실적_{year}{'_'+month+'월' if month else ''}.xlsx"
