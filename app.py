@@ -322,6 +322,7 @@ def init_db():
         blog_latest_date TEXT DEFAULT '',
         blog_recent_30d INTEGER DEFAULT 0,
         blog_recent_titles TEXT DEFAULT '',
+        blog_recent_links TEXT DEFAULT '',
         blog_keywords TEXT DEFAULT '',
         blog_has_product_post INTEGER DEFAULT 0,
         blog_score INTEGER DEFAULT 0,
@@ -339,6 +340,7 @@ def init_db():
             'blog_latest_date': 'TEXT DEFAULT ""',
             'blog_recent_30d': 'INTEGER DEFAULT 0',
             'blog_recent_titles': 'TEXT DEFAULT ""',
+            'blog_recent_links': 'TEXT DEFAULT ""',
             'blog_keywords': 'TEXT DEFAULT ""',
             'blog_has_product_post': 'INTEGER DEFAULT 0',
             'blog_grade': 'TEXT DEFAULT ""',
@@ -1055,9 +1057,9 @@ SELLER_ALIAS = {
     # 광주점
     '광주베이비하우스':         '베이비하우스 광주점',
     '베이비하우스광주':         '베이비하우스 광주점',
-    # 다산 (DB 저장은 베네피아 다산, 표시는 베이비스토어 다산)
-    '베이비스토어 다산':        '베네피아 다산',
-    '베이비스토어다산':         '베네피아 다산',
+    # 다산 (수정5: 베네피아 다산 = 베이비스토어 다산 → "베이비스토어 다산"으로 통일)
+    '베네피아 다산':            '베이비스토어 다산',
+    '베네피아다산':             '베이비스토어 다산',
     # 에이블베이비 → 링크맘 부산점
     '주식회사 에이블베이비':    '링크맘 부산점',
     '에이블베이비':             '링크맘 부산점',
@@ -6913,12 +6915,22 @@ def api_sns_search():
     ]
 
     results = []
+    conn_insta = get_db()  # 수정1: 기등록된 인스타 인증 게시물 점수를 조회해 네이버 점수와 합산
+    insta_bonus_map = {}
+    for r in conn_insta.execute("SELECT seller_name, SUM(score) FROM instagram_post GROUP BY seller_name").fetchall():
+        insta_bonus_map[r[0]] = r[1] or 0
+    # 수정3: 매장에 등록된 공식 블로그 URL — 해당 도메인 글만 "자사 발행"으로 신뢰도 높게 인정
+    own_blog_url_map = {}
+    for r in conn_insta.execute("SELECT seller_name, blog_url FROM sns_info WHERE blog_url!=''").fetchall():
+        own_blog_url_map[r[0]] = r[1]
+    conn_insta.close()
+
     for seller in sellers[:50]:
         res = {'seller_name': seller, 'ok': False, 'error': '',
                'blog_total': 0, 'blog_latest': '', 'blog_recent_30d': 0,
                'blog_score': 0, 'blog_grade': 'E', 'blog_platform': '',
-               'blog_has_product_post': 0, 'blog_recent_titles': '', 'blog_keywords': '',
-               'blog_product_promo': '', 'blog_promo_count': 0, 'blog_promo_latest': ''}
+               'blog_has_product_post': 0, 'blog_recent_titles': '', 'blog_recent_links': '', 'blog_keywords': '',
+               'blog_product_promo': '', 'blog_promo_count': 0, 'blog_promo_latest': '', 'instagram_handle': ''}
         try:
             clean = seller.replace('_', ' ').strip()
             d = naver_blog(clean, 20, 'date')
@@ -6934,6 +6946,17 @@ def api_sns_search():
                         items.append(item)
             except Exception:
                 pass
+
+            # 수정1: 인스타그램 프로필(계정) 링크 탐지 — /p/, /reel/, /stories/ 등 게시물 링크가 아닌
+            # 프로필 URL(instagram.com/계정명/) 패턴을 찾아 매장 인스타 계정으로 저장
+            instagram_handle = ''
+            NON_PROFILE_PATHS = ('p', 'reel', 'reels', 'stories', 'explore', 'accounts', 'tv')
+            for item in items:
+                link = item.get('link', '')
+                m = re.search(r'instagram\.com/([a-zA-Z0-9_.]+)/?', link)
+                if m and m.group(1) not in NON_PROFILE_PATHS:
+                    instagram_handle = m.group(1)
+                    break
 
             # 최신 날짜
             dates = [parse_date(i.get('postdate','')) for i in items if i.get('postdate')]
@@ -6955,24 +6978,33 @@ def api_sns_search():
                                 for i in items)
             has_product = any(kw in all_text for kw in PRODUCT_KEYWORDS)
 
-            # 자사 제품 홍보 포스팅 감지
+            # 자사 제품 홍보 포스팅 감지 (수정3: 손님 후기 게시물 제외, 매장이 직접 발행한 글만)
             import json as _json
+            REVIEW_PATTERNS = ['후기', '내돈내산', '다녀왔', '방문기', '솔직후기', '직접 사용', '내가 사용',
+                                '내돈산', '리뷰', '써보니', '써봤', '사용기', '구매 후기', '구입 후기']
+            own_domain = own_blog_url_map.get(seller, '')  # 등록된 공식 블로그가 있으면 그 도메인만 신뢰
             promo_posts = []
             for item in items:
                 title = strip_tags(item.get('title',''))
                 desc  = strip_tags(item.get('description',''))
+                link  = item.get('link','')
                 pdate = parse_date(item.get('postdate',''))
                 combined = title + ' ' + desc
-                # 자사 브랜드 언급 여부
                 found_brands = [b for b in OUR_BRANDS if b in combined]
-                if found_brands:
-                    promo_posts.append({
-                        'date':   pdate,
-                        'title':  title[:50],
-                        'brands': found_brands,
-                        'link':   item.get('link',''),
-                        'is_instagram': 'instagram.com' in item.get('link',''),
-                    })
+                if not found_brands: continue
+                if own_domain:
+                    # 공식 블로그가 등록돼 있으면 그 도메인 글만 인정 (가장 신뢰도 높은 필터)
+                    if own_domain not in link: continue
+                else:
+                    # 미등록 시 손님 후기 패턴 제외로 필터링
+                    if any(p in combined for p in REVIEW_PATTERNS): continue
+                promo_posts.append({
+                    'date':   pdate,
+                    'title':  title[:50],
+                    'brands': found_brands,
+                    'link':   link,
+                    'is_instagram': 'instagram.com' in link,
+                })
             promo_count  = len(promo_posts)
             promo_latest = promo_posts[0]['date'] if promo_posts else ''
             promo_json   = _json.dumps(promo_posts[:10], ensure_ascii=False)
@@ -6993,8 +7025,9 @@ def api_sns_search():
             from collections import Counter
             platform_str = ', '.join(f"{k}({v})" for k,v in Counter(platforms).most_common(5))
 
-            # 최근 제목 5개 (수정2)
+            # 최근 제목 5개 + 링크 (수정6: 클릭 시 원문으로 이동)
             titles = [strip_tags(i.get('title',''))[:40] for i in items[:5]]
+            links  = [i.get('link','') for i in items[:5]]
 
             # 키워드 추출 (제목에서)
             all_titles = ' '.join(strip_tags(i.get('title','')) for i in items[:10])
@@ -7006,6 +7039,9 @@ def api_sns_search():
             elif promo_count >= 2: score = min(score + 10, 100)
             elif promo_count >= 1: score = min(score + 5,  100)
 
+            # 수정1: 인스타그램 인증 게시물 점수를 별도 항목이 아닌 하나의 통합 점수로 합산
+            score = min(score + insta_bonus_map.get(seller, 0), 100)
+
             res.update({
                 'ok': True,
                 'blog_total': total,
@@ -7014,6 +7050,8 @@ def api_sns_search():
                 'blog_has_product_post': 1 if has_product else 0,
                 'blog_platform': platform_str,
                 'blog_recent_titles': ' | '.join(titles),
+                'blog_recent_links': ' | '.join(links),
+                'instagram_handle': instagram_handle,
                 'blog_keywords': ', '.join(found_kws),
                 'blog_score': score,
                 'blog_grade': grade(score),
@@ -7045,11 +7083,12 @@ def api_sns_save_search():
         new_cols = {
             'blog_platform': 'TEXT DEFAULT ""', 'blog_total_posts': 'INTEGER DEFAULT 0',
             'blog_latest_date': 'TEXT DEFAULT ""', 'blog_recent_30d': 'INTEGER DEFAULT 0',
-            'blog_recent_titles': 'TEXT DEFAULT ""', 'blog_keywords': 'TEXT DEFAULT ""',
+            'blog_recent_titles': 'TEXT DEFAULT ""', 'blog_recent_links': 'TEXT DEFAULT ""',
+            'blog_keywords': 'TEXT DEFAULT ""',
             'blog_has_product_post': 'INTEGER DEFAULT 0', 'blog_grade': 'TEXT DEFAULT ""',
             'blog_score': 'INTEGER DEFAULT 0', 'last_searched': 'TEXT DEFAULT ""',
             'blog_product_promo': 'TEXT DEFAULT ""', 'blog_promo_count': 'INTEGER DEFAULT 0',
-            'blog_promo_latest': 'TEXT DEFAULT ""',
+            'blog_promo_latest': 'TEXT DEFAULT ""', 'instagram_handle': 'TEXT DEFAULT ""',
         }
         for col, typ in new_cols.items():
             if col not in existing_cols:
@@ -7074,29 +7113,31 @@ def api_sns_save_search():
                 r.get('blog_has_product_post', 0),
                 r.get('blog_platform', ''),
                 r.get('blog_recent_titles', ''),
+                r.get('blog_recent_links', ''),
                 r.get('blog_keywords', ''),
                 r.get('blog_score', 0),
                 r.get('blog_grade', ''),
                 r.get('blog_product_promo', ''),
                 r.get('blog_promo_count', 0),
                 r.get('blog_promo_latest', ''),
+                r.get('instagram_handle', ''),
                 now, now,
             )
             if seller in existing:
                 conn.execute("""UPDATE sns_info SET
                     blog_total_posts=?, blog_latest_date=?, blog_recent_30d=?,
                     blog_has_product_post=?, blog_platform=?, blog_recent_titles=?,
-                    blog_keywords=?, blog_score=?, blog_grade=?,
+                    blog_recent_links=?, blog_keywords=?, blog_score=?, blog_grade=?,
                     blog_product_promo=?, blog_promo_count=?, blog_promo_latest=?,
-                    last_searched=?, updated_at=?
+                    instagram_handle=?, last_searched=?, updated_at=?
                     WHERE seller_name=?""", (*vals, seller))
             else:
                 conn.execute("""INSERT INTO sns_info
                     (blog_total_posts, blog_latest_date, blog_recent_30d, blog_has_product_post,
-                     blog_platform, blog_recent_titles, blog_keywords, blog_score, blog_grade,
-                     blog_product_promo, blog_promo_count, blog_promo_latest, last_searched, updated_at,
+                     blog_platform, blog_recent_titles, blog_recent_links, blog_keywords, blog_score, blog_grade,
+                     blog_product_promo, blog_promo_count, blog_promo_latest, instagram_handle, last_searched, updated_at,
                      seller_name)
-                    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""", (*vals, seller))
+                    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""", (*vals, seller))
                 existing.add(seller)
             updated += 1
         except Exception as e:
@@ -7118,17 +7159,18 @@ def api_sns_list():
     sales_map = {r[0]: r[1] for r in conn.execute(
         f"SELECT real_seller, SUM(total) FROM sales_data "
         f"WHERE sale_date LIKE '{year}%' AND real_seller!='' GROUP BY real_seller").fetchall()}
-    # 수정: 인스타그램 인증 게시물 가산점 + 건수 매장별 집계
+    # 수정1+2: 인스타그램 인증 게시물 — 건수 + 누적 조회수 (점수는 이미 blog_score에 통합되어 있으므로 별도 가산 없음)
     insta_map = {}
-    for r in conn.execute("SELECT seller_name, COUNT(*) cnt, SUM(score) bonus FROM instagram_post GROUP BY seller_name").fetchall():
-        insta_map[r[0]] = {'cnt': r[1], 'bonus': r[2] or 0}
+    for r in conn.execute("""SELECT seller_name, COUNT(*) cnt, SUM(score) bonus, SUM(COALESCE(view_count,0)) views
+                              FROM instagram_post GROUP BY seller_name""").fetchall():
+        insta_map[r[0]] = {'cnt': r[1], 'bonus': r[2] or 0, 'views': r[3] or 0}
     conn.close()
     result = []
     for s in sellers:
         info = sns_map.get(s, {})
-        insta = insta_map.get(s, {'cnt': 0, 'bonus': 0})
-        base_score = info.get('blog_score', info.get('sns_score', 0))
-        total_score = min(base_score + insta['bonus'], 100)
+        insta = insta_map.get(s, {'cnt': 0, 'bonus': 0, 'views': 0})
+        # 수정1: blog_score는 이미 "전체 분석" 시점에 인스타 인증 점수까지 합산된 통합 점수
+        total_score = info.get('blog_score', info.get('sns_score', 0))
         result.append({
             'seller_name':           s,
             'blog_url':              info.get('blog_url',''),
@@ -7137,11 +7179,10 @@ def api_sns_list():
             'blog_total_posts':      info.get('blog_total_posts', 0),
             'blog_latest_date':      info.get('blog_latest_date',''),
             'blog_recent_30d':       info.get('blog_recent_30d', 0),
-            'blog_has_product_post': info.get('blog_has_product_post', 0),
             'blog_recent_titles':    info.get('blog_recent_titles',''),
+            'blog_recent_links':     info.get('blog_recent_links',''),
             'blog_keywords':         info.get('blog_keywords',''),
-            # blog_score: 기본 점수 (인스타 가산점 제외)
-            'blog_score':   base_score,
+            'blog_score':   total_score,
             'blog_grade':   info.get('blog_grade',''),
             'last_searched':info.get('last_searched', info.get('last_checked','')),
             'memo':         info.get('memo',''),
@@ -7149,8 +7190,9 @@ def api_sns_list():
             'blog_product_promo':  info.get('blog_product_promo',''),
             'blog_promo_count':    info.get('blog_promo_count', 0),
             'blog_promo_latest':   info.get('blog_promo_latest',''),
+            'instagram_handle':     info.get('instagram_handle',''),
             'instagram_post_count': insta['cnt'],
-            'instagram_bonus':      insta['bonus'],
+            'instagram_views':      insta['views'],
             'total_score':          total_score,
         })
     result.sort(key=lambda x: -x['year_sales'])

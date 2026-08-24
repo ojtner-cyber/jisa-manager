@@ -1232,11 +1232,10 @@ td.center{text-align:center}
             <th style="width:7%;text-align:center">총 게시글</th>
             <th style="width:8%;text-align:center">최신 글 날짜</th>
             <th style="width:5%;text-align:center">30일내</th>
-            <th style="width:8%;text-align:center">플랫폼</th>
-            <th style="width:5%;text-align:center">제품언급</th>
-            <th style="width:15%">최근 포스팅 제목</th>
-            <th style="width:10%;text-align:center">자사 제품 홍보</th>
-            <th style="width:8%;text-align:center">📷 인스타 인증</th>
+            <th style="width:9%;text-align:center">플랫폼</th>
+            <th style="width:17%">최근 포스팅 제목</th>
+            <th style="width:12%;text-align:center">자사 제품 홍보</th>
+            <th style="width:10%;text-align:center">📷 인스타 누적 조회수</th>
             <th style="width:9%;text-align:right">연매출</th>
           </tr></thead>
           <tbody id="sns-tbody"></tbody>
@@ -4189,13 +4188,13 @@ function renderSNSKPI(rows){
   const active=rows.filter(r=>r.blog_recent_30d>0).length;
   const gradeA=rows.filter(r=>r.blog_grade==='A').length;
   const gradeB=rows.filter(r=>r.blog_grade==='B').length;
-  const withProduct=rows.filter(r=>r.blog_has_product_post).length;
+  const totalViews=rows.reduce((s,r)=>s+(r.instagram_views||0),0);
   document.getElementById('sns-kpi').innerHTML=[
     {l:'전체 매장',v:`${total}개`,c:'var(--accent-m)'},
     {l:'분석 완료',v:`${searched}개`,c:'#0891B2'},
     {l:'30일 내 활성',v:`${active}개`,c:'#16A34A'},
     {l:'A/B등급 우수',v:`${gradeA+gradeB}개`,c:'#D97706'},
-    {l:'제품 언급 블로그',v:`${withProduct}개`,c:'#7C3AED'},
+    {l:'인스타 누적 조회수',v:totalViews.toLocaleString(),c:'#C13584'},
   ].map(k=>`<div class="kpi"><div class="kpi-accent" style="background:${k.c}"></div>
     <div class="kpi-lbl">${k.l}</div>
     <div class="kpi-val" style="font-size:20px;color:${k.c}">${k.v}</div></div>`).join('');
@@ -4231,60 +4230,68 @@ function freshnessLabel(dateStr, recent30){
 
 function renderSNSTable(rows){
   if(!rows.length){
-    document.getElementById('sns-tbody').innerHTML='<tr><td colspan="13" style="text-align:center;padding:40px;color:var(--ink-300)">데이터가 없습니다</td></tr>';
+    document.getElementById('sns-tbody').innerHTML='<tr><td colspan="11" style="text-align:center;padding:40px;color:var(--ink-300)">데이터가 없습니다</td></tr>';
     return;
   }
   document.getElementById('sns-tbody').innerHTML=rows.map((r,i)=>{
-    const titlePreview=r.blog_recent_titles?r.blog_recent_titles.split(' | ')[0]?.slice(0,22)+'...':'—';
-    const hasDetail=r.blog_recent_titles||r.blog_keywords;
-    // 자사 제품 홍보
+    const titles = (r.blog_recent_titles||'').split(' | ').filter(Boolean);
+    const links  = (r.blog_recent_links||'').split(' | ');
+    const firstTitle = titles[0] ? titles[0].slice(0,22)+(titles[0].length>22?'...':'') : '—';
+    const firstLink = links[0] || '';
+    const hasDetail = titles.length>0;
+
+    // 자사 제품 홍보 (수정3: 매장 직접 발행 글만 반영됨 — 백엔드에서 이미 필터링)
     const promoCount=r.blog_promo_count||0;
     let promoCell='<span style="color:var(--ink-200);font-size:11px">—</span>';
     if(promoCount>0){
       const latest=r.blog_promo_latest?r.blog_promo_latest.slice(0,10):'';
-      // 언급된 브랜드 파악
       let brandTags='';
       try{
         const promos=JSON.parse(r.blog_product_promo||'[]');
         const allBrands=[...new Set(promos.flatMap(p=>p.brands||[]))].slice(0,3);
-        brandTags=allBrands.map(b=>`<span style="background:#FEF9C3;color:#92400E;padding:1px 4px;border-radius:3px;font-size:9px">${b}</span>`).join(' ');
+        brandTags=allBrands.map(b=>`<span style="background:#FEF9C3;color:#92400E;padding:1px 5px;border-radius:4px;font-size:9px;font-weight:600">${b}</span>`).join(' ');
       }catch{}
       promoCell=`<div onclick="event.stopPropagation();openPromoModal('${r.seller_name.replace(/'/g,"\\'")}','${(r.blog_product_promo||'').replace(/'/g,"\\'").replace(/"/g,'&quot;')}',${promoCount})"
         style="cursor:pointer">
-        <span style="color:#D97706;font-weight:700;font-size:11px">${promoCount}건</span>
-        ${latest?`<div style="color:var(--ink-300);font-size:10px">${latest}</div>`:''}
-        <div>${brandTags}</div>
+        <span style="color:#D97706;font-weight:700;font-size:11.5px">${promoCount}건</span>
+        ${latest?`<div style="color:var(--ink-300);font-size:9.5px;margin-top:1px">${latest}</div>`:''}
+        <div style="margin-top:2px">${brandTags}</div>
       </div>`;
     }
+
+    // 수정2: 인스타 인증 칸 — 자사 제품 게시물 누적 조회수만 표시
     const instaCnt=r.instagram_post_count||0;
-    const instaBonus=r.instagram_bonus||0;
+    const instaViews=r.instagram_views||0;
     const safeName=r.seller_name.replace(/'/g,"\\'");
     const instaCell = instaCnt>0
       ? `<div onclick="event.stopPropagation();openInstaPanel('${safeName}')" style="cursor:pointer">
-          <span style="color:#C13584;font-weight:700;font-size:11px">📷 ${instaCnt}건</span>
-          <div style="color:#16A34A;font-size:10px;font-weight:700">+${instaBonus}점</div>
+          <div style="color:#C13584;font-weight:800;font-size:12.5px">👁 ${instaViews.toLocaleString()}</div>
+          <div style="color:var(--ink-300);font-size:9.5px;margin-top:1px">게시물 ${instaCnt}건</div>
         </div>`
       : `<button onclick="event.stopPropagation();openInstaPanel('${safeName}')"
-          style="font-size:10px;padding:4px 8px;border-radius:6px;border:1px solid var(--border-md);background:var(--paper);color:var(--ink-400);cursor:pointer">+ 등록</button>`;
+          style="font-size:10px;padding:5px 10px;border-radius:7px;border:1px solid var(--border-md);background:var(--paper);color:var(--ink-400);cursor:pointer;font-weight:600">+ 등록</button>`;
+
+    // 수정6: 최근 포스팅 제목 클릭 시 원문으로 바로 이동 (링크 없으면 상세 모달)
+    const titleCell = hasDetail
+      ? (firstLink
+          ? `<a href="${firstLink}" target="_blank" rel="noopener" onclick="event.stopPropagation()"
+              style="color:var(--accent-m);text-decoration:none;border-bottom:1px dashed var(--accent-m)">${firstTitle} ↗</a>`
+          : `<span style="color:var(--accent-m);cursor:pointer;text-decoration:underline"
+              onclick="openSNSTitleModal('${r.seller_name.replace(/'/g,"\\'")}','${(r.blog_recent_titles||'').replace(/'/g,"\\'")}','${r.blog_grade}',${r.blog_score},'${(r.blog_platform||'').replace(/'/g,"\\'")}','${(r.blog_keywords||'').replace(/'/g,"\\'")}')">${firstTitle}</span>`)
+      : '<span style="color:var(--ink-200)">—</span>';
+
     return`<tr>
       <td style="text-align:center;color:var(--ink-300);font-size:12px">${i+1}</td>
       <td style="font-weight:600;font-size:12px;cursor:pointer" onclick="openMemoPanel('${r.seller_name.replace(/'/g,"\\'")}')">
         ${r.seller_name}${r.memo?'<span style="font-size:9px;color:var(--ink-300)"> 📝</span>':''}
       </td>
-      <td style="text-align:center">${gradeBadge(r.blog_grade,r.total_score!==undefined?r.total_score:r.blog_score)}</td>
-      <td>${scoreBar(r.total_score!==undefined?r.total_score:r.blog_score)}</td>
+      <td style="text-align:center">${gradeBadge(r.blog_grade,r.blog_score)}</td>
+      <td>${scoreBar(r.blog_score)}</td>
       <td style="text-align:center;font-weight:700;color:var(--ink-700)">${r.blog_total_posts?r.blog_total_posts.toLocaleString()+'건':'—'}</td>
       <td style="text-align:center">${freshnessLabel(r.blog_latest_date,r.blog_recent_30d)}</td>
       <td style="text-align:center;font-weight:700;color:${r.blog_recent_30d>=10?'#16A34A':r.blog_recent_30d>=3?'#D97706':'var(--ink-300)'}">${r.blog_recent_30d||'—'}</td>
       <td style="text-align:center;font-size:11px;color:var(--ink-500)">${r.blog_platform||'—'}</td>
-      <td style="text-align:center">${r.blog_has_product_post?'<span style="color:#7C3AED;font-weight:700;font-size:11px">✓</span>':'<span style="color:var(--ink-200)">—</span>'}</td>
-      <td style="font-size:11px;max-width:140px">
-        ${hasDetail
-          ? `<span style="color:var(--accent-m);cursor:pointer;text-decoration:underline" onclick="openSNSTitleModal('${r.seller_name.replace(/'/g,"\\'")}','${(r.blog_recent_titles||'').replace(/'/g,"\\'")}','${r.blog_grade}',${r.blog_score},'${(r.blog_platform||'').replace(/'/g,"\\'")}','${(r.blog_keywords||'').replace(/'/g,"\\'")}')">
-            ${titlePreview}
-          </span>`
-          : '<span style="color:var(--ink-200)">—</span>'}
-      </td>
+      <td style="font-size:11px;max-width:150px">${titleCell}</td>
       <td style="text-align:center">${promoCell}</td>
       <td style="text-align:center">${instaCell}</td>
       <td style="text-align:right;font-weight:700;color:var(--accent-m);font-size:12px">${N(r.year_sales||0)}원</td>
