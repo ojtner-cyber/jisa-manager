@@ -378,6 +378,54 @@ def init_db():
     except Exception:
         pass
 
+    # ── 업무 탭 관련 테이블 ──────────────────────────
+    conn.execute("""CREATE TABLE IF NOT EXISTS work_visit_coverage (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        year INTEGER NOT NULL,
+        month INTEGER NOT NULL,
+        manager TEXT NOT NULL,
+        region TEXT NOT NULL,
+        visited_count INTEGER DEFAULT 0,
+        note TEXT DEFAULT '',
+        updated_at TEXT DEFAULT '',
+        UNIQUE(year, month, manager, region)
+    )""")
+    conn.execute("""CREATE TABLE IF NOT EXISTS work_promotion (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        year INTEGER NOT NULL,
+        month INTEGER NOT NULL,
+        period_start TEXT DEFAULT '',
+        period_end TEXT DEFAULT '',
+        brand TEXT DEFAULT '',
+        event_name TEXT DEFAULT '',
+        target_channel TEXT DEFAULT '',
+        prep_items TEXT DEFAULT '',
+        status TEXT DEFAULT '예정',
+        source_filename TEXT DEFAULT '',
+        created_at TEXT DEFAULT ''
+    )""")
+    conn.execute("""CREATE TABLE IF NOT EXISTS work_action_check (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        year INTEGER NOT NULL,
+        month INTEGER NOT NULL,
+        manager TEXT NOT NULL,
+        item_key TEXT NOT NULL,
+        done INTEGER DEFAULT 0,
+        updated_at TEXT DEFAULT '',
+        UNIQUE(year, month, manager, item_key)
+    )""")
+    conn.execute("""CREATE TABLE IF NOT EXISTS work_retro (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        year INTEGER NOT NULL,
+        month INTEGER NOT NULL,
+        manager TEXT NOT NULL,
+        keep_text TEXT DEFAULT '',
+        problem_text TEXT DEFAULT '',
+        try_text TEXT DEFAULT '',
+        updated_at TEXT DEFAULT '',
+        UNIQUE(year, month, manager)
+    )""")
+
     # 기본 계정 — 없으면 생성, 있으면 비밀번호 보장
     conn.execute("INSERT OR IGNORE INTO users(email,password,name,role) VALUES(?,?,?,?)",
         ("hwkim@enfix.com","hwkim123!","관리자","admin"))
@@ -7458,6 +7506,488 @@ def api_instagram_delete(pid):
     conn.execute("DELETE FROM instagram_post WHERE id=?", (pid,))
     conn.commit(); conn.close()
     return jsonify({'ok': True})
+
+# ══════════════════════════════════════════════════════
+# ── 업무 탭 API ──────────────────────────────────────
+# ══════════════════════════════════════════════════════
+
+MAJOR_REGION_MAP = {
+    # 대권역 매핑: 세부 지역 → 수도권/충청권/영남권/호남권/강원기타
+    '서울': '수도권', '경기북부': '수도권', '경기남부': '수도권', '인천': '수도권',
+    '대전': '충청권', '충북': '충청권', '충남': '충청권', '세종': '충청권',
+    '부산': '영남권', '대구': '영남권', '울산': '영남권', '경북': '영남권', '경남': '영남권',
+    '광주': '호남권', '전북': '호남권', '전남': '호남권',
+    '강원': '강원/기타', '제주': '강원/기타', '기타': '강원/기타',
+}
+MAJOR_REGION_ORDER = ['수도권', '충청권', '영남권', '호남권', '강원/기타']
+
+
+def _major_region(seller_name):
+    small = detect_region_from_name(seller_name) or '기타'
+    return MAJOR_REGION_MAP.get(small, '강원/기타')
+
+
+@app.route("/api/work/managers")
+@login_required
+def api_work_managers():
+    """담당자 목록 (branches.manager 기준, 매장 수 포함)"""
+    conn = get_db()
+    rows = conn.execute("""
+        SELECT manager, COUNT(*) cnt FROM branches
+        WHERE manager IS NOT NULL AND manager != '' AND status='운영중'
+        GROUP BY manager ORDER BY cnt DESC
+    """).fetchall()
+    conn.close()
+    return jsonify([{'manager': r[0], 'store_count': r[1]} for r in rows])
+
+
+@app.route("/api/work/stores-by-manager")
+@login_required
+def api_work_stores_by_manager():
+    """담당자별 매장 리스트 (지역/최근매출 포함)"""
+    manager = request.args.get('manager', '').strip()
+    year = request.args.get('year', str(datetime.now().year))
+    conn = get_db()
+    q = "SELECT name, region, phone FROM branches WHERE status='운영중'"
+    params = []
+    if manager:
+        q += " AND manager=?"; params.append(manager)
+    q += " ORDER BY name"
+    stores = conn.execute(q, params).fetchall()
+
+    sales_map = {r[0]: r[1] for r in conn.execute(
+        f"SELECT real_seller, SUM(total) FROM sales_data WHERE sale_date LIKE '{year}%' GROUP BY real_seller").fetchall()}
+    conn.close()
+
+    result = []
+    for name, region, phone in stores:
+        result.append({
+            'name': name, 'region': region or detect_region_from_name(name) or '',
+            'major_region': _major_region(name), 'phone': phone or '',
+            'year_sales': sales_map.get(name, 0),
+        })
+    result.sort(key=lambda x: -x['year_sales'])
+    return jsonify(result)
+
+
+@app.route("/api/work/kpi")
+@login_required
+def api_work_kpi():
+    """월간 목표 vs 실적 KPI — 방문매장수/신규진열/프로모션참여/발주전환율 (현재 데이터 기반 산정)"""
+    year = int(request.args.get('year', datetime.now().year))
+    month = int(request.args.get('month', datetime.now().month))
+    manager = request.args.get('manager', '').strip()
+    conn = get_db()
+
+    # 담당 매장 목록
+    q = "SELECT name FROM branches WHERE status='운영중'"
+    params = []
+    if manager: q += " AND manager=?"; params.append(manager)
+    managed_stores = [r[0] for r in conn.execute(q, params).fetchall()]
+    managed_set = set(managed_stores)
+    total_managed = len(managed_stores) or 1
+
+    ym = f"{year}-{month:02d}"
+
+    # 1) 방문 매장 수: store_visit_report 기준 실제 방문 매장 (담당자 필드 매칭)
+    visit_q = "SELECT DISTINCT store_name FROM store_visit_report WHERE visit_date LIKE ?"
+    visit_params = [f"{ym}%"]
+    if manager: visit_q += " AND manager=?"; visit_params.append(manager)
+    visited_stores = [r[0] for r in conn.execute(visit_q, visit_params).fetchall()]
+    visit_actual = len([s for s in visited_stores if not manager or s in managed_set])
+    visit_target = max(round(total_managed * 0.8), 1)  # 담당 매장의 80% 방문을 목표로 산정
+
+    # 2) 신규 진열 확보: display_record 중 이달 applied_date가 있고 has_display=1인 매장 수 (담당 매장 한정)
+    disp_q = """SELECT DISTINCT dr.seller_name FROM display_record dr
+                WHERE dr.has_display=1 AND dr.applied_date LIKE ?"""
+    disp_params = [f"{ym}%"]
+    disp_rows = [r[0] for r in conn.execute(disp_q, disp_params).fetchall()]
+    disp_actual = len([s for s in disp_rows if not manager or s in managed_set])
+    disp_target = max(round(total_managed * 0.15), 3)  # 담당 매장의 약 15% 신규 진열 목표
+
+    # 3) 프로모션 참여 매장: 이달 기간이 걸치는 캠페인에 has_display=1인 담당 매장 수
+    promo_q = """SELECT DISTINCT dr.seller_name FROM display_record dr
+                 JOIN display_campaign dc ON dr.campaign_id=dc.id
+                 WHERE dr.has_display=1 AND dc.period_start<=? AND dc.period_end>=?"""
+    month_end = f"{year}-{month:02d}-31"
+    promo_rows = [r[0] for r in conn.execute(promo_q, (month_end, f"{ym}-01")).fetchall()]
+    promo_actual = len([s for s in promo_rows if not manager or s in managed_set])
+    promo_target = max(round(total_managed * 0.2), 3)
+
+    # 4) 발주 전환율: 이달 매출 발생 담당 매장 비율
+    sales_q = f"SELECT DISTINCT real_seller FROM sales_data WHERE sale_date LIKE ? AND total>0"
+    sales_rows = [r[0] for r in conn.execute(sales_q, (f"{ym}%",)).fetchall()]
+    ordered_actual = len([s for s in sales_rows if not manager or s in managed_set])
+    conversion_actual = round(ordered_actual / total_managed * 100, 1)
+    conversion_target = 70.0  # 업계 통상 목표치
+
+    # 전월 실적 (증감 비교용)
+    prev_month = month - 1 if month > 1 else 12
+    prev_year = year if month > 1 else year - 1
+    prev_ym = f"{prev_year}-{prev_month:02d}"
+    prev_visit = len(set(r[0] for r in conn.execute(
+        "SELECT DISTINCT store_name FROM store_visit_report WHERE visit_date LIKE ?"
+        + (" AND manager=?" if manager else ""),
+        [f"{prev_ym}%"] + ([manager] if manager else [])).fetchall()
+        if not manager or r[0] in managed_set))
+
+    conn.close()
+
+    def _item(label, target, actual, prev, unit=''):
+        rate = round(actual / target * 100, 1) if target else 0
+        delta = actual - prev
+        return {'label': label, 'target': target, 'actual': actual, 'rate': rate,
+                'prev': prev, 'delta': delta, 'unit': unit}
+
+    items = [
+        _item('방문 매장 수', visit_target, visit_actual, prev_visit, '개'),
+        _item('신규 진열 확보', disp_target, disp_actual, 0, '건'),
+        _item('프로모션 참여 매장', promo_target, promo_actual, 0, '개'),
+        _item('발주 전환율', conversion_target, conversion_actual, 0, '%'),
+    ]
+    return jsonify({'ok': True, 'items': items, 'total_managed': total_managed})
+
+
+@app.route("/api/work/brand-performance")
+@login_required
+def api_work_brand_performance():
+    """브랜드별 실적 — 목표매출(전년동월×성장률 또는 최근3개월평균×성장률)/실적매출 현재 데이터 기반 산정"""
+    year = int(request.args.get('year', datetime.now().year))
+    month = int(request.args.get('month', datetime.now().month))
+    manager = request.args.get('manager', '').strip()
+    conn = get_db()
+
+    q = "SELECT name FROM branches WHERE status='운영중'"
+    params = []
+    if manager: q += " AND manager=?"; params.append(manager)
+    managed_stores = [r[0] for r in conn.execute(q, params).fetchall()]
+
+    def _brand_sales(y, m, stores):
+        if not stores:
+            return {}
+        placeholders = ','.join('?' for _ in stores)
+        rows = conn.execute(f"""
+            SELECT item_group, item_name, SUM(total) t FROM sales_data
+            WHERE sale_date LIKE ? AND real_seller IN ({placeholders})
+            GROUP BY item_group, item_name""",
+            [f"{y}-{m:02d}%"] + stores).fetchall()
+        out = {}
+        for grp, name, total in rows:
+            b = remap_group(grp, name)
+            out[b] = out.get(b, 0) + (total or 0)
+        return out
+
+    actual_map = _brand_sales(year, month, managed_stores)
+
+    # 목표 산정: 최근 3개월 평균 × 1.1 (10% 성장 목표), 데이터 없으면 전년 동월 실적 기준
+    hist = []
+    for i in range(1, 4):
+        hm = month - i
+        hy = year
+        if hm <= 0: hm += 12; hy -= 1
+        hist.append(_brand_sales(hy, hm, managed_stores))
+    conn.close()
+
+    all_brands = set(actual_map.keys())
+    for h in hist: all_brands |= set(h.keys())
+    all_brands |= set(BRAND_ORDER)
+
+    result = []
+    for b in BRAND_ORDER + sorted(all_brands - set(BRAND_ORDER)):
+        if b not in all_brands: continue
+        avg3 = sum(h.get(b, 0) for h in hist) / 3 if hist else 0
+        target = round(avg3 * 1.1) if avg3 > 0 else 0
+        actual = actual_map.get(b, 0)
+        rate = round(actual / target * 100, 1) if target else (100.0 if actual > 0 else 0)
+        result.append({'brand': b, 'target': target, 'actual': actual, 'rate': rate})
+    return jsonify({'ok': True, 'items': result})
+
+
+@app.route("/api/work/visit-coverage")
+@login_required
+def api_work_visit_coverage():
+    """매장 방문 커버리지 — 담당 매장수는 자동 계산, 방문 매장수는 수기 입력값 반영"""
+    year = int(request.args.get('year', datetime.now().year))
+    month = int(request.args.get('month', datetime.now().month))
+    manager = request.args.get('manager', '').strip()
+    conn = get_db()
+
+    q = "SELECT name FROM branches WHERE status='운영중'"
+    params = []
+    if manager: q += " AND manager=?"; params.append(manager)
+    stores = [r[0] for r in conn.execute(q, params).fetchall()]
+
+    region_counts = {}
+    for s in stores:
+        mr = _major_region(s)
+        region_counts[mr] = region_counts.get(mr, 0) + 1
+
+    visited_q = "SELECT region, visited_count, note FROM work_visit_coverage WHERE year=? AND month=? AND manager=?"
+    visited_map = {r[0]: {'visited': r[1], 'note': r[2]} for r in
+                   conn.execute(visited_q, (year, month, manager or '전체')).fetchall()}
+    conn.close()
+
+    result = []
+    for mr in MAJOR_REGION_ORDER:
+        managed = region_counts.get(mr, 0)
+        if managed == 0 and mr not in visited_map: continue
+        v = visited_map.get(mr, {'visited': 0, 'note': ''})
+        rate = round(v['visited'] / managed * 100, 1) if managed else 0
+        result.append({'region': mr, 'managed': managed, 'visited': v['visited'],
+                        'rate': rate, 'note': v['note'] or ''})
+    return jsonify({'ok': True, 'items': result})
+
+
+@app.route("/api/work/visit-coverage", methods=["POST"])
+@login_required
+def api_work_visit_coverage_save():
+    """방문 매장수 수기 입력 저장"""
+    d = request.json or {}
+    year = int(d.get('year')); month = int(d.get('month'))
+    manager = d.get('manager', '전체').strip() or '전체'
+    region = d.get('region', '').strip()
+    visited = int(d.get('visited', 0))
+    note = d.get('note', '').strip()
+    if not region:
+        return jsonify({'ok': False, 'msg': '권역 정보가 필요합니다'}), 400
+    now = datetime.now().strftime('%Y-%m-%d %H:%M')
+    conn = get_db()
+    conn.execute("""INSERT INTO work_visit_coverage (year, month, manager, region, visited_count, note, updated_at)
+        VALUES(?,?,?,?,?,?,?)
+        ON CONFLICT(year, month, manager, region) DO UPDATE SET
+        visited_count=excluded.visited_count, note=excluded.note, updated_at=excluded.updated_at""",
+        (year, month, manager, region, visited, note, now))
+    conn.commit(); conn.close()
+    return jsonify({'ok': True})
+
+
+@app.route("/api/work/promotion/upload", methods=["POST"])
+@login_required
+def api_work_promotion_upload():
+    """행사·프로모션 공지 엑셀 업로드 → 자유 텍스트 파싱해서 캘린더 항목으로 자동 요약 등록"""
+    import re as _re_promo
+
+    if 'file' not in request.files:
+        return jsonify({'ok': False, 'msg': '파일이 없습니다'}), 400
+    f = request.files['file']
+    fname = f.filename or ''
+    data = f.read()
+
+    try:
+        wb = openpyxl.load_workbook(io.BytesIO(data), data_only=True)
+    except Exception as e:
+        return jsonify({'ok': False, 'msg': f'파일을 읽을 수 없습니다: {e}'}), 400
+
+    now = datetime.now()
+    events = []
+
+    date_pattern = _re_promo.compile(
+        r'(\d{4})년\s*(\d{1,2})월\s*(\d{1,2})일부터\s*(\d{1,2})일까지\s*(?:/\s*(.+))?')
+
+    for sheet_name in wb.sheetnames:
+        ws = wb[sheet_name]
+        # 채널/대상 추정 (시트명 기준: "백화점_서양" → 서양네트웍스 백화점 채널, "백화점_링크맘" → 링크맘)
+        target_channel = sheet_name.replace('_', ' ')
+
+        # 브랜드/행사명 타이틀 (2행 부근 "* ~~ 행사" 텍스트)
+        title_text = ''
+        for row in ws.iter_rows(min_row=1, max_row=4, values_only=True):
+            for c in row:
+                if c and isinstance(c, str) and c.strip().startswith('*'):
+                    title_text = c.strip().lstrip('*').strip()
+                    break
+            if title_text: break
+
+        # 브랜드 감지: 타이틀에서 우선, 없으면 시트 전체 텍스트(예: "* 줄즈 공급 관련") 스캔
+        brand_guess = ''
+        for b in ['줄즈','레카로','ABC디자인','원더폴드','카오스','엔픽스','타프토이즈']:
+            if b in title_text: brand_guess = b; break
+        if not brand_guess:
+            for row in ws.iter_rows(values_only=True):
+                for c in row:
+                    if not c or not isinstance(c, str): continue
+                    for b in ['줄즈','레카로','ABC디자인','원더폴드','카오스','엔픽스','타프토이즈']:
+                        if b in c: brand_guess = b; break
+                    if brand_guess: break
+                if brand_guess: break
+
+        # 준비물/POP 추정: 사은품 컬럼 텍스트들 수집
+        prep_items = set()
+        for row in ws.iter_rows(values_only=True):
+            for c in row:
+                if c and isinstance(c, str) and ('커버' in c or '모기장' in c or '범퍼' in c or '인서트' in c) and len(c) < 40:
+                    prep_items.add(c.strip())
+
+        # 기간/행사명 패턴 탐색 (전체 시트 텍스트에서)
+        found_any = False
+        for row in ws.iter_rows(values_only=True):
+            for c in row:
+                if not c or not isinstance(c, str): continue
+                m = date_pattern.search(c)
+                if m:
+                    yy, mm, d1, d2, ev_name = m.groups()
+                    period_start = f"{yy}-{int(mm):02d}-{int(d1):02d}"
+                    period_end = f"{yy}-{int(mm):02d}-{int(d2):02d}"
+                    events.append({
+                        'year': int(yy), 'month': int(mm),
+                        'period_start': period_start, 'period_end': period_end,
+                        'brand': brand_guess, 'event_name': (ev_name or title_text or sheet_name).strip(),
+                        'target_channel': target_channel,
+                        'prep_items': ', '.join(sorted(prep_items))[:200],
+                        'status': '예정',
+                    })
+                    found_any = True
+        if not found_any and title_text:
+            # 날짜 패턴을 못 찾았어도 타이틀 정보는 등록 (기간 미상으로)
+            events.append({
+                'year': now.year, 'month': now.month,
+                'period_start': '', 'period_end': '',
+                'brand': brand_guess, 'event_name': title_text,
+                'target_channel': target_channel,
+                'prep_items': ', '.join(sorted(prep_items))[:200],
+                'status': '예정',
+            })
+
+    if not events:
+        return jsonify({'ok': False, 'msg': '행사 정보를 인식하지 못했습니다. 파일 형식을 확인해주세요'}), 400
+
+    conn = get_db()
+    now_str = now.strftime('%Y-%m-%d %H:%M')
+    inserted = 0
+    for ev in events:
+        conn.execute("""INSERT INTO work_promotion
+            (year, month, period_start, period_end, brand, event_name, target_channel, prep_items, status, source_filename, created_at)
+            VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
+            (ev['year'], ev['month'], ev['period_start'], ev['period_end'], ev['brand'],
+             ev['event_name'], ev['target_channel'], ev['prep_items'], ev['status'], fname, now_str))
+        inserted += 1
+    conn.commit(); conn.close()
+
+    return jsonify({'ok': True, 'inserted': inserted, 'events': events})
+
+
+@app.route("/api/work/promotion/list")
+@login_required
+def api_work_promotion_list():
+    year = int(request.args.get('year', datetime.now().year))
+    month = int(request.args.get('month', datetime.now().month))
+    conn = get_db()
+    rows = [dict(r) for r in conn.execute(
+        "SELECT * FROM work_promotion WHERE year=? AND month=? ORDER BY period_start",
+        (year, month)).fetchall()]
+    conn.close()
+    return jsonify(rows)
+
+
+@app.route("/api/work/promotion/<int:pid>", methods=["DELETE"])
+@login_required
+def api_work_promotion_delete(pid):
+    conn = get_db()
+    conn.execute("DELETE FROM work_promotion WHERE id=?", (pid,))
+    conn.commit(); conn.close()
+    return jsonify({'ok': True})
+
+
+@app.route("/api/work/promotion/<int:pid>/status", methods=["POST"])
+@login_required
+def api_work_promotion_status(pid):
+    status = (request.json or {}).get('status', '예정')
+    conn = get_db()
+    conn.execute("UPDATE work_promotion SET status=? WHERE id=?", (status, pid))
+    conn.commit(); conn.close()
+    return jsonify({'ok': True})
+
+
+# 초고수 영업자 액션 플랜 — 전문가 관점으로 다듬은 실행 체크리스트
+ACTION_PLAN_ITEMS = [
+    {'key': 'top20_contact',   'category': '매장 관계관리', 'icon': '🤝',
+     'item': '핵심 거래처(매출 TOP 20) 담당자와 정기 소통 — 근황·애로사항 청취 및 지원 방안 제안', 'cycle': '주 1회'},
+    {'key': 'underperform',    'category': '매장 관계관리', 'icon': '📉',
+     'item': '실적 부진 매장 원인 진단(진열·재고·경쟁사 유입 등) 및 맞춤 개선안 제시', 'cycle': '월 1회'},
+    {'key': 'competitor_scan', 'category': '시장 인텔리전스', 'icon': '🔍',
+     'item': '경쟁사 신제품·프로모션·가격 동향 스캔 및 대응 포인트 정리', 'cycle': '주 1회'},
+    {'key': 'display_trend',   'category': '시장 인텔리전스', 'icon': '📸',
+     'item': '매장별 베스트셀러·진열 트렌드 현장 기록(사진) 및 벤치마킹 포인트 도출', 'cycle': '방문 시마다'},
+    {'key': 'selling_script',  'category': '영업 역량 강화', 'icon': '🎯',
+     'item': '신제품 핵심 셀링포인트 스크립트 업데이트 및 현장 테스트', 'cycle': '신제품 출시 시'},
+    {'key': 'objection',       'category': '영업 역량 강화', 'icon': '💬',
+     'item': '거절·이의제기 대응 사례 축적 및 응대 화법 정교화', 'cycle': '수시'},
+    {'key': 'data_review',     'category': '데이터 기반 관리', 'icon': '📊',
+     'item': '월별 매출·발주 데이터 정리 및 이상 신호(급감·정체) 조기 포착', 'cycle': '월 1회'},
+    {'key': 'benchmark',       'category': '자기 개발', 'icon': '🏆',
+     'item': '이달의 우수 영업 사례 1건 심층 분석 및 본인 루틴에 적용', 'cycle': '월 1회'},
+]
+
+
+@app.route("/api/work/action-plan")
+@login_required
+def api_work_action_plan():
+    year = int(request.args.get('year', datetime.now().year))
+    month = int(request.args.get('month', datetime.now().month))
+    manager = request.args.get('manager', '전체').strip() or '전체'
+    conn = get_db()
+    checks = {r[0]: r[1] for r in conn.execute(
+        "SELECT item_key, done FROM work_action_check WHERE year=? AND month=? AND manager=?",
+        (year, month, manager)).fetchall()}
+    conn.close()
+    items = []
+    for it in ACTION_PLAN_ITEMS:
+        items.append({**it, 'done': bool(checks.get(it['key'], 0))})
+    done_count = sum(1 for i in items if i['done'])
+    return jsonify({'ok': True, 'items': items, 'done_count': done_count, 'total': len(items)})
+
+
+@app.route("/api/work/action-plan/toggle", methods=["POST"])
+@login_required
+def api_work_action_toggle():
+    d = request.json or {}
+    year = int(d.get('year')); month = int(d.get('month'))
+    manager = d.get('manager', '전체').strip() or '전체'
+    item_key = d.get('item_key', '').strip()
+    done = 1 if d.get('done') else 0
+    now = datetime.now().strftime('%Y-%m-%d %H:%M')
+    conn = get_db()
+    conn.execute("""INSERT INTO work_action_check (year, month, manager, item_key, done, updated_at)
+        VALUES(?,?,?,?,?,?)
+        ON CONFLICT(year, month, manager, item_key) DO UPDATE SET done=excluded.done, updated_at=excluded.updated_at""",
+        (year, month, manager, item_key, done, now))
+    conn.commit(); conn.close()
+    return jsonify({'ok': True})
+
+
+@app.route("/api/work/retro")
+@login_required
+def api_work_retro():
+    year = int(request.args.get('year', datetime.now().year))
+    month = int(request.args.get('month', datetime.now().month))
+    manager = request.args.get('manager', '전체').strip() or '전체'
+    conn = get_db()
+    row = conn.execute("SELECT * FROM work_retro WHERE year=? AND month=? AND manager=?",
+                        (year, month, manager)).fetchone()
+    conn.close()
+    if row:
+        return jsonify({'ok': True, 'keep_text': row['keep_text'], 'problem_text': row['problem_text'],
+                         'try_text': row['try_text'], 'updated_at': row['updated_at']})
+    return jsonify({'ok': True, 'keep_text': '', 'problem_text': '', 'try_text': '', 'updated_at': ''})
+
+
+@app.route("/api/work/retro", methods=["POST"])
+@login_required
+def api_work_retro_save():
+    d = request.json or {}
+    year = int(d.get('year')); month = int(d.get('month'))
+    manager = d.get('manager', '전체').strip() or '전체'
+    now = datetime.now().strftime('%Y-%m-%d %H:%M')
+    conn = get_db()
+    conn.execute("""INSERT INTO work_retro (year, month, manager, keep_text, problem_text, try_text, updated_at)
+        VALUES(?,?,?,?,?,?,?)
+        ON CONFLICT(year, month, manager) DO UPDATE SET
+        keep_text=excluded.keep_text, problem_text=excluded.problem_text,
+        try_text=excluded.try_text, updated_at=excluded.updated_at""",
+        (year, month, manager, d.get('keep_text',''), d.get('problem_text',''), d.get('try_text',''), now))
+    conn.commit(); conn.close()
+    return jsonify({'ok': True})
+
 
 
 @app.route("/api/sns/save-memo", methods=["POST"])
