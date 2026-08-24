@@ -922,6 +922,17 @@ td.center{text-align:center}
         </button>
       </div>
 
+      <!-- 키워드 검색 (전체 보고서 내용 검색) -->
+      <div style="position:relative;margin-bottom:14px">
+        <span style="position:absolute;left:14px;top:50%;transform:translateY(-50%);color:var(--t-300);font-size:14px">🔍</span>
+        <input type="text" id="vr-keyword" placeholder="키워드로 보고서 검색 (매장명·담당자·주요내용·요청사항·후속조치 등 전체 검색)"
+          style="width:100%;padding:12px 14px 12px 38px;border:1.5px solid var(--border-md);border-radius:10px;font-size:13.5px;box-sizing:border-box"
+          oninput="debounceVrKeywordSearch()" onkeydown="if(event.key==='Enter')reloadVisitReportView()">
+        <button id="vr-keyword-clear" onclick="document.getElementById('vr-keyword').value='';reloadVisitReportView()"
+          style="display:none;position:absolute;right:10px;top:50%;transform:translateY(-50%);background:none;border:none;color:var(--t-300);font-size:15px;cursor:pointer">✕</button>
+      </div>
+      <div id="vr-keyword-summary" style="display:none;margin-bottom:14px;font-size:12.5px;color:var(--p);font-weight:600"></div>
+
       <!-- 필터 바 -->
       <div class="fb" style="margin-bottom:18px;gap:10px;flex-wrap:wrap">
         <span class="flbl">브랜드</span>
@@ -1851,7 +1862,16 @@ function resetVrFilters(){
   document.getElementById('vr-store-filter').value = '';
   document.getElementById('vr-date-from').value = '';
   document.getElementById('vr-date-to').value = '';
+  document.getElementById('vr-keyword').value = '';
+  document.getElementById('vr-keyword-clear').style.display = 'none';
+  document.getElementById('vr-keyword-summary').style.display = 'none';
   reloadVisitReportView();
+}
+
+let vrKeywordDebounceTimer = null;
+function debounceVrKeywordSearch(){
+  clearTimeout(vrKeywordDebounceTimer);
+  vrKeywordDebounceTimer = setTimeout(reloadVisitReportView, 350);
 }
 
 async function reloadVisitReportView(){
@@ -1859,9 +1879,21 @@ async function reloadVisitReportView(){
   const store = document.getElementById('vr-store-filter').value.trim();
   const dateFrom = document.getElementById('vr-date-from').value;
   const dateTo = document.getElementById('vr-date-to').value;
+  const keyword = document.getElementById('vr-keyword')?.value.trim() || '';
+
+  document.getElementById('vr-keyword-clear').style.display = keyword ? 'block' : 'none';
 
   const q = new URLSearchParams({brand, store, date_from: dateFrom, date_to: dateTo, group_by: vrCurrentTab});
+  if(keyword) q.set('keyword', keyword);
   vrAllReports = await api(`/api/visit-report/list?${q}`) || [];
+
+  const summaryEl = document.getElementById('vr-keyword-summary');
+  if(keyword){
+    summaryEl.style.display = 'block';
+    summaryEl.innerHTML = `"<b>${keyword}</b>" 검색 결과 — <b>${vrAllReports.length}건</b>의 보고서를 찾았습니다`;
+  } else {
+    summaryEl.style.display = 'none';
+  }
 
   renderVrStats();
 
@@ -1871,6 +1903,10 @@ async function reloadVisitReportView(){
     const qs = new URLSearchParams({brand});
     vrAllStores = await api(`/api/visit-report/stores?${qs}`) || [];
     if(store) vrAllStores = vrAllStores.filter(s=>s.store_name.includes(store));
+    if(keyword){
+      const matchedStores = new Set(vrAllReports.map(r=>r.store_name));
+      vrAllStores = vrAllStores.filter(s=>matchedStores.has(s.store_name));
+    }
     renderVrStoreView();
   }
 }
@@ -2079,15 +2115,19 @@ function renderVrCard(r){
   const col = VR_BRAND_COLOR[r.brand] || '#6B7280';
   const catCount = Object.keys(r.content||{}).length;
   const reqCount = (r.requests||[]).length;
+  const km = r.keyword_match;
   return `<div onclick="openVrDetail(${r.id})"
-    style="background:var(--paper);border:1px solid var(--border);border-radius:10px;padding:14px;cursor:pointer;transition:.15s"
-    onmouseenter="this.style.borderColor='var(--p)';this.style.boxShadow='0 2px 8px rgba(0,0,0,.06)'"
-    onmouseleave="this.style.borderColor='var(--border)';this.style.boxShadow='none'">
+    style="background:var(--paper);border:1px solid ${km&&km.field?'var(--p)':'var(--border)'};border-radius:10px;padding:14px;cursor:pointer;transition:.15s"
+    onmouseenter="this.style.boxShadow='0 2px 8px rgba(0,0,0,.06)'"
+    onmouseleave="this.style.boxShadow='none'">
     <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:8px">
       <div style="font-size:13px;font-weight:800;color:var(--t-900)">${r.store_name}</div>
       <span style="font-size:9.5px;font-weight:700;color:${col};background:${col}15;padding:2px 7px;border-radius:5px;flex-shrink:0">${r.brand||'기타'}</span>
     </div>
     <div style="font-size:11px;color:var(--t-400);margin-bottom:8px">${r.manager?`담당 ${r.manager}`:''}${r.store_rank?` · ${r.store_rank}`:''}</div>
+    ${km && km.field ? `<div style="font-size:11px;background:var(--p-lt);color:var(--p);border-radius:6px;padding:6px 8px;margin-bottom:8px;line-height:1.5">
+      <b>${km.field}</b>: ${km.snippet}
+    </div>` : ''}
     <div style="display:flex;gap:6px;flex-wrap:wrap">
       ${catCount?`<span style="font-size:10px;background:var(--bg);color:var(--t-500);padding:2px 7px;border-radius:5px">주요내용 ${catCount}개</span>`:''}
       ${reqCount?`<span style="font-size:10px;background:#FEF3C7;color:#D97706;padding:2px 7px;border-radius:5px;font-weight:700">요청 ${reqCount}건</span>`:''}

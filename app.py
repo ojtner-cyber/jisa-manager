@@ -993,6 +993,9 @@ SELLER_ALIAS = {
     # 관악점
     '주식회사 위드에이컴퍼니': '베이비하우스 관악점',
     '위드에이컴퍼니':          '베이비하우스 관악점',
+    # 청라점
+    '주식회사 티에스엘컴퍼니': '베이비하우스 청라점',
+    '티에스엘컴퍼니':          '베이비하우스 청라점',
     # 대구점 통합
     '베이비하우스 대구':        '베이비하우스 대구점',
     # 동대전점 통합 (발육/용품 점포 → 동대전점)
@@ -5344,11 +5347,12 @@ def api_visit_report_upload():
 @app.route("/api/visit-report/list")
 @login_required
 def api_visit_report_list():
-    """방문 보고서 목록 조회 — 날짜별/매장별 필터 및 정렬 지원"""
+    """방문 보고서 목록 조회 — 날짜별/매장별 필터, 정렬, 키워드 검색 지원"""
     store = request.args.get('store', '').strip()
     brand = request.args.get('brand', '').strip()
     date_from = request.args.get('date_from', '').strip()
     date_to = request.args.get('date_to', '').strip()
+    keyword = request.args.get('keyword', '').strip()   # 수정: 보고서 전체 내용 키워드 검색
     group_by = request.args.get('group_by', 'date')  # 'date' or 'store'
 
     conn = get_db()
@@ -5358,6 +5362,15 @@ def api_visit_report_list():
     if brand: q += " AND brand=?"; params.append(brand)
     if date_from: q += " AND visit_date>=?"; params.append(date_from)
     if date_to: q += " AND visit_date<=?"; params.append(date_to)
+    if keyword:
+        # 매장명/담당자/주요내용/요청사항/후속조치/직원현황/매장규모 전체에서 검색
+        q += """ AND (
+            store_name LIKE ? OR manager LIKE ? OR author LIKE ?
+            OR content_json LIKE ? OR request_json LIKE ? OR followup_text LIKE ?
+            OR staff_info LIKE ? OR store_size LIKE ?
+        )"""
+        kw = f"%{keyword}%"
+        params += [kw, kw, kw, kw, kw, kw, kw, kw]
     q += " ORDER BY visit_date DESC" if group_by == 'date' else " ORDER BY store_name, visit_date DESC"
     rows = [dict(r) for r in conn.execute(q, params).fetchall()]
     conn.close()
@@ -5367,8 +5380,38 @@ def api_visit_report_list():
         except: r['content'] = {}
         try: r['requests'] = json.loads(r.get('request_json') or '[]')
         except: r['requests'] = []
+        # 수정: 검색어가 어떤 항목에 매치됐는지 프론트에서 하이라이트/미리보기용으로 표시
+        if keyword:
+            r['keyword_match'] = _find_keyword_context(r, keyword)
 
     return jsonify(rows)
+
+
+def _find_keyword_context(report, keyword):
+    """검색어가 매치된 위치와 주변 문맥(스니펫)을 찾아 반환 — 검색 결과 미리보기용"""
+    kw_lower = keyword.lower()
+    fields_to_check = [
+        ('매장명', report.get('store_name', '')),
+        ('담당자', report.get('manager', '')),
+        ('작성자', report.get('author', '')),
+        ('직원현황', report.get('staff_info', '')),
+        ('매장규모', report.get('store_size', '')),
+        ('후속조치/타사프로모션', report.get('followup_text', '')),
+    ]
+    for cat, texts in (report.get('content') or {}).items():
+        fields_to_check.append((f'주요내용({cat})', ' '.join(texts) if isinstance(texts, list) else str(texts)))
+    for req in (report.get('requests') or []):
+        fields_to_check.append(('요청사항', req))
+
+    for label, text in fields_to_check:
+        if text and kw_lower in str(text).lower():
+            text = str(text)
+            idx = text.lower().find(kw_lower)
+            start = max(0, idx - 20)
+            end = min(len(text), idx + len(keyword) + 30)
+            snippet = ('...' if start > 0 else '') + text[start:end] + ('...' if end < len(text) else '')
+            return {'field': label, 'snippet': snippet}
+    return {'field': '', 'snippet': ''}
 
 
 @app.route("/api/visit-report/stores")
