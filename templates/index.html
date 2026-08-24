@@ -1200,6 +1200,8 @@ td.center{text-align:center}
         <div class="ph-r">
           <select class="ysel" id="sns-year" onchange="loadSNS()"></select>
           <input type="text" id="sns-search-input" placeholder="매장명 검색..." style="padding:7px 12px;border:1.5px solid var(--ink-100);border-radius:var(--r-md);font-size:13px;width:160px" oninput="filterSNS()">
+          <button class="btn btn-ghost btn-sm" onclick="document.getElementById('insta-campaign-file').click()">📤 협업 엑셀 업로드</button>
+          <input type="file" id="insta-campaign-file" accept=".xlsx,.xls" style="display:none" onchange="uploadInstaCampaign(event)">
           <button class="btn btn-dark btn-sm" onclick="startBlogSearch()" id="sns-auto-btn">🔍 전체 분석</button>
         </div>
       </div>
@@ -1234,6 +1236,7 @@ td.center{text-align:center}
             <th style="width:5%;text-align:center">제품언급</th>
             <th style="width:15%">최근 포스팅 제목</th>
             <th style="width:10%;text-align:center">자사 제품 홍보</th>
+            <th style="width:8%;text-align:center">📷 인스타 인증</th>
             <th style="width:9%;text-align:right">연매출</th>
           </tr></thead>
           <tbody id="sns-tbody"></tbody>
@@ -1255,6 +1258,62 @@ td.center{text-align:center}
             <button class="btn btn-ghost" onclick="closeMemoPanel()">취소</button>
             <button class="btn btn-dark" onclick="saveMemo()">저장</button>
           </div>
+        </div>
+      </div>
+
+      <!-- 인스타그램 인증 게시물 모달 -->
+      <div id="insta-panel" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.4);z-index:1000;align-items:center;justify-content:center;padding:20px">
+        <div style="background:var(--paper);border-radius:var(--r-lg);padding:24px;width:min(560px,95vw);max-height:88vh;overflow-y:auto;box-shadow:0 24px 60px rgba(0,0,0,.3)">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
+            <div style="font-size:15px;font-weight:800" id="insta-seller-name"></div>
+            <button onclick="closeInstaPanel()" style="background:none;border:none;font-size:18px;color:var(--ink-300);cursor:pointer">✕</button>
+          </div>
+          <div style="font-size:11.5px;color:var(--ink-300);margin-bottom:16px">자사 제품(엔픽스·줄즈·레카로·원더폴드·카오스·ABC디자인·타프토이즈) 관련 피드/릴스를 등록하면 자동으로 가산점이 부여돼요</div>
+
+          <!-- 등록 폼 -->
+          <div style="background:var(--bg);border-radius:10px;padding:14px;margin-bottom:16px">
+            <div class="flbl">인스타그램 게시물 링크 *</div>
+            <input class="fi" id="insta-url" placeholder="https://www.instagram.com/p/... 또는 /reel/..." style="margin-bottom:10px">
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px">
+              <div>
+                <div class="flbl">유형</div>
+                <select class="fi" id="insta-type">
+                  <option value="피드">📷 피드 (사진) — 5점</option>
+                  <option value="릴스">🎬 릴스 (영상) — 8점</option>
+                </select>
+              </div>
+              <div>
+                <div class="flbl">브랜드</div>
+                <select class="fi" id="insta-brand">
+                  <option value="">선택 안함</option>
+                  <option value="엔픽스">엔픽스</option>
+                  <option value="줄즈">줄즈</option>
+                  <option value="레카로">레카로</option>
+                  <option value="원더폴드">원더폴드</option>
+                  <option value="카오스">카오스</option>
+                  <option value="ABC디자인">ABC디자인</option>
+                  <option value="타프토이즈">타프토이즈</option>
+                </select>
+              </div>
+            </div>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px">
+              <div>
+                <div class="flbl">제품명</div>
+                <input class="fi" id="insta-product" placeholder="예: 에어2">
+              </div>
+              <div>
+                <div class="flbl">게시일</div>
+                <input class="fi" type="date" id="insta-date">
+              </div>
+            </div>
+            <div class="flbl">비고</div>
+            <textarea class="fi" id="insta-note" rows="2" placeholder="간단한 메모 (선택)" style="margin-bottom:10px"></textarea>
+            <button class="btn btn-dark" style="width:100%" onclick="addInstagramPost()">+ 등록하고 가산점 부여</button>
+          </div>
+
+          <!-- 등록된 게시물 목록 -->
+          <div style="font-size:12.5px;font-weight:700;margin-bottom:8px">등록된 게시물 <span id="insta-total-bonus" style="color:var(--accent-m)"></span></div>
+          <div id="insta-list" style="max-height:220px;overflow-y:auto"></div>
         </div>
       </div>
     </div>
@@ -4172,7 +4231,7 @@ function freshnessLabel(dateStr, recent30){
 
 function renderSNSTable(rows){
   if(!rows.length){
-    document.getElementById('sns-tbody').innerHTML='<tr><td colspan="12" style="text-align:center;padding:40px;color:var(--ink-300)">데이터가 없습니다</td></tr>';
+    document.getElementById('sns-tbody').innerHTML='<tr><td colspan="13" style="text-align:center;padding:40px;color:var(--ink-300)">데이터가 없습니다</td></tr>';
     return;
   }
   document.getElementById('sns-tbody').innerHTML=rows.map((r,i)=>{
@@ -4197,13 +4256,23 @@ function renderSNSTable(rows){
         <div>${brandTags}</div>
       </div>`;
     }
+    const instaCnt=r.instagram_post_count||0;
+    const instaBonus=r.instagram_bonus||0;
+    const safeName=r.seller_name.replace(/'/g,"\\'");
+    const instaCell = instaCnt>0
+      ? `<div onclick="event.stopPropagation();openInstaPanel('${safeName}')" style="cursor:pointer">
+          <span style="color:#C13584;font-weight:700;font-size:11px">📷 ${instaCnt}건</span>
+          <div style="color:#16A34A;font-size:10px;font-weight:700">+${instaBonus}점</div>
+        </div>`
+      : `<button onclick="event.stopPropagation();openInstaPanel('${safeName}')"
+          style="font-size:10px;padding:4px 8px;border-radius:6px;border:1px solid var(--border-md);background:var(--paper);color:var(--ink-400);cursor:pointer">+ 등록</button>`;
     return`<tr>
       <td style="text-align:center;color:var(--ink-300);font-size:12px">${i+1}</td>
       <td style="font-weight:600;font-size:12px;cursor:pointer" onclick="openMemoPanel('${r.seller_name.replace(/'/g,"\\'")}')">
         ${r.seller_name}${r.memo?'<span style="font-size:9px;color:var(--ink-300)"> 📝</span>':''}
       </td>
-      <td style="text-align:center">${gradeBadge(r.blog_grade,r.blog_score)}</td>
-      <td>${scoreBar(r.blog_score)}</td>
+      <td style="text-align:center">${gradeBadge(r.blog_grade,r.total_score!==undefined?r.total_score:r.blog_score)}</td>
+      <td>${scoreBar(r.total_score!==undefined?r.total_score:r.blog_score)}</td>
       <td style="text-align:center;font-weight:700;color:var(--ink-700)">${r.blog_total_posts?r.blog_total_posts.toLocaleString()+'건':'—'}</td>
       <td style="text-align:center">${freshnessLabel(r.blog_latest_date,r.blog_recent_30d)}</td>
       <td style="text-align:center;font-weight:700;color:${r.blog_recent_30d>=10?'#16A34A':r.blog_recent_30d>=3?'#D97706':'var(--ink-300)'}">${r.blog_recent_30d||'—'}</td>
@@ -4217,6 +4286,7 @@ function renderSNSTable(rows){
           : '<span style="color:var(--ink-200)">—</span>'}
       </td>
       <td style="text-align:center">${promoCell}</td>
+      <td style="text-align:center">${instaCell}</td>
       <td style="text-align:right;font-weight:700;color:var(--accent-m);font-size:12px">${N(r.year_sales||0)}원</td>
     </tr>`;
   }).join('');
@@ -4278,6 +4348,114 @@ function openMemoPanel(seller){
 }
 
 function closeMemoPanel(){document.getElementById('sns-memo-panel').style.display='none';}
+
+let instaCurrentSeller = '';
+
+async function openInstaPanel(seller){
+  instaCurrentSeller = seller;
+  document.getElementById('insta-seller-name').textContent = `📷 ${seller} — 인스타그램 인증`;
+  document.getElementById('insta-url').value = '';
+  document.getElementById('insta-type').value = '피드';
+  document.getElementById('insta-brand').value = '';
+  document.getElementById('insta-product').value = '';
+  document.getElementById('insta-date').value = new Date().toISOString().slice(0,10);
+  document.getElementById('insta-note').value = '';
+  document.getElementById('insta-panel').style.display = 'flex';
+  await loadInstaList();
+}
+
+function closeInstaPanel(){
+  document.getElementById('insta-panel').style.display = 'none';
+}
+
+async function loadInstaList(){
+  const rows = await api(`/api/sns/instagram/list?seller=${encodeURIComponent(instaCurrentSeller)}`) || [];
+  const totalBonus = rows.reduce((s,r)=>s+(r.score||0),0);
+  const totalViews = rows.reduce((s,r)=>s+(r.view_count||0),0);
+  document.getElementById('insta-total-bonus').textContent = rows.length
+    ? `(총 +${totalBonus}점, ${rows.length}건${totalViews?`, 조회수 합계 ${totalViews.toLocaleString()}`:''})` : '';
+
+  const listEl = document.getElementById('insta-list');
+  if(!rows.length){
+    listEl.innerHTML = `<div style="text-align:center;padding:24px;color:var(--ink-300);font-size:12px">등록된 게시물이 없습니다</div>`;
+    return;
+  }
+  listEl.innerHTML = rows.map(r=>{
+    const icon = r.post_type==='릴스' ? '🎬' : '📷';
+    const viewText = r.view_count!=null ? `👁 ${r.view_count.toLocaleString()}회` : (r.view_count_raw ? `👁 ${r.view_count_raw}` : '');
+    return `<div style="display:flex;justify-content:space-between;align-items:flex-start;padding:10px;border-bottom:1px solid var(--border);gap:8px">
+      <div style="min-width:0;flex:1">
+        <div style="font-size:12px;font-weight:700;color:var(--ink-800)">
+          ${icon} ${r.post_type} ${r.brand?`<span style="color:var(--accent-m)">· ${r.brand}</span>`:''} ${r.product_name?`<span style="color:var(--ink-400)">${r.product_name}</span>`:''}
+        </div>
+        <a href="${r.post_url}" target="_blank" style="font-size:11px;color:var(--accent-m);text-decoration:underline;word-break:break-all">${r.post_url}</a>
+        <div style="font-size:10.5px;color:var(--ink-300);margin-top:2px">${r.posted_date||''} · 등록 ${r.registered_by||''} · <span style="color:#16A34A;font-weight:700">+${r.score}점</span>${viewText?` · <span style="color:#0284C7;font-weight:700">${viewText}</span>`:''}</div>
+        ${r.campaign_name?`<div style="font-size:10px;color:var(--ink-300);margin-top:2px">📎 ${r.campaign_name}</div>`:''}
+        ${r.note?`<div style="font-size:11px;color:var(--ink-500);margin-top:3px">${r.note}</div>`:''}
+      </div>
+      <button onclick="deleteInstaPost(${r.id})" style="background:none;border:none;color:var(--red);font-size:11px;cursor:pointer;flex-shrink:0">삭제</button>
+    </div>`;
+  }).join('');
+}
+
+async function addInstagramPost(){
+  const url = document.getElementById('insta-url').value.trim();
+  if(!url){ toast('인스타그램 게시물 링크를 입력해주세요', false); return; }
+  if(!url.includes('instagram.com')){ toast('instagram.com 링크만 등록 가능합니다', false); return; }
+
+  const body = {
+    seller_name: instaCurrentSeller,
+    post_url: url,
+    post_type: document.getElementById('insta-type').value,
+    brand: document.getElementById('insta-brand').value,
+    product_name: document.getElementById('insta-product').value.trim(),
+    posted_date: document.getElementById('insta-date').value,
+    note: document.getElementById('insta-note').value.trim(),
+  };
+  const r = await api('/api/sns/instagram/add', {method:'POST', body});
+  if(r?.ok){
+    toast(`등록 완료 — +${r.score}점 가산됐어요`);
+    document.getElementById('insta-url').value = '';
+    document.getElementById('insta-product').value = '';
+    document.getElementById('insta-note').value = '';
+    await loadInstaList();
+    loadSNS(); // 테이블 갱신 (가산점 반영)
+  } else {
+    toast(r?.msg || '등록에 실패했습니다', false);
+  }
+}
+
+async function deleteInstaPost(id){
+  if(!confirm('이 게시물을 삭제하시겠습니까? (가산점도 함께 취소됩니다)')) return;
+  const r = await api(`/api/sns/instagram/${id}`, {method:'DELETE'});
+  if(r?.ok){
+    toast('삭제되었습니다');
+    await loadInstaList();
+    loadSNS();
+  }
+}
+
+async function uploadInstaCampaign(e){
+  const file = e.target.files[0];
+  if(!file) return;
+  const formData = new FormData();
+  formData.append('file', file);
+
+  toast('인스타그램 협업 엑셀을 분석하고 있습니다...');
+  try{
+    const resp = await fetch('/api/sns/instagram/upload', {method:'POST', body:formData});
+    const r = await resp.json();
+    if(r.ok){
+      toast(`업로드 완료 — "${r.campaign_name}" (${r.brand} ${r.product_name}) · ${r.registered}건 신규 등록, ${r.updated_existing}건 조회수 갱신`);
+      loadSNS();
+    } else {
+      toast(r.msg || '업로드에 실패했습니다', false);
+    }
+  } catch(err){
+    toast('업로드 중 오류가 발생했습니다', false);
+  }
+  e.target.value = '';
+}
 
 async function saveMemo(){
   const d={

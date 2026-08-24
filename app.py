@@ -349,6 +349,33 @@ def init_db():
                 conn.execute(f"ALTER TABLE sns_info ADD COLUMN {col} {typ}")
     except: pass
 
+    # 인스타그램 피드/릴스 인증 게시물 (매장이 자사 제품 업로드 시 담당자가 등록 → 가산점 부여)
+    conn.execute("""CREATE TABLE IF NOT EXISTS instagram_post (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        seller_name TEXT NOT NULL,
+        post_url TEXT NOT NULL,
+        post_type TEXT DEFAULT '피드',
+        brand TEXT DEFAULT '',
+        product_name TEXT DEFAULT '',
+        score INTEGER DEFAULT 5,
+        note TEXT DEFAULT '',
+        registered_by TEXT DEFAULT '',
+        posted_date TEXT DEFAULT '',
+        created_at TEXT DEFAULT '',
+        view_count INTEGER DEFAULT NULL,
+        view_count_raw TEXT DEFAULT '',
+        campaign_name TEXT DEFAULT '',
+        UNIQUE(seller_name, post_url)
+    )""")
+    try:
+        ip_cols = [r[1] for r in conn.execute("PRAGMA table_info(instagram_post)").fetchall()]
+        for col, typ in [('view_count','INTEGER DEFAULT NULL'), ('view_count_raw',"TEXT DEFAULT ''"),
+                          ('campaign_name',"TEXT DEFAULT ''")]:
+            if col not in ip_cols:
+                conn.execute(f"ALTER TABLE instagram_post ADD COLUMN {col} {typ}")
+    except Exception:
+        pass
+
     # 기본 계정 — 없으면 생성, 있으면 비밀번호 보장
     conn.execute("INSERT OR IGNORE INTO users(email,password,name,role) VALUES(?,?,?,?)",
         ("hwkim@enfix.com","hwkim123!","관리자","admin"))
@@ -6898,6 +6925,16 @@ def api_sns_search():
             total = d.get('total', 0)
             items = d.get('items', [])
 
+            # 수정: 인스타그램 게시물을 더 적극적으로 포착하기 위한 전용 검색 (webkr에 instagram.com 도메인 힌트 추가)
+            try:
+                insta_d = naver_endpoint('webkr', f'{clean} instagram.com', display=10, sort='sim')
+                for item in insta_d.get('items', []):
+                    if 'instagram.com' in item.get('link',''):
+                        item['_source'] = 'webkr'
+                        items.append(item)
+            except Exception:
+                pass
+
             # 최신 날짜
             dates = [parse_date(i.get('postdate','')) for i in items if i.get('postdate')]
             latest = dates[0] if dates else ''
@@ -6933,7 +6970,8 @@ def api_sns_search():
                         'date':   pdate,
                         'title':  title[:50],
                         'brands': found_brands,
-                        'link':   item.get('link','')
+                        'link':   item.get('link',''),
+                        'is_instagram': 'instagram.com' in item.get('link',''),
                     })
             promo_count  = len(promo_posts)
             promo_latest = promo_posts[0]['date'] if promo_posts else ''
@@ -7080,10 +7118,17 @@ def api_sns_list():
     sales_map = {r[0]: r[1] for r in conn.execute(
         f"SELECT real_seller, SUM(total) FROM sales_data "
         f"WHERE sale_date LIKE '{year}%' AND real_seller!='' GROUP BY real_seller").fetchall()}
+    # 수정: 인스타그램 인증 게시물 가산점 + 건수 매장별 집계
+    insta_map = {}
+    for r in conn.execute("SELECT seller_name, COUNT(*) cnt, SUM(score) bonus FROM instagram_post GROUP BY seller_name").fetchall():
+        insta_map[r[0]] = {'cnt': r[1], 'bonus': r[2] or 0}
     conn.close()
     result = []
     for s in sellers:
         info = sns_map.get(s, {})
+        insta = insta_map.get(s, {'cnt': 0, 'bonus': 0})
+        base_score = info.get('blog_score', info.get('sns_score', 0))
+        total_score = min(base_score + insta['bonus'], 100)
         result.append({
             'seller_name':           s,
             'blog_url':              info.get('blog_url',''),
@@ -7095,8 +7140,8 @@ def api_sns_list():
             'blog_has_product_post': info.get('blog_has_product_post', 0),
             'blog_recent_titles':    info.get('blog_recent_titles',''),
             'blog_keywords':         info.get('blog_keywords',''),
-            # blog_score: 새 컬럼 우선, 없으면 구 sns_score 사용
-            'blog_score':   info.get('blog_score', info.get('sns_score', 0)),
+            # blog_score: 기본 점수 (인스타 가산점 제외)
+            'blog_score':   base_score,
             'blog_grade':   info.get('blog_grade',''),
             'last_searched':info.get('last_searched', info.get('last_checked','')),
             'memo':         info.get('memo',''),
@@ -7104,9 +7149,273 @@ def api_sns_list():
             'blog_product_promo':  info.get('blog_product_promo',''),
             'blog_promo_count':    info.get('blog_promo_count', 0),
             'blog_promo_latest':   info.get('blog_promo_latest',''),
+            'instagram_post_count': insta['cnt'],
+            'instagram_bonus':      insta['bonus'],
+            'total_score':          total_score,
         })
     result.sort(key=lambda x: -x['year_sales'])
     return jsonify(result)
+
+
+# ── 인스타그램 피드/릴스 인증 & 가산점 API ────────────────────────
+OUR_BRAND_LIST = ['엔픽스','줄즈','레카로','원더폴드','카오스','ABC디자인','타프토이즈']
+
+@app.route("/api/sns/instagram/list")
+@login_required
+def api_instagram_list():
+    """등록된 인스타그램 인증 게시물 목록 (전체 또는 특정 매장)"""
+    seller = request.args.get('seller', '').strip()
+    conn = get_db()
+    if seller:
+        rows = [dict(r) for r in conn.execute(
+            "SELECT * FROM instagram_post WHERE seller_name=? ORDER BY posted_date DESC, id DESC",
+            (seller,)).fetchall()]
+    else:
+        rows = [dict(r) for r in conn.execute(
+            "SELECT * FROM instagram_post ORDER BY created_at DESC LIMIT 200").fetchall()]
+    conn.close()
+    return jsonify(rows)
+
+
+@app.route("/api/sns/instagram/add", methods=["POST"])
+@login_required
+def api_instagram_add():
+    """매장의 자사 제품 인스타 피드/릴스 인증 등록 → 자동 가산점 부여
+    점수 기준: 릴스(영상) 8점, 피드(사진) 5점 — 브랜드 태그가 명확히 확인된 경우 기본값, 필요시 수동 조정 가능"""
+    d = request.json or {}
+    seller = d.get('seller_name', '').strip()
+    post_url = d.get('post_url', '').strip()
+    post_type = d.get('post_type', '피드').strip()
+    brand = d.get('brand', '').strip()
+    product_name = d.get('product_name', '').strip()
+    posted_date = d.get('posted_date', '').strip()
+    note = d.get('note', '').strip()
+
+    if not seller or not post_url:
+        return jsonify({'ok': False, 'msg': '매장명과 게시물 링크는 필수입니다'}), 400
+    if 'instagram.com' not in post_url:
+        return jsonify({'ok': False, 'msg': '인스타그램 게시물 링크(instagram.com)만 등록 가능합니다'}), 400
+
+    score = d.get('score')
+    if score is None:
+        score = 8 if post_type == '릴스' else 5
+    score = int(score)
+
+    now = datetime.now().strftime('%Y-%m-%d %H:%M')
+    registered_by = session.get('user', {}).get('name', '')
+
+    conn = get_db()
+    try:
+        conn.execute("""INSERT INTO instagram_post
+            (seller_name, post_url, post_type, brand, product_name, score, note, registered_by, posted_date, created_at)
+            VALUES(?,?,?,?,?,?,?,?,?,?)""",
+            (seller, post_url, post_type, brand, product_name, score, note, registered_by,
+             posted_date or now[:10], now))
+        conn.commit()
+    except sqlite3.IntegrityError:
+        conn.close()
+        return jsonify({'ok': False, 'msg': '이미 등록된 게시물 링크입니다'}), 400
+    conn.close()
+    return jsonify({'ok': True, 'score': score})
+
+
+def _parse_view_count(raw):
+    """조회수 텍스트를 정수로 변환 — '144', '2.2만', '1.2천' 등 지원. 파싱 불가 시 (None, 원본텍스트) 반환"""
+    if raw is None:
+        return None, ''
+    if isinstance(raw, (int, float)):
+        return int(raw), str(raw)
+    s = str(raw).strip()
+    if not s:
+        return None, ''
+    import re as _re_vc
+    m = _re_vc.match(r'^([\d.]+)\s*(만|천)?$', s)
+    if m:
+        num = float(m.group(1))
+        unit = m.group(2)
+        if unit == '만': num *= 10000
+        elif unit == '천': num *= 1000
+        return int(num), s
+    # 순수 숫자(콤마 포함)
+    m2 = _re_vc.match(r'^[\d,]+$', s)
+    if m2:
+        try: return int(s.replace(',', '')), s
+        except: pass
+    # 파싱 불가한 텍스트(예: "릴스가 아닌 피드 업로드") — 노트로만 보존
+    return None, s
+
+
+@app.route("/api/sns/instagram/upload", methods=["POST"])
+@login_required
+def api_instagram_upload():
+    """SNS 협업 캠페인 엑셀 업로드 — 참여(O) 표시된 매장을 자동으로 인스타그램 인증 등록 + 가산점 부여
+    지원 형식: 업체구분/거래처코드/거래처명/실적용거래처명 + (참여/URL/조회수) 반복 컬럼 블록 (1차, 2차, ... 다회차 협업 지원)"""
+    import re as _re_up
+
+    if 'file' not in request.files:
+        return jsonify({'ok': False, 'msg': '파일이 없습니다'}), 400
+    f = request.files['file']
+    fname = f.filename or ''
+    data = f.read()
+
+    try:
+        wb = openpyxl.load_workbook(io.BytesIO(data), data_only=True)
+    except Exception as e:
+        return jsonify({'ok': False, 'msg': f'파일을 읽을 수 없습니다: {e}'}), 400
+
+    ws = wb[wb.sheetnames[0]]
+    raw_rows = list(ws.iter_rows(values_only=True))
+
+    # 캠페인명(타이틀) 탐색 — "※"로 시작하는 행
+    campaign_name = ''
+    for row in raw_rows[:6]:
+        for c in row:
+            if c and isinstance(c, str) and '※' in c:
+                campaign_name = c.replace('※', '').strip()
+                break
+        if campaign_name: break
+    if not campaign_name:
+        campaign_name = fname.rsplit('.', 1)[0]
+
+    # 브랜드 추정: 시트명 우선 (예: "2026_레카로" → "레카로"), 실패 시 파일명에서 추정
+    sheet_name = ws.title
+    brand_guess = ''
+    for b in ['줄즈','레카로','ABC디자인','원더폴드','카오스','엔픽스','타프토이즈']:
+        if b in sheet_name or b in campaign_name or b in fname:
+            brand_guess = b; break
+
+    # 제품명 추정: 파일명 첫 토큰 (예: "토론_레드닷_..." → "토론")
+    product_guess = ''
+    fname_tokens = _re_up.split(r'[_\-]', fname.rsplit('.', 1)[0])
+    if fname_tokens and fname_tokens[0] and fname_tokens[0] not in ('xlsx',):
+        product_guess = fname_tokens[0]
+
+    # 헤더 행(실적용거래처명 포함) 탐색
+    header_row_idx = None
+    for i, row in enumerate(raw_rows[:15]):
+        vals = [str(c).strip() for c in row if c is not None]
+        if any('실적용거래처명' in v for v in vals):
+            header_row_idx = i; break
+    if header_row_idx is None:
+        return jsonify({'ok': False, 'msg': '"실적용거래처명" 헤더를 찾을 수 없습니다. 파일 형식을 확인해주세요'}), 400
+
+    header = list(raw_rows[header_row_idx])
+    subheader = list(raw_rows[header_row_idx+1]) if header_row_idx+1 < len(raw_rows) else []
+    max_col = len(header)
+
+    def hv(row, ci): return str(row[ci]).strip() if ci < len(row) and row[ci] is not None else ''
+
+    # 매장명 컬럼(실적용거래처명) 위치
+    seller_col = next((ci for ci in range(max_col) if '실적용거래처명' in hv(header, ci)), None)
+    if seller_col is None:
+        return jsonify({'ok': False, 'msg': '매장명 컬럼을 찾을 수 없습니다'}), 400
+
+    # 참여/URL/조회수 컬럼 그룹(회차) 자동 탐지
+    rounds = []
+    consumed = set()
+    for ci in range(seller_col+1, max_col):
+        if ci in consumed: continue
+        if hv(subheader, ci) == '참여':
+            participate_col = ci
+            url_col = ci+1
+            view_col = None
+            for vc in range(ci+1, min(ci+4, max_col)):
+                if hv(header, vc) == '조회수':
+                    view_col = vc; break
+            rounds.append({'label': hv(header, ci) or f'{len(rounds)+1}차',
+                            'participate_col': participate_col, 'url_col': url_col, 'view_col': view_col})
+            consumed.update([participate_col, url_col])
+            if view_col: consumed.add(view_col)
+        elif hv(header, ci) == '조회수' and ci not in consumed:
+            url_col = ci-1
+            if url_col not in consumed and url_col > seller_col:
+                rounds.append({'label': hv(header, url_col) or f'{len(rounds)+1}차',
+                                'participate_col': None, 'url_col': url_col, 'view_col': ci})
+                consumed.update([url_col, ci])
+
+    if not rounds:
+        return jsonify({'ok': False, 'msg': '참여/URL 컬럼 구조를 인식하지 못했습니다'}), 400
+
+    conn = get_db()
+    now = datetime.now().strftime('%Y-%m-%d %H:%M')
+    registered_by = session.get('user', {}).get('name', '') + ' (엑셀 업로드)'
+
+    total_rows = 0
+    matched = 0
+    registered = 0
+    skipped_dup = 0
+    unmatched_stores = []
+
+    data_start = header_row_idx + 2
+    for row in raw_rows[data_start:]:
+        if seller_col >= len(row): continue
+        seller_raw = row[seller_col]
+        if not seller_raw: continue
+        total_rows += 1
+
+        # 실적용거래처명 정규화 (언더바 → 공백, 별칭 매핑 재적용)
+        seller_norm = str(seller_raw).replace('_', ' ').strip()
+        seller_norm = SELLER_ALIAS.get(seller_norm, seller_norm)
+        seller_norm = resolve_seller(seller_norm)
+        matched += 1
+
+        for rnd in rounds:
+            pcol, ucol, vcol = rnd['participate_col'], rnd['url_col'], rnd['view_col']
+            url_val = row[ucol] if ucol < len(row) else None
+            if not url_val: continue
+            # 참여 컬럼이 있으면 O 표시 확인, 없으면 URL 존재 자체를 참여로 간주
+            if pcol is not None:
+                p_val = str(row[pcol]).strip() if pcol < len(row) and row[pcol] is not None else ''
+                if p_val.upper() != 'O': continue
+
+            url_str = str(url_val).strip()
+            if 'instagram.com' not in url_str: continue
+
+            view_raw = row[vcol] if vcol is not None and vcol < len(row) else None
+            view_count, view_raw_text = _parse_view_count(view_raw)
+
+            post_type = '릴스' if '/reel/' in url_str else '피드'
+            note = ''
+            if view_raw_text and view_count is None:
+                note = view_raw_text
+                if '피드' in view_raw_text: post_type = '피드'
+                elif '릴스' in view_raw_text: post_type = '릴스'
+
+            score = 8 if post_type == '릴스' else 5
+
+            try:
+                conn.execute("""INSERT INTO instagram_post
+                    (seller_name, post_url, post_type, brand, product_name, score, note,
+                     registered_by, posted_date, created_at, view_count, view_count_raw, campaign_name)
+                    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    (seller_norm, url_str, post_type, brand_guess, product_guess, score,
+                     f"{rnd['label']} 협업" + (f' — {note}' if note else ''),
+                     registered_by, now[:10], now, view_count, view_raw_text, campaign_name))
+                conn.commit()
+                registered += 1
+            except sqlite3.IntegrityError:
+                # 이미 등록된 링크 — 조회수만 최신화
+                conn.execute("""UPDATE instagram_post SET view_count=?, view_count_raw=?
+                    WHERE seller_name=? AND post_url=?""",
+                    (view_count, view_raw_text, seller_norm, url_str))
+                conn.commit()
+                skipped_dup += 1
+
+    conn.close()
+    return jsonify({
+        'ok': True, 'campaign_name': campaign_name, 'brand': brand_guess, 'product_name': product_guess,
+        'rounds_detected': [r['label'] for r in rounds],
+        'total_rows': total_rows, 'registered': registered, 'updated_existing': skipped_dup,
+    })
+
+
+@app.route("/api/sns/instagram/<int:pid>", methods=["DELETE"])
+@login_required
+def api_instagram_delete(pid):
+    conn = get_db()
+    conn.execute("DELETE FROM instagram_post WHERE id=?", (pid,))
+    conn.commit(); conn.close()
+    return jsonify({'ok': True})
 
 
 @app.route("/api/sns/save-memo", methods=["POST"])
