@@ -84,6 +84,7 @@ def init_db():
         real_seller TEXT,
         upload_batch TEXT,
         note TEXT DEFAULT '',
+        trade_code TEXT DEFAULT '',
         created_at TEXT DEFAULT CURRENT_TIMESTAMP)""")
     conn.execute("""CREATE TABLE IF NOT EXISTS sellers (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -102,6 +103,8 @@ def init_db():
             conn.execute("ALTER TABLE sales_data ADD COLUMN upload_batch TEXT DEFAULT ''")
         if 'channel' not in existing_cols:
             conn.execute("ALTER TABLE sales_data ADD COLUMN channel TEXT DEFAULT '오프라인'")
+        if 'trade_code' not in existing_cols:
+            conn.execute("ALTER TABLE sales_data ADD COLUMN trade_code TEXT DEFAULT ''")
         # branches 테이블 마이그레이션
         branch_cols = [r[1] for r in conn.execute("PRAGMA table_info(branches)").fetchall()]
         for col in ['ceo','ceo_phone','store_manager','store_manager_phone','branch_code']:
@@ -4219,6 +4222,7 @@ def parse_xlsx_sales(file_bytes):
                 'real_seller':  real_seller,
                 'note':         note,
                 'channel':      channel,
+                'trade_code':   row_vals.get('AC', '').strip(),  # 거래처코드 (수정4)
             })
     return results
 
@@ -4305,12 +4309,12 @@ def upload_xlsx_commit():
     for r in rows:
         conn.execute("""INSERT INTO sales_data
             (sale_date,seller_name,item_code,item_name,item_group,quantity,
-             unit_price,supply_price,vat,total,buyer,buyer_phone,real_seller,upload_batch,note,channel)
-            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+             unit_price,supply_price,vat,total,buyer,buyer_phone,real_seller,upload_batch,note,channel,trade_code)
+            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (r['sale_date'], r['seller_name'], r['item_code'], r['item_name'],
              r['item_group'], r['quantity'], r['unit_price'], r['supply_price'],
              r['vat'], r['total'], r['buyer'], r['buyer_phone'],
-             r['real_seller'], batch, r.get('note', ''), r.get('channel', '오프라인')))
+             r['real_seller'], batch, r.get('note', ''), r.get('channel', '오프라인'), r.get('trade_code', '')))
 
     conn.commit(); conn.close()
     return jsonify({"ok": True, "rows": len(rows), "months": months, "batch": batch})
@@ -8809,6 +8813,16 @@ def api_export_display():
         code_rows = []
     seller_to_code = {r['real_seller']: r for r in code_rows if r.get('real_seller')}
 
+    # 수정4: sales_data에 실제로 캡처된 거래처코드(엑셀 원본 AC열)를 우선 사용
+    real_code_map = {}
+    for r in conn.execute("""
+        SELECT real_seller, trade_code, COUNT(*) cnt FROM sales_data
+        WHERE real_seller!='' AND trade_code!=''
+        GROUP BY real_seller, trade_code ORDER BY cnt DESC""").fetchall():
+        if r[0] not in real_code_map:
+            real_code_map[r[0]] = r[1]
+    has_real_codes = len(real_code_map) > 0
+
     GROUP_ORDER_LIST = ['베이비파크','베이비하우스','링크맘','기타']
     def seller_group(seller):
         info = seller_to_code.get(seller, {})
@@ -8831,6 +8845,9 @@ def api_export_display():
         '드림오피스 청주점', '베이비플러스 남양주점', '베이비플러스 부천점', '베이비플러스 부평점',
         '베하위례점', '베하하남미사점', '육아대장 평촌점', '주식회사 더케이앤피', '주식회사 동화',
         '한토이 경기광주점', '베네피아 구로점', '베네피아 안양점',
+        # 수정2(신규): 중복/오류 매장 추가 제외
+        '남양주베이비하우스', '베이비하우스 부산동래', '베이비하우스 안양',
+        '베이비하우스 전라광주', '베이비하우스 천안',
     }
     all_sellers = [s for s in all_sellers if s not in EXPORT_EXCLUDE_STORES]
 
@@ -8965,81 +8982,106 @@ def api_export_display():
         months = sorted(months_with_data) if months_with_data else list(range(1, 13))
         n_prod = len(product_lines)
         col_start = 2
+        # 수정4: 실제 거래처코드가 있으면 컬럼 유지, 전혀 없으면 컬럼 자체를 제거
+        fixed_hdrs = ['업체구분', '거래처코드', '거래처명', '실적용거래처명'] if has_real_codes else ['업체구분', '거래처명', '실적용거래처명']
+        n_fixed = len(fixed_hdrs)
         month_block_width = n_prod + 1
 
         offline_sellers = [s for s in all_sellers if seller_channel.get(s, '오프라인') != '백화점']
         dept_sellers    = [s for s in all_sellers if seller_channel.get(s, '오프라인') == '백화점']
 
+        HDR_BG = mf('F2F2F2')  # 수정1: 흰색, 배경1, 5% 더 어둡게
+        BLACK  = '000000'      # 수정1: 검정, 텍스트1
+        dotted = Side(style='dotted', color='808080')
+
         def _build_matrix_sheet(ws, sheet_title_text, sellers, value_map, number_format):
             ws.column_dimensions['A'].width = 2
-            total_cols = 4 + len(months) * month_block_width
-            ws.merge_cells(f"B2:{get_column_letter(min(4+month_block_width, total_cols+1))}2")
+            total_cols = n_fixed + len(months) * month_block_width
+            ws.merge_cells(f"B2:{get_column_letter(min(2+n_fixed+month_block_width-1, total_cols+1))}2")
             c = ws.cell(row=2, column=2, value=sheet_title_text)
-            c.font = Font(bold=True, size=12, name=FNAME, color='1F2937'); c.alignment = left_a
+            c.font = Font(bold=True, size=12, name=FNAME, color=BLACK); c.alignment = left_a
             ws.row_dimensions[2].height = 22
 
-            fixed_hdrs = ['업체구분', '거래처코드', '거래처명', '실적용거래처명']
             for ci, h in enumerate(fixed_hdrs, col_start):
                 c = ws.cell(row=3, column=ci, value=h)
-                c.font = Font(bold=True, size=9, name=FNAME, color='374151'); c.fill = mf('F3F4F6'); c.border = bdr; c.alignment = ctr
+                c.font = Font(bold=True, size=9, name=FNAME, color=BLACK); c.fill = HDR_BG; c.alignment = ctr
                 ws.merge_cells(start_row=3, start_column=ci, end_row=4, end_column=ci)
 
-            col = col_start + 4
+            col = col_start + n_fixed
             for mo in months:
                 end_col = col + n_prod
                 ws.merge_cells(f"{get_column_letter(col)}3:{get_column_letter(end_col)}3")
                 c = ws.cell(row=3, column=col, value=f"{mo}월")
-                c.font = Font(bold=True, size=10, name=FNAME, color='374151'); c.fill = mf('F3F4F6'); c.alignment = ctr; c.border = bdr
+                c.font = Font(bold=True, size=10, name=FNAME, color=BLACK); c.fill = HDR_BG; c.alignment = ctr
                 for pi, plabel in enumerate(product_labels):
                     c2 = ws.cell(row=4, column=col+pi, value=plabel)
-                    c2.font = Font(size=9, name=FNAME, color='6B7280'); c2.fill = mf('F9FAFB'); c2.alignment = ctr; c2.border = bdr
+                    c2.font = Font(size=9, name=FNAME, color=BLACK); c2.fill = HDR_BG; c2.alignment = ctr
                 c3 = ws.cell(row=4, column=end_col, value='합계')
-                c3.font = Font(bold=True, size=9, name=FNAME, color='374151'); c3.fill = mf('F3F4F6'); c3.alignment = ctr
-                c3.border = bdr_month_end  # 수정6: 월 경계 점선
+                c3.font = Font(bold=True, size=9, name=FNAME, color=BLACK); c3.fill = HDR_BG; c3.alignment = ctr
                 col += month_block_width
             ws.row_dimensions[3].height = 20; ws.row_dimensions[4].height = 18
 
             ri = 5; prev_grp = None
+            first_data_row = 5
             for seller in sellers:
                 grp = seller_group(seller)
                 info = seller_to_code.get(seller, {})
-                code = info.get('code', '')
+                # 수정4: 실제 캡처된 거래처코드 우선, 없으면 매핑 테이블 값
+                code = real_code_map.get(seller, '') or info.get('code', '')
                 orig = info.get('orig_name', seller)
                 gv = grp if grp != prev_grp else ''
                 prev_grp = grp
-                for ci, v in zip(range(col_start, col_start+4), [gv, code, orig, seller]):
+                fixed_vals = [gv, code, orig, seller] if has_real_codes else [gv, orig, seller]
+                for ci, v in zip(range(col_start, col_start+n_fixed), fixed_vals):
                     c = ws.cell(row=ri, column=ci, value=v or None)
-                    c.font = Font(size=9, name=FNAME, bold=(ci==col_start)); c.border = bdr
+                    c.font = Font(size=9, name=FNAME, color=BLACK, bold=(ci==col_start))
                     c.alignment = ctr if ci in (col_start, col_start+1) else left_a
 
-                col = col_start + 4
+                col = col_start + n_fixed
                 for mo in months:
                     mo_total = 0
                     for pi, pk in enumerate(product_lines):
                         val = value_map.get((seller, mo, pk), 0)
                         c = ws.cell(row=ri, column=col+pi, value=val if val else 0)
-                        c.font = Font(size=9, name=FNAME); c.alignment = ctr; c.border = bdr
+                        c.font = Font(size=9, name=FNAME, color=BLACK); c.alignment = ctr
                         if number_format: c.number_format = number_format
                         mo_total += val
                     cs = ws.cell(row=ri, column=col+n_prod, value=mo_total if mo_total else 0)
-                    cs.font = Font(bold=True, size=9, name=FNAME); cs.alignment = ctr
-                    cs.border = bdr_month_end  # 수정6: 월 경계 점선
+                    cs.font = Font(bold=True, size=9, name=FNAME, color=BLACK); cs.alignment = ctr
                     if number_format: cs.number_format = number_format
                     col += month_block_width
                 ws.row_dimensions[ri].height = 15
                 ri += 1
+            last_data_row = ri - 1
 
+            # 수정1: 데이터 테두리 — 안쪽만 점선 (외곽선 없음)
+            last_col = col_start + n_fixed + len(months)*month_block_width - 1
+            for r_ in range(3, last_data_row+1):
+                for c_ in range(col_start, last_col+1):
+                    cell = ws.cell(row=r_, column=c_)
+                    left_side  = dotted if c_ > col_start else None
+                    right_side = dotted if c_ < last_col else None
+                    top_side   = dotted if r_ > 3 else None
+                    bottom_side= dotted if r_ < last_data_row else None
+                    cell.border = Border(left=left_side, right=right_side, top=top_side, bottom=bottom_side)
+
+            # 수정3: 숫자 컬럼(제품라인+합계) 너비 통일 — 콤마 포함 숫자가 '###'로 안 보이도록 충분히 확보
+            num_col_width = 11 if number_format else 8
             ws.column_dimensions['B'].width = 12
-            ws.column_dimensions['C'].width = 14
-            ws.column_dimensions['D'].width = 22
-            ws.column_dimensions['E'].width = 24
-            col = col_start + 4
+            if has_real_codes:
+                ws.column_dimensions['C'].width = 14
+                ws.column_dimensions['D'].width = 22
+                ws.column_dimensions['E'].width = 24
+            else:
+                ws.column_dimensions['C'].width = 22
+                ws.column_dimensions['D'].width = 24
+            col = col_start + n_fixed
             for mo in months:
                 for pi in range(n_prod):
-                    ws.column_dimensions[get_column_letter(col+pi)].width = 8
-                ws.column_dimensions[get_column_letter(col+n_prod)].width = 9
+                    ws.column_dimensions[get_column_letter(col+pi)].width = num_col_width
+                ws.column_dimensions[get_column_letter(col+n_prod)].width = num_col_width
                 col += month_block_width
-            ws.freeze_panes = 'F5'
+            ws.freeze_panes = get_column_letter(col_start+n_fixed) + '5'
 
         wb = openpyxl.Workbook()
         wb.remove(wb.active)
