@@ -8826,6 +8826,37 @@ def api_export_display():
     all_sellers = sorted(all_sellers_raw, key=lambda s: (
         GROUP_ORDER_LIST.index(seller_group(s)) if seller_group(s) in GROUP_ORDER_LIST else 99, s))
 
+    # 수정2: 제품별관리 엑셀에서 생략해야 할 매장 목록 (더 이상 거래 없는 폐업/오류 매장 등)
+    EXPORT_EXCLUDE_STORES = {
+        '드림오피스 청주점', '베이비플러스 남양주점', '베이비플러스 부천점', '베이비플러스 부평점',
+        '베하위례점', '베하하남미사점', '육아대장 평촌점', '주식회사 더케이앤피', '주식회사 동화',
+        '한토이 경기광주점', '베네피아 구로점', '베네피아 안양점',
+    }
+    all_sellers = [s for s in all_sellers if s not in EXPORT_EXCLUDE_STORES]
+
+    # 수정3: "OO" / "OO점" 중복 매장 자동 통합 — "점"이 붙은 쪽(실거래 매장 표기)으로 병합
+    def _merge_duplicate_stores(sellers):
+        """매장명이 'X'와 'X점'처럼 접미사만 다른 경우, '점'이 붙은 쪽을 대표로 채택하고
+        나머지는 그 매장으로 흡수되도록 매핑 테이블 반환: {원본매장명: 대표매장명}"""
+        by_base = {}
+        for s in sellers:
+            base = s[:-1].strip() if s.endswith('점') else s.strip()
+            by_base.setdefault(base, []).append(s)
+        merge_map = {}
+        for base, variants in by_base.items():
+            if len(variants) < 2:
+                continue
+            with_jeom = [v for v in variants if v.endswith('점')]
+            canonical = with_jeom[0] if with_jeom else variants[0]
+            for v in variants:
+                if v != canonical:
+                    merge_map[v] = canonical
+        return merge_map
+
+    seller_merge_map = _merge_duplicate_stores(all_sellers)
+    if seller_merge_map:
+        all_sellers = [s for s in all_sellers if s not in seller_merge_map]
+
     # ── 브랜드에 맞는 탭(모델) 목록 동적 생성 ────────
     if not brand_sel:
         return jsonify({'ok': False, 'msg': '브랜드를 선택하세요'}), 400
@@ -8847,16 +8878,13 @@ def api_export_display():
         norm  = normalize_item_name(r[1])
         color = re.sub(r'.*?_', '', r[1], count=1) if '_' in r[1] else '기본'
         color = re.sub(r'\s*\([^)]*\)', '', color).strip()
-        # 레카로 토론1: 캐노피형 분리
-        if '캐노피' in r[1]:
-            norm_key = norm + '_캐노피형'
-        else:
-            norm_key = norm
+        # 수정5: 캐노피형을 별도 라인으로 분리하지 않고 기본 모델(예: 토론1)로 통합
+        norm_key = norm
         if norm_key not in brand_items:
             brand_items[norm_key] = {
                 'label': norm_key.replace('[' + brand_sel + ']','').strip(),
                 'norm': norm,
-                'is_canopy': '캐노피형' in norm_key,
+                'is_canopy': False,
                 'colors': [],
                 'color_set': set(),
                 'group': r[0],
@@ -8875,17 +8903,16 @@ def api_export_display():
     # 수정1: mode='sales' — 단일 시트, 월별×제품라인 매트릭스 (색상 구분 없이 총 수량)
     # ══════════════════════════════════════════════════════
     if mode == 'sales':
-        wb = openpyxl.Workbook()
-        ws = wb.active; ws.title = f'판매수량_{brand_sel}'[:31]
-
         FNAME = '맑은 고딕'
         def mf(h): return PatternFill("solid", fgColor=h)
-        thin = Side(style='thin', color='D9D9D9')
-        bdr  = Border(left=thin, right=thin, top=thin, bottom=thin)
-        ctr  = Alignment(horizontal='center', vertical='center', wrap_text=True)
+        thin   = Side(style='thin', color='D9D9D9')
+        dashed = Side(style='dashed', color='9CA3AF')  # 수정6: 월 구분용 점선
+        bdr       = Border(left=thin, right=thin, top=thin, bottom=thin)
+        bdr_month_end = Border(left=thin, right=dashed, top=thin, bottom=thin)  # 월 마지막(합계) 컬럼
+        ctr    = Alignment(horizontal='center', vertical='center', wrap_text=True)
         left_a = Alignment(horizontal='left', vertical='center', wrap_text=True)
 
-        # 제품라인 목록 (brand_items의 모델명 기준, 색상 무관)
+        # 제품라인 목록 (brand_items의 모델명 기준, 색상/캐노피 무관 통합 — 수정5)
         product_lines = sorted(brand_items.keys(), key=lambda k: brand_items[k]['label'])
         product_labels = [brand_items[k]['label'] for k in product_lines]
 
@@ -8895,121 +8922,144 @@ def api_export_display():
             return m.group(2).strip() if m else nm.strip()
 
         def match_product_line(item_name):
-            """item_name(색상 포함)을 제품라인 중 하나로 매칭"""
-            has_canopy = '캐노피' in item_name
+            """item_name(색상·캐노피 포함)을 제품라인 중 하나로 매칭 — 캐노피형도 기본 모델에 통합"""
             for pk in product_lines:
-                info = brand_items[pk]
-                base = extract_base2(info['norm'])
+                base = extract_base2(brand_items[pk]['norm'])
                 if base in item_name:
-                    if info['is_canopy'] and not has_canopy: continue
-                    if not info['is_canopy'] and has_canopy and any(
-                            brand_items[k2]['is_canopy'] and extract_base2(brand_items[k2]['norm'])==base
-                            for k2 in product_lines):
-                        continue
                     return pk
             return None
 
-        # 월별×매장별×제품라인 데이터 조회
+        # 월별×매장별×제품라인 데이터 조회 (수량 + 금액 함께)
         rows_monthly = conn.execute("""
-            SELECT real_seller, item_name, CAST(strftime('%m',sale_date) AS INTEGER) mo, SUM(quantity) qty
+            SELECT real_seller, item_name, CAST(strftime('%m',sale_date) AS INTEGER) mo,
+                   SUM(quantity) qty, SUM(total) amt
             FROM sales_data
             WHERE sale_date LIKE ? AND real_seller!=''
             GROUP BY real_seller, item_name, mo
         """, (f"{year}%",)).fetchall()
 
-        # data_map[(seller, month, product_line)] = qty
-        data_map = {}
+        # 매장별 채널(오프라인/백화점) 조회 — 수정4
+        seller_channel = {}
+        for r in conn.execute("""
+            SELECT real_seller, (SELECT channel FROM sales_data sd2 WHERE sd2.real_seller=sd1.real_seller
+                   GROUP BY channel ORDER BY COUNT(*) DESC LIMIT 1) ch
+            FROM sales_data sd1 WHERE real_seller!='' GROUP BY real_seller""").fetchall():
+            seller_channel[r[0]] = r[1] or '오프라인'
+
+        # qty_map[(seller, month, product_line)] = qty,  amt_map: 금액
+        qty_map, amt_map = {}, {}
         months_with_data = set()
-        for seller, item_name, mo, qty in rows_monthly:
+        for seller, item_name, mo, qty, amt in rows_monthly:
             brand_of_item = remap_group('', item_name) if not item_name.startswith('[') else remap_group('X', item_name)
             if brand_of_item != brand_sel: continue
             pk = match_product_line(item_name)
             if not pk: continue
-            key = (seller, mo, pk)
-            data_map[key] = data_map.get(key, 0) + (qty or 0)
+            # 수정3: 중복 매장(점 유무) 통합 — 병합 대상이면 대표 매장명으로 흡수
+            seller_canon = seller_merge_map.get(seller, seller)
+            if seller_canon in EXPORT_EXCLUDE_STORES: continue
+            key = (seller_canon, mo, pk)
+            qty_map[key] = qty_map.get(key, 0) + (qty or 0)
+            amt_map[key] = amt_map.get(key, 0) + (amt or 0)
             months_with_data.add(mo)
 
         months = sorted(months_with_data) if months_with_data else list(range(1, 13))
         n_prod = len(product_lines)
-        col_start = 2  # A열 여백, B열부터 시작 (업체구분/거래처코드/거래처명/실적용거래처명)
-        month_block_width = n_prod + 1  # 제품라인들 + 합계
+        col_start = 2
+        month_block_width = n_prod + 1
 
-        ws.column_dimensions['A'].width = 2
+        offline_sellers = [s for s in all_sellers if seller_channel.get(s, '오프라인') != '백화점']
+        dept_sellers    = [s for s in all_sellers if seller_channel.get(s, '오프라인') == '백화점']
 
-        total_cols = 4 + len(months) * month_block_width
-        # 행2: 타이틀
-        ws.merge_cells(f"B2:{get_column_letter(min(4+month_block_width, total_cols+1))}2")
-        c = ws.cell(row=2, column=2, value=f"※ 오프라인 판매수량_{brand_sel}_{year}")
-        c.font = Font(bold=True, size=12, name=FNAME, color='1F2937'); c.alignment = left_a
-        ws.row_dimensions[2].height = 22
+        def _build_matrix_sheet(ws, sheet_title_text, sellers, value_map, number_format):
+            ws.column_dimensions['A'].width = 2
+            total_cols = 4 + len(months) * month_block_width
+            ws.merge_cells(f"B2:{get_column_letter(min(4+month_block_width, total_cols+1))}2")
+            c = ws.cell(row=2, column=2, value=sheet_title_text)
+            c.font = Font(bold=True, size=12, name=FNAME, color='1F2937'); c.alignment = left_a
+            ws.row_dimensions[2].height = 22
 
-        # 행3~4: 고정 헤더 (업체구분/거래처코드/거래처명/실적용거래처명) 세로 병합
-        fixed_hdrs = ['업체구분', '거래처코드', '거래처명', '실적용거래처명']
-        for ci, h in enumerate(fixed_hdrs, col_start):
-            c = ws.cell(row=3, column=ci, value=h)
-            c.font = Font(bold=True, size=9, name=FNAME, color='374151'); c.fill = mf('F3F4F6'); c.border = bdr; c.alignment = ctr
-            ws.merge_cells(start_row=3, start_column=ci, end_row=4, end_column=ci)
-
-        col = col_start + 4
-        for mo in months:
-            end_col = col + n_prod  # 제품라인들 + 합계
-            ws.merge_cells(f"{get_column_letter(col)}3:{get_column_letter(end_col)}3")
-            c = ws.cell(row=3, column=col, value=f"{mo}월")
-            c.font = Font(bold=True, size=10, name=FNAME, color='374151'); c.fill = mf('F3F4F6'); c.alignment = ctr; c.border = bdr
-            for pi, plabel in enumerate(product_labels):
-                c2 = ws.cell(row=4, column=col+pi, value=plabel)
-                c2.font = Font(size=9, name=FNAME, color='6B7280'); c2.fill = mf('F9FAFB'); c2.alignment = ctr; c2.border = bdr
-            c3 = ws.cell(row=4, column=end_col, value='합계')
-            c3.font = Font(bold=True, size=9, name=FNAME, color='374151'); c3.fill = mf('F3F4F6'); c3.alignment = ctr; c3.border = bdr
-            col += month_block_width
-        ws.row_dimensions[3].height = 20; ws.row_dimensions[4].height = 18
-
-        # 데이터 행
-        ri = 5; prev_grp = None
-        for seller in all_sellers:
-            grp = seller_group(seller)
-            info = seller_to_code.get(seller, {})
-            code = info.get('code', '')
-            orig = info.get('orig_name', seller)
-
-            gv = grp if grp != prev_grp else ''
-            prev_grp = grp
-            for ci, v in zip(range(col_start, col_start+4), [gv, code, orig, seller]):
-                c = ws.cell(row=ri, column=ci, value=v or None)
-                c.font = Font(size=9, name=FNAME, bold=(ci==col_start)); c.border = bdr
-                c.alignment = ctr if ci in (col_start, col_start+1) else left_a
+            fixed_hdrs = ['업체구분', '거래처코드', '거래처명', '실적용거래처명']
+            for ci, h in enumerate(fixed_hdrs, col_start):
+                c = ws.cell(row=3, column=ci, value=h)
+                c.font = Font(bold=True, size=9, name=FNAME, color='374151'); c.fill = mf('F3F4F6'); c.border = bdr; c.alignment = ctr
+                ws.merge_cells(start_row=3, start_column=ci, end_row=4, end_column=ci)
 
             col = col_start + 4
             for mo in months:
-                mo_total = 0
-                for pi, pk in enumerate(product_lines):
-                    qty = data_map.get((seller, mo, pk), 0)
-                    c = ws.cell(row=ri, column=col+pi, value=qty if qty else 0)
-                    c.font = Font(size=9, name=FNAME); c.alignment = ctr; c.border = bdr
-                    mo_total += qty
-                cs = ws.cell(row=ri, column=col+n_prod, value=mo_total if mo_total else 0)
-                cs.font = Font(bold=True, size=9, name=FNAME); cs.alignment = ctr; cs.border = bdr
+                end_col = col + n_prod
+                ws.merge_cells(f"{get_column_letter(col)}3:{get_column_letter(end_col)}3")
+                c = ws.cell(row=3, column=col, value=f"{mo}월")
+                c.font = Font(bold=True, size=10, name=FNAME, color='374151'); c.fill = mf('F3F4F6'); c.alignment = ctr; c.border = bdr
+                for pi, plabel in enumerate(product_labels):
+                    c2 = ws.cell(row=4, column=col+pi, value=plabel)
+                    c2.font = Font(size=9, name=FNAME, color='6B7280'); c2.fill = mf('F9FAFB'); c2.alignment = ctr; c2.border = bdr
+                c3 = ws.cell(row=4, column=end_col, value='합계')
+                c3.font = Font(bold=True, size=9, name=FNAME, color='374151'); c3.fill = mf('F3F4F6'); c3.alignment = ctr
+                c3.border = bdr_month_end  # 수정6: 월 경계 점선
                 col += month_block_width
-            ws.row_dimensions[ri].height = 15
-            ri += 1
+            ws.row_dimensions[3].height = 20; ws.row_dimensions[4].height = 18
 
-        # 컬럼 너비
-        ws.column_dimensions['B'].width = 12
-        ws.column_dimensions['C'].width = 14
-        ws.column_dimensions['D'].width = 22
-        ws.column_dimensions['E'].width = 24
-        col = col_start + 4
-        for mo in months:
-            for pi in range(n_prod):
-                ws.column_dimensions[get_column_letter(col+pi)].width = 8
-            ws.column_dimensions[get_column_letter(col+n_prod)].width = 8
-            col += month_block_width
+            ri = 5; prev_grp = None
+            for seller in sellers:
+                grp = seller_group(seller)
+                info = seller_to_code.get(seller, {})
+                code = info.get('code', '')
+                orig = info.get('orig_name', seller)
+                gv = grp if grp != prev_grp else ''
+                prev_grp = grp
+                for ci, v in zip(range(col_start, col_start+4), [gv, code, orig, seller]):
+                    c = ws.cell(row=ri, column=ci, value=v or None)
+                    c.font = Font(size=9, name=FNAME, bold=(ci==col_start)); c.border = bdr
+                    c.alignment = ctr if ci in (col_start, col_start+1) else left_a
 
-        ws.freeze_panes = 'F5'
+                col = col_start + 4
+                for mo in months:
+                    mo_total = 0
+                    for pi, pk in enumerate(product_lines):
+                        val = value_map.get((seller, mo, pk), 0)
+                        c = ws.cell(row=ri, column=col+pi, value=val if val else 0)
+                        c.font = Font(size=9, name=FNAME); c.alignment = ctr; c.border = bdr
+                        if number_format: c.number_format = number_format
+                        mo_total += val
+                    cs = ws.cell(row=ri, column=col+n_prod, value=mo_total if mo_total else 0)
+                    cs.font = Font(bold=True, size=9, name=FNAME); cs.alignment = ctr
+                    cs.border = bdr_month_end  # 수정6: 월 경계 점선
+                    if number_format: cs.number_format = number_format
+                    col += month_block_width
+                ws.row_dimensions[ri].height = 15
+                ri += 1
+
+            ws.column_dimensions['B'].width = 12
+            ws.column_dimensions['C'].width = 14
+            ws.column_dimensions['D'].width = 22
+            ws.column_dimensions['E'].width = 24
+            col = col_start + 4
+            for mo in months:
+                for pi in range(n_prod):
+                    ws.column_dimensions[get_column_letter(col+pi)].width = 8
+                ws.column_dimensions[get_column_letter(col+n_prod)].width = 9
+                col += month_block_width
+            ws.freeze_panes = 'F5'
+
+        wb = openpyxl.Workbook()
+        wb.remove(wb.active)
+
+        # 시트1: 판매수량 (오프라인)
+        ws_qty = wb.create_sheet(f'판매수량_{brand_sel}'[:31])
+        _build_matrix_sheet(ws_qty, f"※ 오프라인 판매수량_{brand_sel}_{year}", offline_sellers, qty_map, None)
+
+        # 시트2: 판매금액 (오프라인) — 수정1
+        ws_amt = wb.create_sheet(f'판매금액_{brand_sel}'[:31])
+        _build_matrix_sheet(ws_amt, f"※ 오프라인 판매금액_{brand_sel}_{year}", offline_sellers, amt_map, '#,##0')
+
+        # 시트3: 백화점 (수정4) — 가이아/서양네트웍스 등 백화점 채널 매장만 별도 시트로 분리
+        if dept_sellers:
+            ws_dept = wb.create_sheet('백화점'[:31])
+            _build_matrix_sheet(ws_dept, f"※ 백화점 판매수량_{brand_sel}_{year}", dept_sellers, qty_map, None)
 
         conn.close()
         buf = io.BytesIO(); wb.save(buf); buf.seek(0)
-        fname = f"판매수량_{brand_sel}_{year}.xlsx"
+        fname = f"판매현황_{brand_sel}_{year}.xlsx"
         return send_file(buf, mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
             as_attachment=True, download_name=fname)
 
@@ -9041,7 +9091,7 @@ def api_export_display():
         colors     = tab_info['colors']
         ws = wb.create_sheet(title=tab_label)
 
-        # 데이터 조회 — 해당 모델 + 캐노피 여/부
+        # 데이터 조회 — 해당 모델 (캐노피형 포함, 기본 모델로 통합)
         # norm_name 예: '[줄즈]에어2' → base: '에어2'
         import re as _re2
         def extract_base(nm):
@@ -9049,24 +9099,13 @@ def api_export_display():
             m = _re2.match(r'^\[([^\]]+)\](.+)$', nm.strip())
             return m.group(2).strip() if m else nm.strip()
 
-        if is_canopy:
-            base_q = extract_base(norm_name)
-            rows_data = conn.execute("""
-                SELECT real_seller, item_name, SUM(quantity) qty
-                FROM sales_data
-                WHERE item_name LIKE ? AND item_name LIKE '%캐노피%'
-                  AND sale_date LIKE ? AND real_seller!=''
-                GROUP BY real_seller, item_name
-            """, (f"%{base_q}%", f"{year}%")).fetchall()
-        else:
-            base = extract_base(norm_name)
-            rows_data = conn.execute("""
-                SELECT real_seller, item_name, SUM(quantity) qty
-                FROM sales_data
-                WHERE item_name LIKE ? AND item_name NOT LIKE '%캐노피%'
-                  AND sale_date LIKE ? AND real_seller!=''
-                GROUP BY real_seller, item_name
-            """, (f"%{base}%", f"{year}%")).fetchall()
+        base = extract_base(norm_name)
+        rows_data = conn.execute("""
+            SELECT real_seller, item_name, SUM(quantity) qty
+            FROM sales_data
+            WHERE item_name LIKE ? AND sale_date LIKE ? AND real_seller!=''
+            GROUP BY real_seller, item_name
+        """, (f"%{base}%", f"{year}%")).fetchall()
 
         def extract_color(iname):
             m = re.search(r'_([^_\(]+)', iname)
