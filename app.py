@@ -402,15 +402,23 @@ def init_db():
         prep_items TEXT DEFAULT '',
         status TEXT DEFAULT '예정',
         source_filename TEXT DEFAULT '',
-        created_at TEXT DEFAULT ''
+        created_at TEXT DEFAULT '',
+        detail_json TEXT DEFAULT ''
     )""")
-    conn.execute("""CREATE TABLE IF NOT EXISTS work_action_check (
+    try:
+        wp_cols = [r[1] for r in conn.execute("PRAGMA table_info(work_promotion)").fetchall()]
+        if 'detail_json' not in wp_cols:
+            conn.execute("ALTER TABLE work_promotion ADD COLUMN detail_json TEXT DEFAULT ''")
+    except Exception:
+        pass
+    conn.execute("""CREATE TABLE IF NOT EXISTS work_kpi_manual (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         year INTEGER NOT NULL,
         month INTEGER NOT NULL,
         manager TEXT NOT NULL,
         item_key TEXT NOT NULL,
-        done INTEGER DEFAULT 0,
+        target REAL DEFAULT NULL,
+        actual REAL DEFAULT NULL,
         updated_at TEXT DEFAULT '',
         UNIQUE(year, month, manager, item_key)
     )""")
@@ -7570,13 +7578,8 @@ def api_work_stores_by_manager():
     return jsonify(result)
 
 
-@app.route("/api/work/kpi")
-@login_required
-def api_work_kpi():
-    """월간 목표 vs 실적 KPI — 방문매장수/신규진열/프로모션참여/발주전환율 (현재 데이터 기반 산정)"""
-    year = int(request.args.get('year', datetime.now().year))
-    month = int(request.args.get('month', datetime.now().month))
-    manager = request.args.get('manager', '').strip()
+def _work_kpi_data(year, month, manager):
+    """월간 목표 vs 실적 KPI 계산 (API/엑셀 export 공용 헬퍼)"""
     conn = get_db()
 
     # 담당 매장 목록
@@ -7633,28 +7636,74 @@ def api_work_kpi():
 
     conn.close()
 
-    def _item(label, target, actual, prev, unit=''):
+    def _item(key, label, target, actual, prev, unit=''):
         rate = round(actual / target * 100, 1) if target else 0
         delta = actual - prev
-        return {'label': label, 'target': target, 'actual': actual, 'rate': rate,
-                'prev': prev, 'delta': delta, 'unit': unit}
+        return {'key': key, 'label': label, 'target': target, 'actual': actual, 'rate': rate,
+                'prev': prev, 'delta': delta, 'unit': unit, 'is_manual': False}
 
     items = [
-        _item('방문 매장 수', visit_target, visit_actual, prev_visit, '개'),
-        _item('신규 진열 확보', disp_target, disp_actual, 0, '건'),
-        _item('프로모션 참여 매장', promo_target, promo_actual, 0, '개'),
-        _item('발주 전환율', conversion_target, conversion_actual, 0, '%'),
+        _item('visit_count', '방문 매장 수', visit_target, visit_actual, prev_visit, '개'),
+        _item('new_display', '신규 진열 확보', disp_target, disp_actual, 0, '건'),
+        _item('promo_join', '프로모션 참여 매장', promo_target, promo_actual, 0, '개'),
+        _item('conversion_rate', '발주 전환율', conversion_target, conversion_actual, 0, '%'),
     ]
-    return jsonify({'ok': True, 'items': items, 'total_managed': total_managed})
+
+    # 수정2-1: 수기 입력값이 있으면 자동계산값을 덮어씀 (목표·실적 모두 사용자가 직접 관리 가능)
+    conn2 = get_db()
+    manual_rows = conn2.execute(
+        "SELECT item_key, target, actual FROM work_kpi_manual WHERE year=? AND month=? AND manager=?",
+        (year, month, manager or '전체')).fetchall()
+    conn2.close()
+    manual_map = {r[0]: {'target': r[1], 'actual': r[2]} for r in manual_rows}
+    for it in items:
+        m = manual_map.get(it['key'])
+        if m:
+            if m['target'] is not None:
+                it['target'] = m['target']; it['is_manual'] = True
+            if m['actual'] is not None:
+                it['actual'] = m['actual']; it['is_manual'] = True
+            it['rate'] = round(it['actual'] / it['target'] * 100, 1) if it['target'] else 0
+
+    return {'ok': True, 'items': items, 'total_managed': total_managed}
 
 
-@app.route("/api/work/brand-performance")
+@app.route("/api/work/kpi")
 @login_required
-def api_work_brand_performance():
-    """브랜드별 실적 — 목표매출(전년동월×성장률 또는 최근3개월평균×성장률)/실적매출 현재 데이터 기반 산정"""
+def api_work_kpi():
     year = int(request.args.get('year', datetime.now().year))
     month = int(request.args.get('month', datetime.now().month))
     manager = request.args.get('manager', '').strip()
+    return jsonify(_work_kpi_data(year, month, manager))
+
+
+@app.route("/api/work/kpi", methods=["POST"])
+@login_required
+def api_work_kpi_save():
+    """월간 목표/실적 수기 입력 저장 (수정2-1)"""
+    d = request.json or {}
+    year = int(d.get('year')); month = int(d.get('month'))
+    manager = d.get('manager', '전체').strip() or '전체'
+    item_key = d.get('item_key', '').strip()
+    target = d.get('target', None)
+    actual = d.get('actual', None)
+    if not item_key:
+        return jsonify({'ok': False, 'msg': '항목 정보가 필요합니다'}), 400
+    now = datetime.now().strftime('%Y-%m-%d %H:%M')
+    conn = get_db()
+    conn.execute("""INSERT INTO work_kpi_manual (year, month, manager, item_key, target, actual, updated_at)
+        VALUES(?,?,?,?,?,?,?)
+        ON CONFLICT(year, month, manager, item_key) DO UPDATE SET
+        target=excluded.target, actual=excluded.actual, updated_at=excluded.updated_at""",
+        (year, month, manager, item_key,
+         float(target) if target not in (None, '') else None,
+         float(actual) if actual not in (None, '') else None, now))
+    conn.commit(); conn.close()
+    return jsonify({'ok': True})
+
+
+def _work_brand_perf_data(year, month, manager):
+    """브랜드별 실적 계산 — 목표매출은 제품별로 '작년 동월 실적 × 1.05(5% 성장)'을 산정한 뒤 브랜드 단위로 합산 (API/엑셀 export 공용)"""
     conn = get_db()
 
     q = "SELECT name FROM branches WHERE status='운영중'"
@@ -7662,7 +7711,8 @@ def api_work_brand_performance():
     if manager: q += " AND manager=?"; params.append(manager)
     managed_stores = [r[0] for r in conn.execute(q, params).fetchall()]
 
-    def _brand_sales(y, m, stores):
+    def _product_sales(y, m, stores):
+        """제품별(item_name) 매출 집계"""
         if not stores:
             return {}
         placeholders = ','.join('?' for _ in stores)
@@ -7673,43 +7723,55 @@ def api_work_brand_performance():
             [f"{y}-{m:02d}%"] + stores).fetchall()
         out = {}
         for grp, name, total in rows:
-            b = remap_group(grp, name)
-            out[b] = out.get(b, 0) + (total or 0)
+            out[(grp, name)] = {'brand': remap_group(grp, name), 'total': total or 0}
         return out
 
-    actual_map = _brand_sales(year, month, managed_stores)
+    actual_products = _product_sales(year, month, managed_stores)
+    last_year_products = _product_sales(year - 1, month, managed_stores)  # 작년 동월
 
-    # 목표 산정: 최근 3개월 평균 × 1.1 (10% 성장 목표), 데이터 없으면 전년 동월 실적 기준
-    hist = []
-    for i in range(1, 4):
-        hm = month - i
-        hy = year
-        if hm <= 0: hm += 12; hy -= 1
-        hist.append(_brand_sales(hy, hm, managed_stores))
+    # 실적: 브랜드별 합산
+    actual_map = {}
+    for (grp, name), v in actual_products.items():
+        actual_map[v['brand']] = actual_map.get(v['brand'], 0) + v['total']
+
+    # 목표: 제품별로 작년 동월 실적 × 1.05 산정 후 브랜드 단위로 합산
+    target_map = {}
+    products_without_history = 0
+    for (grp, name), v in actual_products.items():
+        last_year_val = last_year_products.get((grp, name), {}).get('total', 0)
+        products_without_history += (1 if last_year_val == 0 else 0)
+        target_map[v['brand']] = target_map.get(v['brand'], 0) + round(last_year_val * 1.05)
+    # 작년엔 있었지만 올해 실적이 아직 없는 제품도 목표에는 반영 (성장 목표는 유지되어야 하므로)
+    for (grp, name), v in last_year_products.items():
+        if (grp, name) not in actual_products:
+            b = v['brand']
+            target_map[b] = target_map.get(b, 0) + round(v['total'] * 1.05)
+
     conn.close()
 
-    all_brands = set(actual_map.keys())
-    for h in hist: all_brands |= set(h.keys())
-    all_brands |= set(BRAND_ORDER)
-
+    all_brands = set(actual_map.keys()) | set(target_map.keys()) | set(BRAND_ORDER)
     result = []
     for b in BRAND_ORDER + sorted(all_brands - set(BRAND_ORDER)):
         if b not in all_brands: continue
-        avg3 = sum(h.get(b, 0) for h in hist) / 3 if hist else 0
-        target = round(avg3 * 1.1) if avg3 > 0 else 0
+        target = target_map.get(b, 0)
         actual = actual_map.get(b, 0)
         rate = round(actual / target * 100, 1) if target else (100.0 if actual > 0 else 0)
         result.append({'brand': b, 'target': target, 'actual': actual, 'rate': rate})
-    return jsonify({'ok': True, 'items': result})
+    return {'ok': True, 'items': result,
+                     'basis': f'{year-1}년 {month}월 실적 × 1.05 (전년 동기 대비 5% 성장 목표)'}
 
 
-@app.route("/api/work/visit-coverage")
+@app.route("/api/work/brand-performance")
 @login_required
-def api_work_visit_coverage():
-    """매장 방문 커버리지 — 담당 매장수는 자동 계산, 방문 매장수는 수기 입력값 반영"""
+def api_work_brand_performance():
     year = int(request.args.get('year', datetime.now().year))
     month = int(request.args.get('month', datetime.now().month))
     manager = request.args.get('manager', '').strip()
+    return jsonify(_work_brand_perf_data(year, month, manager))
+
+
+def _work_coverage_data(year, month, manager):
+    """매장 방문 커버리지 계산 (API/엑셀 export 공용) — 담당 매장수는 자동 계산, 방문 매장수는 수기 입력값 반영, 담당 매장 세부 리스트 포함"""
     conn = get_db()
 
     q = "SELECT name FROM branches WHERE status='운영중'"
@@ -7717,10 +7779,13 @@ def api_work_visit_coverage():
     if manager: q += " AND manager=?"; params.append(manager)
     stores = [r[0] for r in conn.execute(q, params).fetchall()]
 
-    region_counts = {}
+    sales_map = {r[0]: r[1] for r in conn.execute(
+        f"SELECT real_seller, SUM(total) FROM sales_data WHERE sale_date LIKE '{year}-{month:02d}%' GROUP BY real_seller").fetchall()}
+
+    region_stores = {}  # mr -> [매장명, ...]
     for s in stores:
         mr = _major_region(s)
-        region_counts[mr] = region_counts.get(mr, 0) + 1
+        region_stores.setdefault(mr, []).append(s)
 
     visited_q = "SELECT region, visited_count, note FROM work_visit_coverage WHERE year=? AND month=? AND manager=?"
     visited_map = {r[0]: {'visited': r[1], 'note': r[2]} for r in
@@ -7729,13 +7794,25 @@ def api_work_visit_coverage():
 
     result = []
     for mr in MAJOR_REGION_ORDER:
-        managed = region_counts.get(mr, 0)
+        store_list = sorted(region_stores.get(mr, []))
+        managed = len(store_list)
         if managed == 0 and mr not in visited_map: continue
         v = visited_map.get(mr, {'visited': 0, 'note': ''})
         rate = round(v['visited'] / managed * 100, 1) if managed else 0
+        # 수정2-3: 담당 매장 세부 리스트 (매장명 + 이달 매출)
+        store_detail = [{'name': s, 'sales': sales_map.get(s, 0)} for s in store_list]
         result.append({'region': mr, 'managed': managed, 'visited': v['visited'],
-                        'rate': rate, 'note': v['note'] or ''})
-    return jsonify({'ok': True, 'items': result})
+                        'rate': rate, 'note': v['note'] or '', 'stores': store_detail})
+    return {'ok': True, 'items': result}
+
+
+@app.route("/api/work/visit-coverage")
+@login_required
+def api_work_visit_coverage():
+    year = int(request.args.get('year', datetime.now().year))
+    month = int(request.args.get('month', datetime.now().month))
+    manager = request.args.get('manager', '').strip()
+    return jsonify(_work_coverage_data(year, month, manager))
 
 
 @app.route("/api/work/visit-coverage", methods=["POST"])
@@ -7818,6 +7895,39 @@ def api_work_promotion_upload():
                 if c and isinstance(c, str) and ('커버' in c or '모기장' in c or '범퍼' in c or '인서트' in c) and len(c) < 40:
                     prep_items.add(c.strip())
 
+        # 수정2-4: 상품별 가격/공급조건/사은품 상세표 추출 (클릭 시 세부 확인용)
+        price_table = []
+        header_row_idx = None
+        all_rows = list(ws.iter_rows(values_only=True))
+        for i, row in enumerate(all_rows):
+            texts = [str(c).strip() for c in row if c]
+            if any('상품명' in t for t in texts):
+                header_row_idx = i
+                break
+        if header_row_idx is not None:
+            # 상품명 다음 행부터 데이터 (헤더가 1~2줄일 수 있어 상품명 있는 행+1, +2 모두 시도)
+            for row in all_rows[header_row_idx+1: header_row_idx+30]:
+                vals = [c for c in row if c is not None]
+                if not vals: continue
+                first_text = str(row[1]).strip() if len(row) > 1 and row[1] else ''
+                if not first_text or first_text.startswith(('-', '*', '※')) or '상품명' in first_text:
+                    continue
+                # 숫자형 값들(가격) + 문자열(사은품) 분리
+                nums = [c for c in row if isinstance(c, (int, float))]
+                texts_in_row = [str(c).strip() for c in row if isinstance(c, str) and c.strip() and c.strip() != first_text]
+                gift = next((t for t in texts_in_row if len(t) < 60 and ('커버' in t or '모기장' in t or '범퍼' in t or '인서트' in t or '없음' in t)), '')
+                if nums:
+                    entry = {
+                        'product': first_text,
+                        'consumer_price': nums[0] if len(nums) > 0 else None,
+                        'event_price': nums[2] if len(nums) > 2 else (nums[-1] if nums else None),
+                        'supply_price': nums[-2] if len(nums) >= 2 else None,
+                        'gift': gift,
+                    }
+                    # 공급가격 정보가 없는 행은 별도 안내문/각주가 잘못 잡힌 것일 가능성이 높아 제외
+                    if entry['supply_price'] is not None and len(nums) >= 3:
+                        price_table.append(entry)
+
         # 기간/행사명 패턴 탐색 (전체 시트 텍스트에서)
         found_any = False
         for row in ws.iter_rows(values_only=True):
@@ -7835,6 +7945,7 @@ def api_work_promotion_upload():
                         'target_channel': target_channel,
                         'prep_items': ', '.join(sorted(prep_items))[:200],
                         'status': '예정',
+                        'price_table': price_table,
                     })
                     found_any = True
         if not found_any and title_text:
@@ -7846,6 +7957,7 @@ def api_work_promotion_upload():
                 'target_channel': target_channel,
                 'prep_items': ', '.join(sorted(prep_items))[:200],
                 'status': '예정',
+                'price_table': price_table,
             })
 
     if not events:
@@ -7856,10 +7968,11 @@ def api_work_promotion_upload():
     inserted = 0
     for ev in events:
         conn.execute("""INSERT INTO work_promotion
-            (year, month, period_start, period_end, brand, event_name, target_channel, prep_items, status, source_filename, created_at)
-            VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
+            (year, month, period_start, period_end, brand, event_name, target_channel, prep_items, status, source_filename, created_at, detail_json)
+            VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
             (ev['year'], ev['month'], ev['period_start'], ev['period_end'], ev['brand'],
-             ev['event_name'], ev['target_channel'], ev['prep_items'], ev['status'], fname, now_str))
+             ev['event_name'], ev['target_channel'], ev['prep_items'], ev['status'], fname, now_str,
+             json.dumps(ev.get('price_table', []), ensure_ascii=False)))
         inserted += 1
     conn.commit(); conn.close()
 
@@ -7876,6 +7989,9 @@ def api_work_promotion_list():
         "SELECT * FROM work_promotion WHERE year=? AND month=? ORDER BY period_start",
         (year, month)).fetchall()]
     conn.close()
+    for r in rows:
+        try: r['price_table'] = json.loads(r.get('detail_json') or '[]')
+        except Exception: r['price_table'] = []
     return jsonify(rows)
 
 
@@ -7894,63 +8010,6 @@ def api_work_promotion_status(pid):
     status = (request.json or {}).get('status', '예정')
     conn = get_db()
     conn.execute("UPDATE work_promotion SET status=? WHERE id=?", (status, pid))
-    conn.commit(); conn.close()
-    return jsonify({'ok': True})
-
-
-# 초고수 영업자 액션 플랜 — 전문가 관점으로 다듬은 실행 체크리스트
-ACTION_PLAN_ITEMS = [
-    {'key': 'top20_contact',   'category': '매장 관계관리', 'icon': '🤝',
-     'item': '핵심 거래처(매출 TOP 20) 담당자와 정기 소통 — 근황·애로사항 청취 및 지원 방안 제안', 'cycle': '주 1회'},
-    {'key': 'underperform',    'category': '매장 관계관리', 'icon': '📉',
-     'item': '실적 부진 매장 원인 진단(진열·재고·경쟁사 유입 등) 및 맞춤 개선안 제시', 'cycle': '월 1회'},
-    {'key': 'competitor_scan', 'category': '시장 인텔리전스', 'icon': '🔍',
-     'item': '경쟁사 신제품·프로모션·가격 동향 스캔 및 대응 포인트 정리', 'cycle': '주 1회'},
-    {'key': 'display_trend',   'category': '시장 인텔리전스', 'icon': '📸',
-     'item': '매장별 베스트셀러·진열 트렌드 현장 기록(사진) 및 벤치마킹 포인트 도출', 'cycle': '방문 시마다'},
-    {'key': 'selling_script',  'category': '영업 역량 강화', 'icon': '🎯',
-     'item': '신제품 핵심 셀링포인트 스크립트 업데이트 및 현장 테스트', 'cycle': '신제품 출시 시'},
-    {'key': 'objection',       'category': '영업 역량 강화', 'icon': '💬',
-     'item': '거절·이의제기 대응 사례 축적 및 응대 화법 정교화', 'cycle': '수시'},
-    {'key': 'data_review',     'category': '데이터 기반 관리', 'icon': '📊',
-     'item': '월별 매출·발주 데이터 정리 및 이상 신호(급감·정체) 조기 포착', 'cycle': '월 1회'},
-    {'key': 'benchmark',       'category': '자기 개발', 'icon': '🏆',
-     'item': '이달의 우수 영업 사례 1건 심층 분석 및 본인 루틴에 적용', 'cycle': '월 1회'},
-]
-
-
-@app.route("/api/work/action-plan")
-@login_required
-def api_work_action_plan():
-    year = int(request.args.get('year', datetime.now().year))
-    month = int(request.args.get('month', datetime.now().month))
-    manager = request.args.get('manager', '전체').strip() or '전체'
-    conn = get_db()
-    checks = {r[0]: r[1] for r in conn.execute(
-        "SELECT item_key, done FROM work_action_check WHERE year=? AND month=? AND manager=?",
-        (year, month, manager)).fetchall()}
-    conn.close()
-    items = []
-    for it in ACTION_PLAN_ITEMS:
-        items.append({**it, 'done': bool(checks.get(it['key'], 0))})
-    done_count = sum(1 for i in items if i['done'])
-    return jsonify({'ok': True, 'items': items, 'done_count': done_count, 'total': len(items)})
-
-
-@app.route("/api/work/action-plan/toggle", methods=["POST"])
-@login_required
-def api_work_action_toggle():
-    d = request.json or {}
-    year = int(d.get('year')); month = int(d.get('month'))
-    manager = d.get('manager', '전체').strip() or '전체'
-    item_key = d.get('item_key', '').strip()
-    done = 1 if d.get('done') else 0
-    now = datetime.now().strftime('%Y-%m-%d %H:%M')
-    conn = get_db()
-    conn.execute("""INSERT INTO work_action_check (year, month, manager, item_key, done, updated_at)
-        VALUES(?,?,?,?,?,?)
-        ON CONFLICT(year, month, manager, item_key) DO UPDATE SET done=excluded.done, updated_at=excluded.updated_at""",
-        (year, month, manager, item_key, done, now))
     conn.commit(); conn.close()
     return jsonify({'ok': True})
 
@@ -7987,6 +8046,156 @@ def api_work_retro_save():
         (year, month, manager, d.get('keep_text',''), d.get('problem_text',''), d.get('try_text',''), now))
     conn.commit(); conn.close()
     return jsonify({'ok': True})
+
+@app.route("/api/export/xlsx/work")
+@login_required
+def api_export_work_xlsx():
+    """업무 탭 엑셀 다운로드 — 기존 앱과 동일한 절제된 스타일 (맑은 고딕, A열 여백, 흰 배경)"""
+    from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
+    from openpyxl.utils import get_column_letter
+
+    year = int(request.args.get('year', datetime.now().year))
+    month = int(request.args.get('month', datetime.now().month))
+    manager = request.args.get('manager', '').strip()
+
+    FNAME = '맑은 고딕'
+    def mf(h): return PatternFill("solid", fgColor=h)
+    thin = Side(style='thin', color='E5E7EB')
+    bdr  = Border(left=thin, right=thin, top=thin, bottom=thin)
+    ctr  = Alignment(horizontal='center', vertical='center', wrap_text=True)
+    left = Alignment(horizontal='left', vertical='center', wrap_text=True)
+    rgt  = Alignment(horizontal='right', vertical='center')
+
+    wb = openpyxl.Workbook()
+    mgr_label = manager or '전체'
+    title_suffix = f"{year}년 {month}월 · {mgr_label}"
+
+    def _title(ws, text, span_to='F'):
+        ws.column_dimensions['A'].width = 2
+        ws.merge_cells(f'B1:{span_to}1')
+        c = ws.cell(row=1, column=2, value=text)
+        c.font = Font(bold=True, size=13, name=FNAME, color='1F2937'); c.alignment = ctr
+        ws.row_dimensions[1].height = 26
+
+    # ── 시트1: 월간 목표 vs 실적 ──
+    ws1 = wb.active; ws1.title = '월간목표vs실적'
+    _title(ws1, f'월간 목표 vs 실적  ({title_suffix})', 'F')
+    hdrs = ['항목', '목표', '실적', '달성률', '전월대비']
+    for ci, h in enumerate(hdrs, 2):
+        c = ws1.cell(row=3, column=ci, value=h)
+        c.font = Font(bold=True, size=9, name=FNAME, color='374151'); c.fill = mf('F3F4F6'); c.border = bdr; c.alignment = ctr
+    ws1.row_dimensions[3].height = 20
+    kpi_data = _work_kpi_data(year, month, manager)
+    ri = 4
+    for it in kpi_data['items']:
+        vals = [it['label'], f"{it['target']}{it['unit']}", f"{it['actual']}{it['unit']}",
+                f"{it['rate']}%", f"{'+' if it['delta']>=0 else ''}{it['delta']}" if it['delta'] else '-']
+        for ci, v in enumerate(vals, 2):
+            c = ws1.cell(row=ri, column=ci, value=v); c.font = Font(size=9, name=FNAME); c.border = bdr
+            c.alignment = left if ci == 2 else ctr
+        ri += 1
+    for ci, w in zip(range(2,7), [20,14,14,12,12]):
+        ws1.column_dimensions[get_column_letter(ci)].width = w
+
+    # ── 시트2: 브랜드별 실적 ──
+    ws2 = wb.create_sheet('브랜드별실적')
+    _title(ws2, f'브랜드별 실적  ({title_suffix})  · 목표=전년동월×1.05', 'E')
+    hdrs2 = ['브랜드', '목표매출(원)', '실적매출(원)', '달성률']
+    for ci, h in enumerate(hdrs2, 2):
+        c = ws2.cell(row=3, column=ci, value=h)
+        c.font = Font(bold=True, size=9, name=FNAME, color='374151'); c.fill = mf('F3F4F6'); c.border = bdr; c.alignment = ctr
+    ws2.row_dimensions[3].height = 20
+    brand_data = _work_brand_perf_data(year, month, manager)
+    ri = 4
+    for it in brand_data['items']:
+        c = ws2.cell(row=ri, column=2, value=it['brand']); c.font = Font(size=9, name=FNAME, bold=True); c.border = bdr; c.alignment = left
+        c2 = ws2.cell(row=ri, column=3, value=it['target']); c2.number_format = '#,##0'; c2.font = Font(size=9, name=FNAME); c2.border = bdr; c2.alignment = rgt
+        c3 = ws2.cell(row=ri, column=4, value=it['actual']); c3.number_format = '#,##0'; c3.font = Font(size=9, name=FNAME); c3.border = bdr; c3.alignment = rgt
+        c4 = ws2.cell(row=ri, column=5, value=f"{it['rate']}%")
+        c4.font = Font(size=9, name=FNAME, bold=True, color='16A34A' if it['rate']>=100 else 'DC2626' if it['rate']<70 else 'D97706')
+        c4.border = bdr; c4.alignment = ctr
+        ri += 1
+    for ci, w in zip(range(2,6), [16,18,18,12]):
+        ws2.column_dimensions[get_column_letter(ci)].width = w
+
+    # ── 시트3: 매장 방문 커버리지 (세부 매장 리스트 포함) ──
+    ws3 = wb.create_sheet('매장방문커버리지')
+    _title(ws3, f'매장 방문 커버리지  ({title_suffix})', 'F')
+    cov_data = _work_coverage_data(year, month, manager)
+    ri = 3
+    hdrs3 = ['권역', '담당매장수', '방문매장수', '방문율', '비고']
+    for ci, h in enumerate(hdrs3, 2):
+        c = ws3.cell(row=ri, column=ci, value=h)
+        c.font = Font(bold=True, size=9, name=FNAME, color='374151'); c.fill = mf('F3F4F6'); c.border = bdr; c.alignment = ctr
+    ws3.row_dimensions[ri].height = 20
+    ri += 1
+    for it in cov_data['items']:
+        vals = [it['region'], it['managed'], it['visited'], f"{it['rate']}%", it['note']]
+        for ci, v in enumerate(vals, 2):
+            c = ws3.cell(row=ri, column=ci, value=v); c.font = Font(size=9, name=FNAME); c.border = bdr
+            c.alignment = left if ci in (2,6) else ctr
+        ri += 1
+        # 세부 매장 리스트 (수정2-3)
+        if it['stores']:
+            ws3.merge_cells(f'B{ri}:F{ri}')
+            store_names = ', '.join(f"{s['name']}({s['sales']:,}원)" for s in it['stores'])
+            c = ws3.cell(row=ri, column=2, value=f"   ㄴ 담당 매장: {store_names}")
+            c.font = Font(size=8, name=FNAME, color='6B7280'); c.alignment = left
+            ws3.row_dimensions[ri].height = 26
+            ri += 1
+    for ci, w in zip(range(2,7), [12,12,12,10,50]):
+        ws3.column_dimensions[get_column_letter(ci)].width = w
+
+    # ── 시트4: 프로모션·행사 캘린더 ──
+    ws4 = wb.create_sheet('프로모션캘린더')
+    _title(ws4, f'프로모션 · 행사 캘린더  ({title_suffix})', 'G')
+    conn = get_db()
+    promo_rows = [dict(r) for r in conn.execute(
+        "SELECT * FROM work_promotion WHERE year=? AND month=? ORDER BY period_start", (year, month)).fetchall()]
+    conn.close()
+    hdrs4 = ['기간', '브랜드', '행사명', '대상채널', '준비물/사은품', '상태']
+    for ci, h in enumerate(hdrs4, 2):
+        c = ws4.cell(row=3, column=ci, value=h)
+        c.font = Font(bold=True, size=9, name=FNAME, color='374151'); c.fill = mf('F3F4F6'); c.border = bdr; c.alignment = ctr
+    ws4.row_dimensions[3].height = 20
+    ri = 4
+    for r in promo_rows:
+        period = f"{r['period_start']}~{r['period_end']}" if r['period_start'] else '기간 미정'
+        vals = [period, r['brand'], r['event_name'], r['target_channel'], r['prep_items'], r['status']]
+        for ci, v in enumerate(vals, 2):
+            c = ws4.cell(row=ri, column=ci, value=v); c.font = Font(size=9, name=FNAME); c.border = bdr
+            c.alignment = left if ci in (4,6) else ctr
+        ri += 1
+    for ci, w in zip(range(2,8), [20,10,20,16,36,10]):
+        ws4.column_dimensions[get_column_letter(ci)].width = w
+
+    # ── 시트5: 월간 회고 ──
+    ws5 = wb.create_sheet('월간회고')
+    _title(ws5, f'월간 회고 (KPT)  ({title_suffix})', 'C')
+    conn = get_db()
+    retro_row = conn.execute("SELECT * FROM work_retro WHERE year=? AND month=? AND manager=?",
+                              (year, month, manager or '전체')).fetchone()
+    conn.close()
+    retro = dict(retro_row) if retro_row else {'keep_text':'', 'problem_text':'', 'try_text':''}
+    labels = [('Keep (잘한 점)', retro.get('keep_text','')), ('Problem (아쉬운 점)', retro.get('problem_text','')),
+              ('Try (다음 달 시도)', retro.get('try_text',''))]
+    ri = 3
+    for label, text in labels:
+        ws5.cell(row=ri, column=2, value=label).font = Font(bold=True, size=10, name=FNAME, color='1F2937')
+        ri += 1
+        ws5.merge_cells(f'B{ri}:C{ri}')
+        c = ws5.cell(row=ri, column=2, value=text or '(내용 없음)')
+        c.font = Font(size=9, name=FNAME); c.alignment = left
+        ws5.row_dimensions[ri].height = 60
+        ri += 2
+    ws5.column_dimensions['B'].width = 20
+    ws5.column_dimensions['C'].width = 50
+
+    buf = io.BytesIO(); wb.save(buf); buf.seek(0)
+    fname = f'업무_{year}년{month}월_{mgr_label}.xlsx'
+    return send_file(buf, mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        as_attachment=True, download_name=fname)
+
 
 
 

@@ -900,7 +900,7 @@ td.center{text-align:center}
     <!-- ██ 업무 ██ -->
     <div class="page" id="page-work">
       <div class="ph">
-        <div><h2>업무</h2><p>담당자별 목표·실적 관리 및 월간 액션 플랜</p></div>
+        <div><h2>업무</h2><p>담당자별 목표·실적 관리 및 월간 회고</p></div>
         <div class="ph-r" style="gap:8px;flex-wrap:wrap">
           <select class="ysel" id="work-manager" onchange="loadWorkPage()">
             <option value="">전체 담당자</option>
@@ -912,6 +912,7 @@ td.center{text-align:center}
             <option value="7">7월</option><option value="8">8월</option><option value="9">9월</option>
             <option value="10">10월</option><option value="11">11월</option><option value="12">12월</option>
           </select>
+          <button class="btn btn-ghost btn-sm" onclick="downloadWorkXlsx()">📥 엑셀 다운로드</button>
         </div>
       </div>
 
@@ -920,6 +921,7 @@ td.center{text-align:center}
         <div style="font-size:13px;font-weight:700;color:var(--t-700);margin-bottom:10px;display:flex;align-items:center;gap:6px">
           <span style="width:20px;height:20px;border-radius:6px;background:var(--p);color:#fff;display:inline-flex;align-items:center;justify-content:center;font-size:11px">1</span>
           월간 목표 vs 실적
+          <span style="font-size:11px;font-weight:500;color:var(--t-300)">— 숫자를 클릭해서 직접 수정할 수 있어요</span>
         </div>
         <div id="work-kpi-grid" style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px"></div>
       </div>
@@ -929,6 +931,7 @@ td.center{text-align:center}
         <div style="font-size:13px;font-weight:700;color:var(--t-700);margin-bottom:10px;display:flex;align-items:center;gap:6px">
           <span style="width:20px;height:20px;border-radius:6px;background:var(--p);color:#fff;display:inline-flex;align-items:center;justify-content:center;font-size:11px">2</span>
           브랜드별 실적
+          <span style="font-size:11px;font-weight:500;color:var(--t-300)">— 목표매출 = 제품별 전년 동월 실적 × 1.05 (5% 성장)</span>
         </div>
         <div style="background:var(--paper);border:1px solid var(--border);border-radius:12px;overflow:hidden">
           <table style="width:100%;border-collapse:collapse">
@@ -948,7 +951,7 @@ td.center{text-align:center}
         <div style="font-size:13px;font-weight:700;color:var(--t-700);margin-bottom:10px;display:flex;align-items:center;gap:6px">
           <span style="width:20px;height:20px;border-radius:6px;background:var(--p);color:#fff;display:inline-flex;align-items:center;justify-content:center;font-size:11px">3</span>
           매장 방문 커버리지
-          <span style="font-size:11px;font-weight:500;color:var(--t-300)">— 담당 매장수는 자동 계산, 방문수는 직접 입력</span>
+          <span style="font-size:11px;font-weight:500;color:var(--t-300)">— 담당 매장수는 자동 계산(클릭 시 목록 확인), 방문수는 직접 입력</span>
         </div>
         <div style="background:var(--paper);border:1px solid var(--border);border-radius:12px;overflow:hidden">
           <table style="width:100%;border-collapse:collapse">
@@ -957,7 +960,7 @@ td.center{text-align:center}
               <th style="padding:9px 14px;text-align:center;font-size:11px;font-weight:700;color:var(--t-500);border-bottom:1.5px solid var(--border)">담당 매장수</th>
               <th style="padding:9px 14px;text-align:center;font-size:11px;font-weight:700;color:var(--t-500);border-bottom:1.5px solid var(--border)">방문 매장수</th>
               <th style="padding:9px 14px;text-align:center;font-size:11px;font-weight:700;color:var(--t-500);border-bottom:1.5px solid var(--border)">방문율</th>
-              <th style="padding:9px 14px;text-align:left;font-size:11px;font-weight:700;color:var(--t-500);border-bottom:1.5px solid var(--border)">비고</th>
+              <th style="padding:9px 14px;text-align:left;font-size:11px;font-weight:700;color:var(--t-500);border-bottom:1.5px solid var(--border)">비고 (방문한 매장 기록)</th>
             </tr></thead>
             <tbody id="work-coverage-tbody"></tbody>
           </table>
@@ -974,25 +977,13 @@ td.center{text-align:center}
           <button class="btn btn-ghost btn-sm" onclick="document.getElementById('work-promo-file').click()">📤 행사 공지 엑셀 업로드</button>
           <input type="file" id="work-promo-file" accept=".xlsx,.xls" style="display:none" onchange="uploadWorkPromotion(event)">
         </div>
-        <div id="work-promo-list" style="display:grid;gap:8px"></div>
+        <div id="work-promo-list" style="display:flex;flex-direction:column"></div>
       </div>
 
-      <!-- 5. 초고수 영업자 액션 플랜 -->
-      <div style="margin-bottom:24px">
-        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
-          <div style="font-size:13px;font-weight:700;color:var(--t-700);display:flex;align-items:center;gap:6px">
-            <span style="width:20px;height:20px;border-radius:6px;background:var(--p);color:#fff;display:inline-flex;align-items:center;justify-content:center;font-size:11px">5</span>
-            초고수 영업자 액션 플랜
-          </div>
-          <div id="work-action-progress" style="font-size:11.5px;color:var(--t-400);font-weight:600"></div>
-        </div>
-        <div id="work-action-list" style="display:grid;gap:8px"></div>
-      </div>
-
-      <!-- 6. 월간 회고 (KPT) -->
+      <!-- 5. 월간 회고 (KPT) -->
       <div style="margin-bottom:24px">
         <div style="font-size:13px;font-weight:700;color:var(--t-700);margin-bottom:10px;display:flex;align-items:center;gap:6px">
-          <span style="width:20px;height:20px;border-radius:6px;background:var(--p);color:#fff;display:inline-flex;align-items:center;justify-content:center;font-size:11px">6</span>
+          <span style="width:20px;height:20px;border-radius:6px;background:var(--p);color:#fff;display:inline-flex;align-items:center;justify-content:center;font-size:11px">5</span>
           월간 회고 <span style="font-size:11px;font-weight:500;color:var(--t-300)">— Keep · Problem · Try</span>
         </div>
         <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px">
@@ -1012,6 +1003,28 @@ td.center{text-align:center}
         <div style="display:flex;justify-content:flex-end;margin-top:10px">
           <button class="btn btn-dark btn-sm" onclick="saveWorkRetro()">저장</button>
         </div>
+      </div>
+    </div>
+
+    <!-- 커버리지 매장 목록 모달 -->
+    <div id="work-coverage-modal" style="display:none;position:fixed;inset:0;background:rgba(15,23,42,.5);z-index:1000;align-items:center;justify-content:center;padding:20px">
+      <div style="background:var(--paper);border-radius:14px;width:480px;max-width:100%;max-height:80vh;overflow-y:auto;box-shadow:0 20px 50px rgba(0,0,0,.3)">
+        <div style="padding:16px 20px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center">
+          <div style="font-size:14px;font-weight:800" id="work-coverage-modal-title"></div>
+          <button onclick="document.getElementById('work-coverage-modal').style.display='none'" style="background:none;border:none;font-size:16px;color:var(--t-400);cursor:pointer">✕</button>
+        </div>
+        <div id="work-coverage-modal-body" style="padding:12px 20px"></div>
+      </div>
+    </div>
+
+    <!-- 프로모션 상세 모달 -->
+    <div id="work-promo-modal" style="display:none;position:fixed;inset:0;background:rgba(15,23,42,.5);z-index:1000;align-items:center;justify-content:center;padding:20px">
+      <div style="background:var(--paper);border-radius:14px;width:560px;max-width:100%;max-height:82vh;overflow-y:auto;box-shadow:0 20px 50px rgba(0,0,0,.3)">
+        <div style="padding:16px 20px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center">
+          <div style="font-size:14px;font-weight:800" id="work-promo-modal-title"></div>
+          <button onclick="document.getElementById('work-promo-modal').style.display='none'" style="background:none;border:none;font-size:16px;color:var(--t-400);cursor:pointer">✕</button>
+        </div>
+        <div id="work-promo-modal-body" style="padding:16px 20px"></div>
       </div>
     </div>
 
@@ -2216,22 +2229,38 @@ async function loadWorkPage(){
   loadWorkBrandPerf(year, month, manager);
   loadWorkCoverage(year, month, manager);
   loadWorkPromotions(year, month);
-  loadWorkActionPlan(year, month, manager);
   loadWorkRetro(year, month, manager);
+}
+
+function downloadWorkXlsx(){
+  const year = document.getElementById('work-year').value;
+  const month = document.getElementById('work-month').value;
+  const manager = document.getElementById('work-manager').value;
+  const q = new URLSearchParams({year, month, manager});
+  window.location.href = `/api/export/xlsx/work?${q}`;
+  toast('업무 보고서 엑셀 다운로드 중...');
 }
 
 async function loadWorkKPI(year, month, manager){
   const r = await api(`/api/work/kpi?year=${year}&month=${month}&manager=${encodeURIComponent(manager)}`);
   if(!r?.ok) return;
+  const mgr = manager || '전체';
   const grid = document.getElementById('work-kpi-grid');
   grid.innerHTML = r.items.map(it=>{
     const rateColor = it.rate>=100?'#16A34A':it.rate>=70?'#D97706':'#DC2626';
     const deltaStr = it.delta!==0 ? `<span style="color:${it.delta>0?'#16A34A':'#DC2626'};font-size:10.5px;font-weight:700">${it.delta>0?'▲':'▼'} ${Math.abs(it.delta)}</span>` : '';
     return `<div style="background:var(--paper);border:1px solid var(--border);border-radius:12px;padding:14px 16px">
-      <div style="font-size:11px;color:var(--t-400);font-weight:600;margin-bottom:8px">${it.label}</div>
-      <div style="display:flex;align-items:baseline;gap:6px;margin-bottom:4px">
-        <span style="font-size:20px;font-weight:800;color:var(--t-900)">${it.actual}</span>
-        <span style="font-size:11px;color:var(--t-300)">/ ${it.target}${it.unit}</span>
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+        <div style="font-size:11px;color:var(--t-400);font-weight:600">${it.label}</div>
+        ${it.is_manual?'<span style="font-size:9px;color:var(--p);background:var(--p-lt);padding:1px 6px;border-radius:4px">수기입력</span>':''}
+      </div>
+      <div style="display:flex;align-items:baseline;gap:4px;margin-bottom:4px">
+        <input type="number" value="${it.actual}" onchange="saveWorkKPI('${year}','${month}','${mgr.replace(/'/g,"\\'")}','${it.key}','actual',this.value)"
+          style="width:56px;font-size:20px;font-weight:800;color:var(--t-900);border:none;border-bottom:1.5px dashed var(--border-md);background:none;padding:0" title="클릭해서 실적 수정">
+        <span style="font-size:11px;color:var(--t-300)">/</span>
+        <input type="number" value="${it.target}" onchange="saveWorkKPI('${year}','${month}','${mgr.replace(/'/g,"\\'")}','${it.key}','target',this.value)"
+          style="width:52px;font-size:11px;color:var(--t-400);border:none;border-bottom:1px dashed var(--border);background:none;padding:0" title="클릭해서 목표 수정">
+        <span style="font-size:11px;color:var(--t-300)">${it.unit}</span>
       </div>
       <div style="display:flex;align-items:center;gap:8px">
         <div style="flex:1;height:5px;background:var(--bg);border-radius:10px;overflow:hidden">
@@ -2242,6 +2271,16 @@ async function loadWorkKPI(year, month, manager){
       ${deltaStr?`<div style="margin-top:5px">${deltaStr} <span style="font-size:10px;color:var(--t-300)">전월대비</span></div>`:''}
     </div>`;
   }).join('');
+}
+
+async function saveWorkKPI(year, month, manager, itemKey, field, value){
+  const body = {year: parseInt(year), month: parseInt(month), manager, item_key: itemKey};
+  body[field] = value;
+  const r = await api('/api/work/kpi', {method:'POST', body});
+  if(r?.ok){
+    toast('저장됐어요');
+    loadWorkKPI(year, month, manager==='전체'?'':manager);
+  }
 }
 
 async function loadWorkBrandPerf(year, month, manager){
@@ -2264,6 +2303,8 @@ async function loadWorkBrandPerf(year, month, manager){
   }).join('');
 }
 
+let workCoverageData = {};
+
 async function loadWorkCoverage(year, month, manager){
   const r = await api(`/api/work/visit-coverage?year=${year}&month=${month}&manager=${encodeURIComponent(manager)}`);
   const tbody = document.getElementById('work-coverage-tbody');
@@ -2271,66 +2312,132 @@ async function loadWorkCoverage(year, month, manager){
     tbody.innerHTML = `<tr><td colspan="5" style="text-align:center;padding:30px;color:var(--t-300);font-size:12px">담당 매장이 없습니다</td></tr>`;
     return;
   }
+  workCoverageData = {}; r.items.forEach(it=> workCoverageData[it.region] = it);
   tbody.innerHTML = r.items.map(it=>{
     const rateColor = it.rate>=80?'#16A34A':it.rate>=50?'#D97706':'#DC2626';
     const mgr = manager || '전체';
     return `<tr>
       <td style="padding:9px 14px;font-size:12.5px;font-weight:700;color:var(--t-800);border-bottom:1px solid var(--border)">${it.region}</td>
-      <td style="padding:9px 14px;text-align:center;font-size:12px;color:var(--t-500);border-bottom:1px solid var(--border)">${it.managed}개</td>
+      <td style="padding:9px 14px;text-align:center;border-bottom:1px solid var(--border)">
+        <span onclick="openWorkCoverageDetail('${it.region}')" style="cursor:pointer;color:var(--p);font-weight:700;text-decoration:underline;font-size:12px">${it.managed}개</span>
+      </td>
       <td style="padding:9px 14px;text-align:center;border-bottom:1px solid var(--border)">
         <input type="number" min="0" value="${it.visited}" style="width:56px;text-align:center;border:1px solid var(--border-md);border-radius:6px;padding:4px 6px;font-size:12px"
-          onchange="saveWorkCoverage('${year}','${month}','${mgr.replace(/'/g,"\\'")}','${it.region}',this.value)">
+          onchange="saveWorkCoverage('${year}','${month}','${mgr.replace(/'/g,"\\'")}','${it.region}',this.value,null)">
       </td>
       <td style="padding:9px 14px;text-align:center;border-bottom:1px solid var(--border)">
         <span style="font-size:11.5px;font-weight:800;color:${rateColor}">${it.rate}%</span>
       </td>
-      <td style="padding:9px 14px;font-size:11.5px;color:var(--t-400);border-bottom:1px solid var(--border)">${it.note||''}</td>
+      <td style="padding:9px 14px;border-bottom:1px solid var(--border)">
+        <input type="text" value="${(it.note||'').replace(/"/g,'&quot;')}" placeholder="방문한 매장명을 적어주세요"
+          style="width:100%;border:1px solid var(--border);border-radius:6px;padding:5px 8px;font-size:11.5px;box-sizing:border-box"
+          onchange="saveWorkCoverage('${year}','${month}','${mgr.replace(/'/g,"\\'")}','${it.region}',null,this.value)">
+      </td>
     </tr>`;
   }).join('');
 }
 
-async function saveWorkCoverage(year, month, manager, region, visited){
-  const r = await api('/api/work/visit-coverage', {method:'POST', body:{
-    year: parseInt(year), month: parseInt(month), manager: manager || '전체', region, visited: parseInt(visited)||0
-  }});
+function openWorkCoverageDetail(region){
+  const it = workCoverageData[region];
+  if(!it) return;
+  document.getElementById('work-coverage-modal-title').textContent = `${region} — 담당 매장 ${it.managed}개`;
+  const body = document.getElementById('work-coverage-modal-body');
+  const sorted = [...it.stores].sort((a,b)=>b.sales-a.sales);
+  body.innerHTML = sorted.map((s,i)=>`
+    <div style="display:flex;justify-content:space-between;align-items:center;padding:9px 0;border-bottom:1px solid var(--border)">
+      <span style="font-size:12.5px;color:var(--t-800)"><span style="color:var(--t-300);margin-right:6px">${i+1}</span>${s.name}</span>
+      <span style="font-size:11.5px;color:${s.sales>0?'var(--p)':'var(--t-300)'};font-weight:600">${s.sales.toLocaleString()}원</span>
+    </div>`).join('') || `<div style="text-align:center;padding:20px;color:var(--t-300);font-size:12px">매장이 없습니다</div>`;
+  document.getElementById('work-coverage-modal').style.display = 'flex';
+}
+
+async function saveWorkCoverage(year, month, manager, region, visited, note){
+  const body = {year: parseInt(year), month: parseInt(month), manager: manager || '전체', region};
+  const cur = workCoverageData[region] || {};
+  body.visited = visited !== null ? (parseInt(visited)||0) : (cur.visited||0);
+  body.note = note !== null ? note : (cur.note||'');
+  const r = await api('/api/work/visit-coverage', {method:'POST', body});
   if(r?.ok){
     toast('방문 매장수가 저장됐어요');
     loadWorkCoverage(year, month, document.getElementById('work-manager').value);
   }
 }
 
+let workPromoData = {};
+
 async function loadWorkPromotions(year, month){
   const rows = await api(`/api/work/promotion/list?year=${year}&month=${month}`) || [];
   const el = document.getElementById('work-promo-list');
   if(!rows.length){
-    el.innerHTML = `<div style="text-align:center;padding:30px;color:var(--t-300);font-size:12px;border:1px dashed var(--border);border-radius:10px">등록된 행사가 없습니다. 행사 공지 엑셀을 업로드하면 자동으로 요약돼요</div>`;
+    el.innerHTML = `<div style="text-align:center;padding:24px;color:var(--t-300);font-size:12px;border:1px solid var(--border);border-radius:10px">등록된 행사가 없습니다. 행사 공지 엑셀을 업로드하면 자동으로 요약돼요</div>`;
     return;
   }
-  const STATUS_COLOR = {'예정':'#D97706','진행중':'#2563EB','종료':'#6B7280'};
-  el.innerHTML = rows.map(r=>{
-    const color = STATUS_COLOR[r.status] || '#6B7280';
-    return `<div style="background:var(--paper);border:1px solid var(--border);border-left:3px solid ${color};border-radius:10px;padding:12px 16px;display:flex;justify-content:space-between;align-items:flex-start;gap:12px">
-      <div style="flex:1;min-width:0">
-        <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px;flex-wrap:wrap">
-          <span style="font-size:13px;font-weight:800;color:var(--t-900)">${r.event_name}</span>
-          ${r.brand?`<span style="font-size:9.5px;background:var(--p-lt);color:var(--p);padding:2px 7px;border-radius:5px;font-weight:700">${r.brand}</span>`:''}
-          <span style="font-size:9.5px;background:${color}18;color:${color};padding:2px 7px;border-radius:5px;font-weight:700">${r.status}</span>
+  workPromoData = {}; rows.forEach(r=> workPromoData[r.id] = r);
+  const STATUS_COLOR = {'예정':'#6B7280','진행중':'#1D4ED8','종료':'#9CA3AF'};
+
+  el.innerHTML = `<div style="border:1px solid var(--border);border-radius:10px;overflow:hidden">
+    <div style="display:grid;grid-template-columns:110px 70px 1fr 110px 90px 70px;gap:0;background:var(--bg);border-bottom:1px solid var(--border);font-size:10.5px;font-weight:700;color:var(--t-400)">
+      <div style="padding:8px 12px">기간</div><div style="padding:8px 8px">브랜드</div>
+      <div style="padding:8px 8px">행사명</div><div style="padding:8px 8px">대상 채널</div>
+      <div style="padding:8px 8px;text-align:center">상태</div><div style="padding:8px 8px"></div>
+    </div>
+    ${rows.map(r=>{
+      const color = STATUS_COLOR[r.status] || '#6B7280';
+      const hasDetail = r.price_table && r.price_table.length > 0;
+      return `<div style="display:grid;grid-template-columns:110px 70px 1fr 110px 90px 70px;gap:0;border-bottom:1px solid var(--border);font-size:12px;align-items:center;${hasDetail?'cursor:pointer':''}"
+        ${hasDetail?`onclick="openWorkPromoDetail(${r.id})"`:''}
+        onmouseenter="this.style.background='var(--bg)'" onmouseleave="this.style.background='none'">
+        <div style="padding:9px 12px;color:var(--t-500);font-size:11px">${r.period_start?`${r.period_start.slice(5)}~${r.period_end.slice(5)}`:'미정'}</div>
+        <div style="padding:9px 8px;color:var(--t-500);font-size:11px">${r.brand||'—'}</div>
+        <div style="padding:9px 8px;font-weight:600;color:var(--t-800)">${r.event_name}${hasDetail?' <span style="color:var(--p);font-size:10px">가격표 ›</span>':''}</div>
+        <div style="padding:9px 8px;color:var(--t-500);font-size:11px">${r.target_channel}</div>
+        <div style="padding:9px 8px;text-align:center" onclick="event.stopPropagation()">
+          <select onchange="setWorkPromoStatus(${r.id}, this.value)" style="font-size:10.5px;padding:3px 4px;border:1px solid var(--border);border-radius:5px;color:${color};font-weight:600">
+            <option ${r.status==='예정'?'selected':''}>예정</option>
+            <option ${r.status==='진행중'?'selected':''}>진행중</option>
+            <option ${r.status==='종료'?'selected':''}>종료</option>
+          </select>
         </div>
-        <div style="font-size:11.5px;color:var(--t-500)">
-          ${r.period_start?`📅 ${r.period_start} ~ ${r.period_end}`:'기간 미정'} · 🏬 ${r.target_channel}
+        <div style="padding:9px 8px;text-align:center" onclick="event.stopPropagation()">
+          <button onclick="deleteWorkPromo(${r.id})" style="font-size:10.5px;color:var(--t-300);background:none;border:none;cursor:pointer">삭제</button>
         </div>
-        ${r.prep_items?`<div style="font-size:11px;color:var(--t-400);margin-top:4px">🎁 ${r.prep_items}</div>`:''}
-      </div>
-      <div style="display:flex;gap:6px;flex-shrink:0">
-        <select onchange="setWorkPromoStatus(${r.id}, this.value)" style="font-size:10.5px;padding:4px 6px;border:1px solid var(--border-md);border-radius:6px">
-          <option ${r.status==='예정'?'selected':''}>예정</option>
-          <option ${r.status==='진행중'?'selected':''}>진행중</option>
-          <option ${r.status==='종료'?'selected':''}>종료</option>
-        </select>
-        <button onclick="deleteWorkPromo(${r.id})" style="font-size:10.5px;color:var(--red);background:none;border:1px solid var(--border-md);border-radius:6px;padding:4px 8px;cursor:pointer">삭제</button>
-      </div>
-    </div>`;
-  }).join('');
+      </div>`;
+    }).join('')}
+  </div>`;
+}
+
+function openWorkPromoDetail(id){
+  const r = workPromoData[id];
+  if(!r) return;
+  document.getElementById('work-promo-modal-title').textContent = r.event_name;
+  const body = document.getElementById('work-promo-modal-body');
+  let html = `<div style="font-size:11.5px;color:var(--t-500);margin-bottom:14px">
+    ${r.period_start?`${r.period_start} ~ ${r.period_end}`:'기간 미정'} &nbsp;·&nbsp; ${r.target_channel}
+    ${r.brand?` &nbsp;·&nbsp; ${r.brand}`:''}
+  </div>`;
+  if(r.price_table && r.price_table.length){
+    html += `<table style="width:100%;border-collapse:collapse;font-size:12px">
+      <thead><tr style="border-bottom:1.5px solid var(--border)">
+        <th style="text-align:left;padding:6px 8px;font-size:10.5px;color:var(--t-400)">상품명</th>
+        <th style="text-align:right;padding:6px 8px;font-size:10.5px;color:var(--t-400)">소비자가</th>
+        <th style="text-align:right;padding:6px 8px;font-size:10.5px;color:var(--t-400)">행사가</th>
+        <th style="text-align:left;padding:6px 8px;font-size:10.5px;color:var(--t-400)">사은품</th>
+      </tr></thead>
+      <tbody>
+        ${r.price_table.map(p=>`<tr style="border-bottom:1px solid var(--border)">
+          <td style="padding:7px 8px;font-weight:600;color:var(--t-800)">${p.product}</td>
+          <td style="padding:7px 8px;text-align:right;color:var(--t-400);text-decoration:line-through">${p.consumer_price?p.consumer_price.toLocaleString():'—'}</td>
+          <td style="padding:7px 8px;text-align:right;font-weight:700;color:var(--p)">${p.event_price?p.event_price.toLocaleString():'—'}</td>
+          <td style="padding:7px 8px;color:var(--t-600)">${p.gift||'—'}</td>
+        </tr>`).join('')}
+      </tbody>
+    </table>`;
+  }
+  if(r.prep_items){
+    html += `<div style="margin-top:14px;font-size:11.5px;color:var(--t-500)"><b style="color:var(--t-700)">준비물/POP</b><br>${r.prep_items}</div>`;
+  }
+  body.innerHTML = html;
+  document.getElementById('work-promo-modal').style.display = 'flex';
 }
 
 async function uploadWorkPromotion(e){
@@ -2363,45 +2470,6 @@ async function deleteWorkPromo(id){
   if(!confirm('이 행사 일정을 삭제할까요?')) return;
   const r = await api(`/api/work/promotion/${id}`, {method:'DELETE'});
   if(r?.ok){ toast('삭제됐어요'); loadWorkPage(); }
-}
-
-async function loadWorkActionPlan(year, month, manager){
-  const mgr = manager || '전체';
-  const r = await api(`/api/work/action-plan?year=${year}&month=${month}&manager=${encodeURIComponent(mgr)}`);
-  if(!r?.ok) return;
-  document.getElementById('work-action-progress').textContent = `${r.done_count} / ${r.total} 완료`;
-
-  const CATEGORY_COLOR = {'매장 관계관리':'#2563EB','시장 인텔리전스':'#7C3AED','영업 역량 강화':'#D97706','데이터 기반 관리':'#0891B2','자기 개발':'#16A34A'};
-  const byCategory = {};
-  r.items.forEach(it=>{
-    if(!byCategory[it.category]) byCategory[it.category] = [];
-    byCategory[it.category].push(it);
-  });
-
-  const el = document.getElementById('work-action-list');
-  el.innerHTML = Object.entries(byCategory).map(([cat, items])=>{
-    const color = CATEGORY_COLOR[cat] || '#6B7280';
-    return `<div style="background:var(--paper);border:1px solid var(--border);border-radius:10px;overflow:hidden">
-      <div style="padding:8px 14px;background:${color}0D;border-bottom:1px solid var(--border);font-size:11.5px;font-weight:800;color:${color}">${cat}</div>
-      ${items.map(it=>`<div style="display:flex;align-items:flex-start;gap:10px;padding:11px 14px;border-bottom:1px solid var(--border)">
-        <input type="checkbox" ${it.done?'checked':''} onchange="toggleWorkAction('${year}','${month}','${mgr.replace(/'/g,"\\'")}','${it.key}',this.checked)"
-          style="margin-top:2px;width:15px;height:15px;cursor:pointer;accent-color:${color}">
-        <div style="flex:1;min-width:0">
-          <div style="font-size:12.5px;color:${it.done?'var(--t-300)':'var(--t-800)'};font-weight:600;${it.done?'text-decoration:line-through':''}">
-            ${it.icon} ${it.item}
-          </div>
-          <div style="font-size:10.5px;color:var(--t-300);margin-top:2px">주기: ${it.cycle}</div>
-        </div>
-      </div>`).join('')}
-    </div>`;
-  }).join('');
-}
-
-async function toggleWorkAction(year, month, manager, itemKey, done){
-  await api('/api/work/action-plan/toggle', {method:'POST', body:{
-    year: parseInt(year), month: parseInt(month), manager, item_key: itemKey, done
-  }});
-  loadWorkActionPlan(year, month, manager==='전체'?'':manager);
 }
 
 async function loadWorkRetro(year, month, manager){
