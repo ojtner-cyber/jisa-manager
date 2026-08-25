@@ -717,7 +717,7 @@ td.center{text-align:center}
         <div><h2>제품별 관리</h2><p>품목그룹별 · 제품별 판매 현황 분석</p></div>
         <div class="ph-r">
           <select class="ysel" id="prod-year" onchange="loadProducts()"></select>
-          <button class="btn btn-ghost btn-sm" onclick="exportDisplayXlsx('display')">📊 진열 현황 엑셀</button>
+          <button class="btn btn-ghost btn-sm" onclick="exportDisplayXlsx('display')">📊 판매 현황(색상별)</button>
           <button class="btn btn-ghost btn-sm" onclick="exportDisplayXlsx('sales')">📋 판매 현황 엑셀</button>
         </div>
       </div>
@@ -3807,7 +3807,7 @@ function exportDisplayXlsx(mode){
   }
   const brandClean=brandText.replace(/\s*\(.*\)/,'').trim();
   window.location.href=`/api/export/xlsx/display?year=${year}&mode=${m}&brand=${encodeURIComponent(brandClean)}`;
-  toast(`${m==='display'?'진열':'판매'} 현황 엑셀 (${brandClean}) 다운로드 중...`);
+  toast(`${m==='display'?'판매 현황(색상별)':'판매 현황'} 엑셀 (${brandClean}) 다운로드 중...`);
 }
 
 function exportScriptXlsx(){

@@ -8869,7 +8869,153 @@ def api_export_display():
         conn.close()
         return jsonify({'ok': False, 'msg': f'{brand_sel} 데이터 없음'}), 404
 
-    # ── 스타일 ────────────────────────────────────
+    now_str  = datetime.now().strftime('%Y.%m.%d')
+
+    # ══════════════════════════════════════════════════════
+    # 수정1: mode='sales' — 단일 시트, 월별×제품라인 매트릭스 (색상 구분 없이 총 수량)
+    # ══════════════════════════════════════════════════════
+    if mode == 'sales':
+        wb = openpyxl.Workbook()
+        ws = wb.active; ws.title = f'판매수량_{brand_sel}'[:31]
+
+        FNAME = '맑은 고딕'
+        def mf(h): return PatternFill("solid", fgColor=h)
+        thin = Side(style='thin', color='D9D9D9')
+        bdr  = Border(left=thin, right=thin, top=thin, bottom=thin)
+        ctr  = Alignment(horizontal='center', vertical='center', wrap_text=True)
+        left_a = Alignment(horizontal='left', vertical='center', wrap_text=True)
+
+        # 제품라인 목록 (brand_items의 모델명 기준, 색상 무관)
+        product_lines = sorted(brand_items.keys(), key=lambda k: brand_items[k]['label'])
+        product_labels = [brand_items[k]['label'] for k in product_lines]
+
+        import re as _re3
+        def extract_base2(nm):
+            m = _re3.match(r'^\[([^\]]+)\](.+)$', nm.strip())
+            return m.group(2).strip() if m else nm.strip()
+
+        def match_product_line(item_name):
+            """item_name(색상 포함)을 제품라인 중 하나로 매칭"""
+            has_canopy = '캐노피' in item_name
+            for pk in product_lines:
+                info = brand_items[pk]
+                base = extract_base2(info['norm'])
+                if base in item_name:
+                    if info['is_canopy'] and not has_canopy: continue
+                    if not info['is_canopy'] and has_canopy and any(
+                            brand_items[k2]['is_canopy'] and extract_base2(brand_items[k2]['norm'])==base
+                            for k2 in product_lines):
+                        continue
+                    return pk
+            return None
+
+        # 월별×매장별×제품라인 데이터 조회
+        rows_monthly = conn.execute("""
+            SELECT real_seller, item_name, CAST(strftime('%m',sale_date) AS INTEGER) mo, SUM(quantity) qty
+            FROM sales_data
+            WHERE sale_date LIKE ? AND real_seller!=''
+            GROUP BY real_seller, item_name, mo
+        """, (f"{year}%",)).fetchall()
+
+        # data_map[(seller, month, product_line)] = qty
+        data_map = {}
+        months_with_data = set()
+        for seller, item_name, mo, qty in rows_monthly:
+            brand_of_item = remap_group('', item_name) if not item_name.startswith('[') else remap_group('X', item_name)
+            if brand_of_item != brand_sel: continue
+            pk = match_product_line(item_name)
+            if not pk: continue
+            key = (seller, mo, pk)
+            data_map[key] = data_map.get(key, 0) + (qty or 0)
+            months_with_data.add(mo)
+
+        months = sorted(months_with_data) if months_with_data else list(range(1, 13))
+        n_prod = len(product_lines)
+        col_start = 2  # A열 여백, B열부터 시작 (업체구분/거래처코드/거래처명/실적용거래처명)
+        month_block_width = n_prod + 1  # 제품라인들 + 합계
+
+        ws.column_dimensions['A'].width = 2
+
+        total_cols = 4 + len(months) * month_block_width
+        # 행2: 타이틀
+        ws.merge_cells(f"B2:{get_column_letter(min(4+month_block_width, total_cols+1))}2")
+        c = ws.cell(row=2, column=2, value=f"※ 오프라인 판매수량_{brand_sel}_{year}")
+        c.font = Font(bold=True, size=12, name=FNAME, color='1F2937'); c.alignment = left_a
+        ws.row_dimensions[2].height = 22
+
+        # 행3~4: 고정 헤더 (업체구분/거래처코드/거래처명/실적용거래처명) 세로 병합
+        fixed_hdrs = ['업체구분', '거래처코드', '거래처명', '실적용거래처명']
+        for ci, h in enumerate(fixed_hdrs, col_start):
+            c = ws.cell(row=3, column=ci, value=h)
+            c.font = Font(bold=True, size=9, name=FNAME, color='374151'); c.fill = mf('F3F4F6'); c.border = bdr; c.alignment = ctr
+            ws.merge_cells(start_row=3, start_column=ci, end_row=4, end_column=ci)
+
+        col = col_start + 4
+        for mo in months:
+            end_col = col + n_prod  # 제품라인들 + 합계
+            ws.merge_cells(f"{get_column_letter(col)}3:{get_column_letter(end_col)}3")
+            c = ws.cell(row=3, column=col, value=f"{mo}월")
+            c.font = Font(bold=True, size=10, name=FNAME, color='374151'); c.fill = mf('F3F4F6'); c.alignment = ctr; c.border = bdr
+            for pi, plabel in enumerate(product_labels):
+                c2 = ws.cell(row=4, column=col+pi, value=plabel)
+                c2.font = Font(size=9, name=FNAME, color='6B7280'); c2.fill = mf('F9FAFB'); c2.alignment = ctr; c2.border = bdr
+            c3 = ws.cell(row=4, column=end_col, value='합계')
+            c3.font = Font(bold=True, size=9, name=FNAME, color='374151'); c3.fill = mf('F3F4F6'); c3.alignment = ctr; c3.border = bdr
+            col += month_block_width
+        ws.row_dimensions[3].height = 20; ws.row_dimensions[4].height = 18
+
+        # 데이터 행
+        ri = 5; prev_grp = None
+        for seller in all_sellers:
+            grp = seller_group(seller)
+            info = seller_to_code.get(seller, {})
+            code = info.get('code', '')
+            orig = info.get('orig_name', seller)
+
+            gv = grp if grp != prev_grp else ''
+            prev_grp = grp
+            for ci, v in zip(range(col_start, col_start+4), [gv, code, orig, seller]):
+                c = ws.cell(row=ri, column=ci, value=v or None)
+                c.font = Font(size=9, name=FNAME, bold=(ci==col_start)); c.border = bdr
+                c.alignment = ctr if ci in (col_start, col_start+1) else left_a
+
+            col = col_start + 4
+            for mo in months:
+                mo_total = 0
+                for pi, pk in enumerate(product_lines):
+                    qty = data_map.get((seller, mo, pk), 0)
+                    c = ws.cell(row=ri, column=col+pi, value=qty if qty else 0)
+                    c.font = Font(size=9, name=FNAME); c.alignment = ctr; c.border = bdr
+                    mo_total += qty
+                cs = ws.cell(row=ri, column=col+n_prod, value=mo_total if mo_total else 0)
+                cs.font = Font(bold=True, size=9, name=FNAME); cs.alignment = ctr; cs.border = bdr
+                col += month_block_width
+            ws.row_dimensions[ri].height = 15
+            ri += 1
+
+        # 컬럼 너비
+        ws.column_dimensions['B'].width = 12
+        ws.column_dimensions['C'].width = 14
+        ws.column_dimensions['D'].width = 22
+        ws.column_dimensions['E'].width = 24
+        col = col_start + 4
+        for mo in months:
+            for pi in range(n_prod):
+                ws.column_dimensions[get_column_letter(col+pi)].width = 8
+            ws.column_dimensions[get_column_letter(col+n_prod)].width = 8
+            col += month_block_width
+
+        ws.freeze_panes = 'F5'
+
+        conn.close()
+        buf = io.BytesIO(); wb.save(buf); buf.seek(0)
+        fname = f"판매수량_{brand_sel}_{year}.xlsx"
+        return send_file(buf, mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            as_attachment=True, download_name=fname)
+
+    # ══════════════════════════════════════════════════════
+    # mode='display' — 기존 로직 유지 (모델별 탭, 색상별 교차표) — 버튼 라벨만 "판매 현황(색상별)"로 변경 (수정2)
+    # ══════════════════════════════════════════════════════
     HDR_FILL = PatternFill("solid", fgColor="D9E1F2")
     GRP_FILL = PatternFill("solid", fgColor="F2F2F2")
     HIT_FILL = PatternFill("solid", fgColor="E2EFDA")
