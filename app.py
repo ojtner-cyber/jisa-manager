@@ -2670,6 +2670,7 @@ def export_xlsx_monthly():
     bdr_none  = Border(left=no_bdr,right=no_bdr,top=no_bdr,bottom=no_bdr)          # 브랜드 데이터 열
     center   = Alignment(horizontal="center",vertical="center")
     right    = Alignment(horizontal="right",  vertical="center")
+    left     = Alignment(horizontal="left",   vertical="center")
     num_fmt  = '#,##0'
 
     col_start = 5  # A=여백, B=업체구분, C=거래처명, D=실적용, E부터 데이터
@@ -2680,67 +2681,95 @@ def export_xlsx_monthly():
             return f"{months[0]}월"
         return f"{months[0]}월~{months[-1]}월"
 
+    # 수정2+4: 브랜드별 제품 목록 수집 (제품별관리 양식 참고 — 브랜드 아래 제품별 서브컬럼)
+    import re as _re_bp
+    brand_products = {}  # {brand: [norm_product_label, ...]}
+    prod_rows_all = conn.execute(f"""
+        SELECT item_group, item_name FROM sales_data
+        WHERE sale_date LIKE '{year}%' AND real_seller!='' GROUP BY item_group, item_name""").fetchall()
+    for grp, name in prod_rows_all:
+        b = remap_group(grp, name)
+        if not b or b == '기타': continue
+        norm = normalize_item_name(name)
+        label = _re_bp.sub(r'^\[[^\]]+\]', '', norm).strip()
+        if b not in brand_products: brand_products[b] = []
+        if label not in brand_products[b]: brand_products[b].append(label)
+    for b in brand_products: brand_products[b].sort()
+
+    def match_brand_product(brand, item_name):
+        for label in brand_products.get(brand, []):
+            if label in item_name:
+                return label
+        return None
+
     def build_sheet(wb_ref, title, field):
-        """금액 또는 수량 시트 생성"""
+        """금액 또는 수량 시트 생성 — 브랜드 아래 제품별 서브컬럼 + 업체구분 소계 + 하단 총합계"""
         ws = wb_ref.create_sheet(title) if title != "브랜드별 금액" else wb_ref.active
         if title == "브랜드별 금액": ws.title = title
-        total_cols = col_start - 1 + len(months)*(len(brands)+1)
 
-        ws.column_dimensions['A'].width = 2.5  # 수정1: A열 여백
+        HDR_BG2 = mf("F2F2F2")
+        dotted = Side(style='hair', color='808080')
+
+        # 브랜드별 블록 너비 (제품수 + 소계1)
+        brand_widths = {b: len(brand_products.get(b, [])) + 1 for b in brands if brand_products.get(b)}
+        active_brands = [b for b in brands if b in brand_widths]
+        month_width = sum(brand_widths.values()) + 1  # +1 = 월 총합계
+        total_cols = col_start - 1 + len(months) * month_width
+
+        ws.column_dimensions['A'].width = 2.5
 
         field_label = '판매금액' if field=='total' else '판매수량'
-        # 행2: 타이틀 — 참조 양식과 동일한 "※ 거래처별 브랜드 판매OO_N월" 형식
         ws.merge_cells(f"B2:{get_column_letter(min(9,total_cols))}2")
-        c = ws.cell(row=2,column=2,value=f"※ 거래처별 브랜드 {field_label}_{month_title_label()}")
+        c = ws.cell(row=2,column=2,value=f"※ 거래처별 브랜드·제품별 {field_label}_{month_title_label()}")
         c.fill=mf(WHITE); c.font=mft(FONT_BLACK,True,12); c.alignment=Alignment(horizontal='left',vertical='center')
         ws.row_dimensions[2].height=22
 
-        # 행3: 월 헤더 — 연한 회색 (B~D 세로 병합)
-        ws.cell(row=3,column=2,value="업체구분").fill=mf(GRAY_LIGHT)
-        ws.cell(row=3,column=3,value="거래처명").fill=mf(GRAY_LIGHT)
-        ws.cell(row=3,column=4,value="실적용거래처명").fill=mf(GRAY_LIGHT)
-        for ci in range(2,5):
-            c=ws.cell(row=3,column=ci)
-            c.font=mft(FONT_GRAY,True,10); c.alignment=center; c.border=bdr_left
-        ws.merge_cells("B3:B4"); ws.merge_cells("C3:C4"); ws.merge_cells("D3:D4")
+        # 행3: 업체구분/거래처명/실적용거래처명 (세로 3행 병합: 3~5행)
+        for ci, h in zip(range(2,5), ["업체구분","거래처명","실적용거래처명"]):
+            c=ws.cell(row=3,column=ci,value=h)
+            c.fill=HDR_BG2; c.font=mft(FONT_BLACK,True,10); c.alignment=center
+            ws.merge_cells(start_row=3, start_column=ci, end_row=5, end_column=ci)
 
+        # 행3: 월 헤더
         col=col_start
         for mo in months:
-            span=len(brands)+1; end_col=col+span-1
+            end_col = col + month_width - 1
             ws.merge_cells(f"{get_column_letter(col)}3:{get_column_letter(end_col)}3")
             c=ws.cell(row=3,column=col,value=f"{year}_{mo:02d}")
-            c.fill=mf(GRAY_LIGHT); c.font=mft(FONT_GRAY,True,11); c.alignment=center
-            c.border=bdr_left  # 월 구분선만
-            col+=span
+            c.fill=HDR_BG2; c.font=mft(FONT_BLACK,True,11); c.alignment=center
+            col += month_width
+        ws.row_dimensions[3].height=18
 
-        # 행4: 브랜드 헤더 — 연한 회색
+        # 행4: 브랜드 헤더, 행5: 제품명+소계
         col=col_start
         for mo in months:
-            for b in brands:
-                c=ws.cell(row=4,column=col,value=f"{b}{'금액' if field=='total' else '수량'}")
-                c.fill=mf(GRAY_LIGHT); c.font=mft(FONT_GRAY,False,9); c.alignment=center
-                c.border=bdr_none; col+=1
-            c=ws.cell(row=4,column=col,value="합계")
-            c.fill=mf(GRAY_LIGHT); c.font=mft(FONT_GRAY,True,9); c.alignment=center
-            c.border=bdr_left; col+=1
-        ws.row_dimensions[3].height=18; ws.row_dimensions[4].height=16
-
-        # 행5: 빈 헤더행 (흰색 구분)
-        for ci in range(1,total_cols+1):
-            c=ws.cell(row=5,column=ci,value="")
-            c.fill=mf(WHITE); c.border=bdr_none
-        ws.row_dimensions[5].height=4
+            for b in active_brands:
+                bw = brand_widths[b]
+                end_col = col + bw - 1
+                ws.merge_cells(f"{get_column_letter(col)}4:{get_column_letter(end_col)}4")
+                c=ws.cell(row=4,column=col,value=b)
+                c.fill=HDR_BG2; c.font=mft(FONT_BLACK,True,9); c.alignment=center
+                for pi, plabel in enumerate(brand_products[b]):
+                    c2=ws.cell(row=5,column=col+pi,value=plabel)
+                    c2.fill=HDR_BG2; c2.font=mft(FONT_BLACK,False,8); c2.alignment=center
+                c3=ws.cell(row=5,column=col+bw-1,value="소계")
+                c3.fill=HDR_BG2; c3.font=mft(FONT_BLACK,True,8); c3.alignment=center
+                col += bw
+            c=ws.cell(row=4,column=col,value="월합계")
+            ws.merge_cells(f"{get_column_letter(col)}4:{get_column_letter(col)}5")
+            c.fill=HDR_BG2; c.font=mft(FONT_BLACK,True,9); c.alignment=center
+            col += 1
+        ws.row_dimensions[4].height=16; ws.row_dimensions[5].height=16
 
         # 컬럼 너비
         ws.column_dimensions['B'].width=12
         ws.column_dimensions['C'].width=22
         ws.column_dimensions['D'].width=24
-        for mo_i in range(len(months)):
-            for b_i in range(len(brands)+1):
-                ws.column_dimensions[get_column_letter(col_start+mo_i*(len(brands)+1)+b_i)].width=11
+        num_w = 10 if field=='total' else 7
+        for ci in range(col_start, total_cols+1):
+            ws.column_dimensions[get_column_letter(ci)].width = num_w
 
-        # 데이터 행 (6행부터)
-        # 업체구분: real_seller 이름에서 자동 파악
+        # 업체구분 판별
         def detect_group(seller_name):
             if seller_channel_m.get(seller_name, '') == '백화점':
                 return '백화점'
@@ -2752,54 +2781,135 @@ def export_xlsx_monthly():
             if '베이비세븐' in nm: return '베이비세븐'
             return '기타'
 
-        # 업체구분으로 정렬 (이미 brand_key로 정렬됨, 순서 유지)
-        prev_grp=None
-        for ri,s in enumerate(sellers_list,6):
-            grp=detect_group(s)
-            # 수정4: 그룹이 바뀔 때만 업체구분 표시
-            gv=grp if grp!=prev_grp else ''
-            prev_grp=grp
-            # 매장정보 열 (B~D) — 테두리 있음
-            for ci,val in enumerate([gv,s,s],2):
-                c=ws.cell(row=ri,column=ci,value=val)
-                c.fill=mf(WHITE); c.border=bdr_left; c.font=mft(FONT_BLACK,False,10)
-                if ci==2: c.font=mft(FONT_GRAY,False,10)
+        # 매장별 (월,브랜드,제품)별 값 인덱스 (item_name 기준 매칭)
+        prod_idx = {}  # {(seller, month, brand, product_label): val}
+        for r in data_rows:
+            b = remap_group(r[2], r[3])
+            if not b or b == '기타': continue
+            pl = match_brand_product(b, r[3])
+            if not pl: continue
+            key = (r[0], r[1], b, pl)
+            prod_idx[key] = prod_idx.get(key, 0) + (r[4] if field=='total' else r[5])
 
-            # 브랜드 데이터 열 — 테두리 없음
-            col=col_start
+        # 데이터 행 — 업체구분별로 묶어서 순회, 그룹 바뀔 때 소계 삽입 (수정3)
+        ri = 6
+        prev_grp = None
+        group_start_row = None
+        group_totals = {}  # 그룹별 (mo,col_offset)->합
+
+        def write_group_subtotal(end_row_before, grp_name, grp_seller_list):
+            nonlocal ri
+            ws.cell(row=ri, column=2, value=f"{grp_name} 소계")
+            ws.merge_cells(start_row=ri, start_column=2, end_row=ri, end_column=4)
+            c = ws.cell(row=ri, column=2)
+            c.fill = HDR_BG2; c.font = mft(FONT_BLACK, True, 9); c.alignment = left_local
+            col2 = col_start
             for mo in months:
-                month_total=0
-                for b in brands:
-                    val=idx.get((s,mo,b),{}).get(field,0)
-                    month_total+=val
-                    c=ws.cell(row=ri,column=col,value=val if val else 0)
-                    c.fill=mf(WHITE); c.border=bdr_none; c.alignment=right
-                    c.number_format=num_fmt; c.font=mft(FONT_BLACK,False,10); col+=1
-                # 합계 열 — 왼쪽에 세로선 (월 구분)
-                c=ws.cell(row=ri,column=col,value=month_total)
-                c.fill=mf(WHITE); c.font=mft(FONT_BLACK,True,10)
-                c.border=Border(left=thin_bdr,right=no_bdr,top=no_bdr,bottom=no_bdr)
-                c.alignment=right; c.number_format=num_fmt; col+=1
+                mo_grp_total = 0
+                for b in active_brands:
+                    bw = brand_widths[b]
+                    b_grp_total = 0
+                    for pi, plabel in enumerate(brand_products[b]):
+                        pv = sum(prod_idx.get((s, mo, b, plabel), 0) for s in grp_seller_list)
+                        c2 = ws.cell(row=ri, column=col2+pi, value=pv if pv else 0)
+                        c2.fill = HDR_BG2; c2.font = mft(FONT_BLACK, False, 8); c2.alignment = right
+                        if field=='total': c2.number_format = num_fmt
+                        b_grp_total += pv
+                    cs = ws.cell(row=ri, column=col2+bw-1, value=b_grp_total if b_grp_total else 0)
+                    cs.fill = HDR_BG2; cs.font = mft(FONT_BLACK, True, 8); cs.alignment = right
+                    if field=='total': cs.number_format = num_fmt
+                    mo_grp_total += b_grp_total
+                    col2 += bw
+                cm = ws.cell(row=ri, column=col2, value=mo_grp_total if mo_grp_total else 0)
+                cm.fill = HDR_BG2; cm.font = mft(FONT_BLACK, True, 9); cm.alignment = right
+                if field=='total': cm.number_format = num_fmt
+                col2 += 1
+            ws.row_dimensions[ri].height = 15
+            ri += 1
 
-        # 합계 행 — 흰색
-        tot_row=len(sellers_list)+6
-        for ci,val in enumerate(["합계","",""],2):
-            c=ws.cell(row=tot_row,column=ci,value=val)
-            c.fill=mf(WHITE); c.border=bdr_left; c.font=mft(FONT_BLACK,True,10)
-        col=col_start
+        left_local = Alignment(horizontal='left', vertical='center')
+        current_group_sellers = []
+        for s in sellers_list:
+            grp = detect_group(s)
+            if prev_grp is not None and grp != prev_grp and current_group_sellers:
+                write_group_subtotal(ri, prev_grp, current_group_sellers)
+                current_group_sellers = []
+            gv = grp if grp != prev_grp else ''
+            prev_grp = grp
+            current_group_sellers.append(s)
+
+            for ci, val in enumerate([gv, s, s], 2):
+                c = ws.cell(row=ri, column=ci, value=val)
+                c.font = mft(FONT_BLACK if ci>2 else FONT_GRAY, False, 9); c.alignment = left_local
+
+            col2 = col_start
+            for mo in months:
+                mo_total = 0
+                for b in active_brands:
+                    bw = brand_widths[b]
+                    b_total = 0
+                    for pi, plabel in enumerate(brand_products[b]):
+                        val = prod_idx.get((s, mo, b, plabel), 0)
+                        c = ws.cell(row=ri, column=col2+pi, value=val if val else 0)
+                        c.font = mft(FONT_BLACK, False, 8); c.alignment = right
+                        if field=='total': c.number_format = num_fmt
+                        b_total += val
+                    cs = ws.cell(row=ri, column=col2+bw-1, value=b_total if b_total else 0)
+                    cs.font = mft(FONT_BLACK, True, 8); cs.alignment = right
+                    if field=='total': cs.number_format = num_fmt
+                    mo_total += b_total
+                    col2 += bw
+                cm = ws.cell(row=ri, column=col2, value=mo_total if mo_total else 0)
+                cm.font = mft(FONT_BLACK, True, 9); cm.alignment = right
+                if field=='total': cm.number_format = num_fmt
+                col2 += 1
+            ws.row_dimensions[ri].height = 14
+            ri += 1
+
+        if current_group_sellers:
+            write_group_subtotal(ri, prev_grp, current_group_sellers)
+
+        # 수정5(동일 적용): 하단 총합계 행
+        tot_row = ri
+        ws.cell(row=tot_row, column=2, value="총합계")
+        ws.merge_cells(start_row=tot_row, start_column=2, end_row=tot_row, end_column=4)
+        tc = ws.cell(row=tot_row, column=2)
+        tc.fill = HDR_BG2; tc.font = mft(FONT_BLACK, True, 10); tc.alignment = center
+        col2 = col_start
         for mo in months:
-            for b in brands:
-                total_b=sum(idx.get((s,mo,b),{}).get(field,0) for s in sellers_list)
-                c=ws.cell(row=tot_row,column=col,value=total_b)
-                c.fill=mf(WHITE); c.border=bdr_none; c.alignment=right
-                c.number_format=num_fmt; c.font=mft(FONT_BLACK,True,10); col+=1
-            grand=sum(idx.get((s,mo,b),{}).get(field,0) for s in sellers_list for b in brands)
-            c=ws.cell(row=tot_row,column=col,value=grand)
-            c.fill=mf(WHITE); c.font=mft(FONT_BLACK,True,10)
-            c.border=Border(left=thin_bdr,right=no_bdr,top=no_bdr,bottom=no_bdr)
-            c.alignment=right; c.number_format=num_fmt; col+=1
+            mo_grand = 0
+            for b in active_brands:
+                bw = brand_widths[b]
+                b_grand = 0
+                for pi, plabel in enumerate(brand_products[b]):
+                    pv = sum(prod_idx.get((s, mo, b, plabel), 0) for s in sellers_list)
+                    c2 = ws.cell(row=tot_row, column=col2+pi, value=pv if pv else 0)
+                    c2.fill = HDR_BG2; c2.font = mft(FONT_BLACK, True, 8); c2.alignment = right
+                    if field=='total': c2.number_format = num_fmt
+                    b_grand += pv
+                cs = ws.cell(row=tot_row, column=col2+bw-1, value=b_grand if b_grand else 0)
+                cs.fill = HDR_BG2; cs.font = mft(FONT_BLACK, True, 8); cs.alignment = right
+                if field=='total': cs.number_format = num_fmt
+                mo_grand += b_grand
+                col2 += bw
+            cm = ws.cell(row=tot_row, column=col2, value=mo_grand if mo_grand else 0)
+            cm.fill = HDR_BG2; cm.font = mft(FONT_BLACK, True, 9); cm.alignment = right
+            if field=='total': cm.number_format = num_fmt
+            col2 += 1
+        ws.row_dimensions[tot_row].height = 18
 
-        ws.freeze_panes="E6"
+        # 수정6: 안쪽 점선(hair) 테두리 전체 데이터 영역에 적용
+        last_col = col_start + len(months)*month_width - 1
+        for r_ in range(3, tot_row+1):
+            for c_ in range(2, last_col+1):
+                cell = ws.cell(row=r_, column=c_)
+                left_s  = dotted if c_ > 2 else None
+                right_s = dotted if c_ < last_col else None
+                top_s   = dotted if r_ > 3 else None
+                bottom_s= dotted if r_ < tot_row else None
+                cell.border = Border(left=left_s, right=right_s, top=top_s, bottom=bottom_s)
+
+        ws.freeze_panes = get_column_letter(col_start) + '6'
         return ws
 
     build_sheet(wb, "브랜드별 금액", "total")
@@ -2836,8 +2946,6 @@ def export_xlsx_monthly():
                     GROUP BY item_name
                 """, (f"{year}-{str(mo).zfill(2)}%",)).fetchall()
             prod_monthly_cache[(mo, b)] = prows
-
-    conn.close()
 
     merged={}
     for r in raw_items:
@@ -2964,8 +3072,33 @@ def export_xlsx_monthly():
     for ci,ww in enumerate([8,18,16,10,10,16,16,12],2):
         ws4.column_dimensions[get_column_letter(ci)].width=ww
 
-    # 수정1: 시트 순서를 참조 양식과 동일하게 재배열 (월별 브랜드 요약이 맨 앞)
-    wb._sheets = [wb["월별 브랜드 요약"], wb["브랜드별 금액"], wb["브랜드별 수량"], wb["제품별 상세"]]
+    # 수정1: 기초 데이터 시트 — 업로드된 원본 판매 데이터 그대로 (요약치 검증용)
+    ws_raw = wb.create_sheet("기초데이터")
+    ws_raw.column_dimensions['A'].width = 2.5
+    raw_hdrs = ['일자','거래처명','실적용거래처명','거래처코드','품목명','수량','단가','공급가액','부가세','합계','채널']
+    for ci, h in enumerate(raw_hdrs, 2):
+        c = ws_raw.cell(row=2, column=ci, value=h)
+        c.font=mft(FONT_BLACK,True,9); c.fill=mf("F2F2F2"); c.alignment=center
+    ws_raw.row_dimensions[2].height=20
+    raw_q = "SELECT sale_date,seller_name,real_seller,trade_code,item_name,quantity,unit_price,supply_price,vat,total,channel FROM sales_data WHERE sale_date LIKE ? AND real_seller!=''"
+    raw_params=[f"{year}%"]
+    if seller: raw_q += " AND real_seller=?"; raw_params.append(seller)
+    raw_q += " ORDER BY sale_date, real_seller"
+    ri_raw=3
+    for r in conn.execute(raw_q, raw_params).fetchall():
+        for ci,v in enumerate(r,2):
+            c=ws_raw.cell(row=ri_raw,column=ci,value=v); c.font=mft(FONT_BLACK,False,8)
+            c.alignment = right if ci in (7,8,9,10) else (center if ci in (2,6) else left)
+            if ci in (8,9,10): c.number_format=num_fmt
+        ri_raw+=1
+    for ci,w in zip(range(2,13),[11,20,20,14,26,8,10,11,10,11,9]):
+        ws_raw.column_dimensions[get_column_letter(ci)].width=w
+    ws_raw.freeze_panes='B3'
+
+    conn.close()
+
+    # 수정1: 시트 순서를 참조 양식과 동일하게 재배열 (월별 브랜드 요약이 맨 앞, 기초데이터 맨 뒤)
+    wb._sheets = [wb["월별 브랜드 요약"], wb["브랜드별 금액"], wb["브랜드별 수량"], wb["제품별 상세"], wb["기초데이터"]]
 
     buf=io.BytesIO(); wb.save(buf); buf.seek(0)
     fname=f"오프라인_브랜드별정리_{year}{'_'+month+'월' if month else ''}.xlsx"
@@ -3086,6 +3219,40 @@ def export_xlsx_weekly():
 
     branch_group = {s: detect_group_for_export(s) for s in sellers_list}
 
+    # 수정2+4: 브랜드별 제품 목록 수집 (제품별관리 양식 참고 — 브랜드 아래 제품별 서브컬럼)
+    import re as _re_wp
+    brand_products = {}  # {brand: [norm_product_label, ...]}
+    seen_products = set()
+    for r in raw:
+        b = remap_group(r[1], r[2])
+        if not b or b == '기타': continue
+        norm = normalize_item_name(r[2])
+        label = _re_wp.sub(r'^\[[^\]]+\]', '', norm).strip()
+        key = (b, label)
+        if key in seen_products: continue
+        seen_products.add(key)
+        brand_products.setdefault(b, []).append(label)
+    for b in brand_products: brand_products[b].sort()
+
+    def match_brand_product_wk(brand, item_name):
+        for label in brand_products.get(brand, []):
+            if label in item_name:
+                return label
+        return None
+
+    # {(wk, brand, seller, product_label): val}
+    prod_idx_wk = {}
+    for r in raw:
+        b = remap_group(r[1], r[2])
+        if not b or b == '기타': continue
+        pl = match_brand_product_wk(b, r[2])
+        if not pl: continue
+        s_nm = r[5] if len(r) > 5 else ''
+        key = (r[0], b, s_nm, pl)
+        if key not in prod_idx_wk: prod_idx_wk[key] = {'total':0,'qty':0}
+        prod_idx_wk[key]['total'] += r[3] or 0
+        prod_idx_wk[key]['qty']   += r[4] or 0
+
     # ── idx: {(wk, brand, seller): {total, qty}} — 매장별 브랜드별 주차별 집계 ──
     idx_seller = {}  # (wk, brand, seller) → {total, qty}
     for r in raw:
@@ -3097,8 +3264,6 @@ def export_xlsx_weekly():
         if key3 not in idx_seller: idx_seller[key3] = {'total':0,'qty':0}
         idx_seller[key3]['total'] += r[3] or 0
         idx_seller[key3]['qty']   += r[4] or 0
-
-    conn.close()  # 모든 쿼리 완료 후 닫기
 
     # {(wk, brand): {total, qty}}
     idx = {}
@@ -3144,98 +3309,188 @@ def export_xlsx_weekly():
     def build_brand_sheet(wb_ref, title, field, is_first=False):
         ws = wb_ref.active if is_first else wb_ref.create_sheet(title)
         if is_first: ws.title = title
-        total_cols = col_start - 1 + len(weeks) * (len(brands)+1)
 
-        ws.column_dimensions['A'].width = 2.5  # 수정1: A열 여백
+        HDR_BG2 = mf("F2F2F2")
+        dotted = Side(style='hair', color='808080')
+
+        brand_widths = {b: len(brand_products.get(b, [])) + 1 for b in brands if brand_products.get(b)}
+        active_brands = [b for b in brands if b in brand_widths]
+        week_width = sum(brand_widths.values()) + 1  # +1 = 주 총합계
+        total_cols = col_start - 1 + len(weeks) * week_width
+
+        ws.column_dimensions['A'].width = 2.5
 
         field_label = '판매금액' if field=='total' else '판매수량'
-        # 행2: 타이틀 — 참조 양식과 동일한 "※ 거래처별 브랜드 판매OO_N월 M주차 (M/D~M/D)" 형식
-        ws.merge_cells(f"B2:{get_column_letter(min(8,total_cols))}2")
-        title_text = f"※ 거래처별 브랜드 {field_label}_{single_week_label}" if single_week_label \
-            else f"오프라인 주별 {field_label} 브랜드별 정리_{year}"
+        ws.merge_cells(f"B2:{get_column_letter(min(9,total_cols))}2")
+        title_text = f"※ 거래처별 브랜드·제품별 {field_label}_{single_week_label}" if single_week_label \
+            else f"오프라인 주별 브랜드·제품별 {field_label} 정리_{year}"
         c = ws.cell(row=2,column=2,value=title_text)
         c.fill=mf(WHITE); c.font=mft(FONT_BLACK,True,12); c.alignment=left
         ws.row_dimensions[2].height=22
 
-        # 행3: 고정 헤더 — 연한 회색 (B~D 세로 병합)
-        for ci,h in enumerate(["업체구분","거래처명","실적용거래처명"],2):
+        # 행3: 업체구분/거래처명/실적용거래처명 (3~5행 세로 병합)
+        for ci,h in zip(range(2,5), ["업체구분","거래처명","실적용거래처명"]):
             c = ws.cell(row=3,column=ci,value=h)
-            c.fill=mf(GRAY_LIGHT); c.font=mft(FONT_GRAY,True,10); c.alignment=center; c.border=bdr_left
-        ws.merge_cells("B3:B4"); ws.merge_cells("C3:C4"); ws.merge_cells("D3:D4")
+            c.fill=HDR_BG2; c.font=mft(FONT_BLACK,True,10); c.alignment=center
+            ws.merge_cells(start_row=3, start_column=ci, end_row=5, end_column=ci)
 
-        # 주차 헤더
+        # 행3: 주차 헤더
         col = col_start
         for i,r in enumerate(weeks):
-            span = len(brands)+1
-            end_col = col+span-1
+            end_col = col + week_width - 1
             mw, dr = month_week_label(r['ws'])
             ws.merge_cells(f"{get_column_letter(col)}3:{get_column_letter(end_col)}3")
             label = f"{mw} ({dr})" if mw else f"{i+1}주차 ({r['ws']}~{r['we']})"
             c = ws.cell(row=3,column=col,value=label)
-            c.fill=mf(GRAY_LIGHT); c.font=mft(FONT_GRAY,True,10); c.alignment=center; c.border=bdr_left
-            for b in brands:
-                c2 = ws.cell(row=4,column=col,value=f"{b}{'금액' if field=='total' else '수량'}")
-                c2.fill=mf(GRAY_LIGHT); c2.font=mft(FONT_GRAY,False,9); c2.alignment=center; c2.border=bdr_none
-                col+=1
-            c2 = ws.cell(row=4,column=col,value="합계")
-            c2.fill=mf(GRAY_LIGHT); c2.font=mft(FONT_GRAY,True,9); c2.alignment=center; c2.border=bdr_left
-            col+=1
-        ws.row_dimensions[3].height=18; ws.row_dimensions[4].height=16
+            c.fill=HDR_BG2; c.font=mft(FONT_BLACK,True,10); c.alignment=center
+            col += week_width
+        ws.row_dimensions[3].height=18
 
-        # 행5: 빈 구분행
-        for ci in range(1,total_cols+1):
-            ws.cell(row=5,column=ci,value="").fill=mf(WHITE)
-            ws.cell(row=5,column=ci).border=bdr_none
-        ws.row_dimensions[5].height=4
+        # 행4: 브랜드, 행5: 제품명+소계
+        col = col_start
+        for i,r in enumerate(weeks):
+            for b in active_brands:
+                bw = brand_widths[b]
+                end_col = col + bw - 1
+                ws.merge_cells(f"{get_column_letter(col)}4:{get_column_letter(end_col)}4")
+                c = ws.cell(row=4,column=col,value=b)
+                c.fill=HDR_BG2; c.font=mft(FONT_BLACK,True,9); c.alignment=center
+                for pi, plabel in enumerate(brand_products[b]):
+                    c2 = ws.cell(row=5,column=col+pi,value=plabel)
+                    c2.fill=HDR_BG2; c2.font=mft(FONT_BLACK,False,8); c2.alignment=center
+                c3 = ws.cell(row=5,column=col+bw-1,value="소계")
+                c3.fill=HDR_BG2; c3.font=mft(FONT_BLACK,True,8); c3.alignment=center
+                col += bw
+            c = ws.cell(row=4,column=col,value="주합계")
+            ws.merge_cells(f"{get_column_letter(col)}4:{get_column_letter(col)}5")
+            c.fill=HDR_BG2; c.font=mft(FONT_BLACK,True,9); c.alignment=center
+            col += 1
+        ws.row_dimensions[4].height=16; ws.row_dimensions[5].height=16
 
         # 컬럼 너비
         ws.column_dimensions['B'].width=12; ws.column_dimensions['C'].width=22; ws.column_dimensions['D'].width=24
-        for mo_i in range(len(weeks)):
-            for b_i in range(len(brands)+1):
-                ws.column_dimensions[get_column_letter(col_start+mo_i*(len(brands)+1)+b_i)].width=10
+        num_w = 10 if field=='total' else 7
+        for ci in range(col_start, total_cols+1):
+            ws.column_dimensions[get_column_letter(ci)].width = num_w
 
-        # 데이터 행 (6행~)
+        def write_group_subtotal_wk(grp_name, grp_seller_list):
+            nonlocal ri
+            ws.cell(row=ri, column=2, value=f"{grp_name} 소계")
+            ws.merge_cells(start_row=ri, start_column=2, end_row=ri, end_column=4)
+            c = ws.cell(row=ri, column=2)
+            c.fill = HDR_BG2; c.font = mft(FONT_BLACK, True, 9); c.alignment = left
+            col2 = col_start
+            for r in weeks:
+                wk = r['wk']
+                wk_grp_total = 0
+                for b in active_brands:
+                    bw = brand_widths[b]
+                    b_grp_total = 0
+                    for pi, plabel in enumerate(brand_products[b]):
+                        pv = sum(prod_idx_wk.get((wk, b, s, plabel), {}).get(field, 0) for s in grp_seller_list)
+                        c2 = ws.cell(row=ri, column=col2+pi, value=pv if pv else 0)
+                        c2.fill = HDR_BG2; c2.font = mft(FONT_BLACK, False, 8); c2.alignment = right
+                        if field=='total': c2.number_format = num_fmt
+                        b_grp_total += pv
+                    cs = ws.cell(row=ri, column=col2+bw-1, value=b_grp_total if b_grp_total else 0)
+                    cs.fill = HDR_BG2; cs.font = mft(FONT_BLACK, True, 8); cs.alignment = right
+                    if field=='total': cs.number_format = num_fmt
+                    wk_grp_total += b_grp_total
+                    col2 += bw
+                cm = ws.cell(row=ri, column=col2, value=wk_grp_total if wk_grp_total else 0)
+                cm.fill = HDR_BG2; cm.font = mft(FONT_BLACK, True, 9); cm.alignment = right
+                if field=='total': cm.number_format = num_fmt
+                col2 += 1
+            ws.row_dimensions[ri].height = 15
+            ri += 1
+
+        # 데이터 행 (6행~) — 업체구분별 묶어서 소계 삽입 (수정3)
+        ri = 6
         prev_grp = None
-        for ri,s in enumerate(sellers_list, 6):
-            grp = branch_group.get(s,''); gv = grp if grp!=prev_grp else ''; prev_grp=grp
+        current_group_sellers = []
+        for s in sellers_list:
+            grp = branch_group.get(s, '')
+            if prev_grp is not None and grp != prev_grp and current_group_sellers:
+                write_group_subtotal_wk(prev_grp, current_group_sellers)
+                current_group_sellers = []
+            gv = grp if grp != prev_grp else ''
+            prev_grp = grp
+            current_group_sellers.append(s)
+
             for ci,val in enumerate([gv,s,s],2):
                 c=ws.cell(row=ri,column=ci,value=val)
-                c.fill=mf(WHITE); c.border=bdr_left; c.font=mft(FONT_BLACK if ci>2 else FONT_GRAY,False,10)
-            col=col_start
-            for wk_r in weeks:
-                wk = wk_r['wk']
-                mt = 0
-                for b in brands:
-                    # 매장별+브랜드별 값: idx_seller 사용
-                    val = idx_seller.get((wk, b, s), {}).get(field, 0)
-                    mt += val
-                    c=ws.cell(row=ri,column=col,value=val if val else 0)
-                    c.fill=mf(WHITE); c.border=bdr_none; c.alignment=right
-                    c.number_format=num_fmt; c.font=mft(FONT_BLACK,False,10); col+=1
-                c=ws.cell(row=ri,column=col,value=mt)
-                c.fill=mf(WHITE); c.font=mft(FONT_BLACK,True,10)
-                c.border=Border(left=thin_bdr,right=no_bdr,top=no_bdr,bottom=no_bdr)
-                c.alignment=right; c.number_format=num_fmt; col+=1
+                c.font=mft(FONT_BLACK if ci>2 else FONT_GRAY,False,9); c.alignment=left
 
-        # 합계 행
-        tot_row = len(sellers_list)+6
-        for ci,val in enumerate(["합계","",""],2):
-            c=ws.cell(row=tot_row,column=ci,value=val)
-            c.fill=mf(WHITE); c.border=bdr_left; c.font=mft(FONT_BLACK,True,10)
-        col=col_start
-        for wk_r in weeks:
-            wk=wk_r['wk']
-            for b in brands:
-                tv = sum(idx_seller.get((wk,b,s),{}).get(field,0) for s in sellers_list)
-                c=ws.cell(row=tot_row,column=col,value=tv)
-                c.fill=mf(WHITE); c.border=bdr_none; c.alignment=right
-                c.number_format=num_fmt; c.font=mft(FONT_BLACK,True,10); col+=1
-            grand = sum(idx_seller.get((wk,b,s),{}).get(field,0) for s in sellers_list for b in brands)
-            c=ws.cell(row=tot_row,column=col,value=grand)
-            c.fill=mf(WHITE); c.font=mft(FONT_BLACK,True,10)
-            c.border=Border(left=thin_bdr,right=no_bdr,top=no_bdr,bottom=no_bdr)
-            c.alignment=right; c.number_format=num_fmt; col+=1
-        ws.freeze_panes="E6"
+            col2 = col_start
+            for r in weeks:
+                wk = r['wk']
+                wk_total = 0
+                for b in active_brands:
+                    bw = brand_widths[b]
+                    b_total = 0
+                    for pi, plabel in enumerate(brand_products[b]):
+                        val = prod_idx_wk.get((wk, b, s, plabel), {}).get(field, 0)
+                        c = ws.cell(row=ri, column=col2+pi, value=val if val else 0)
+                        c.font = mft(FONT_BLACK, False, 8); c.alignment = right
+                        if field=='total': c.number_format = num_fmt
+                        b_total += val
+                    cs = ws.cell(row=ri, column=col2+bw-1, value=b_total if b_total else 0)
+                    cs.font = mft(FONT_BLACK, True, 8); cs.alignment = right
+                    if field=='total': cs.number_format = num_fmt
+                    wk_total += b_total
+                    col2 += bw
+                cm = ws.cell(row=ri, column=col2, value=wk_total if wk_total else 0)
+                cm.font = mft(FONT_BLACK, True, 9); cm.alignment = right
+                if field=='total': cm.number_format = num_fmt
+                col2 += 1
+            ws.row_dimensions[ri].height = 14
+            ri += 1
+
+        if current_group_sellers:
+            write_group_subtotal_wk(prev_grp, current_group_sellers)
+
+        # 수정5: 하단 총합계 행
+        tot_row = ri
+        ws.cell(row=tot_row, column=2, value="총합계")
+        ws.merge_cells(start_row=tot_row, start_column=2, end_row=tot_row, end_column=4)
+        tc = ws.cell(row=tot_row, column=2)
+        tc.fill = HDR_BG2; tc.font = mft(FONT_BLACK, True, 10); tc.alignment = center
+        col2 = col_start
+        for r in weeks:
+            wk = r['wk']
+            wk_grand = 0
+            for b in active_brands:
+                bw = brand_widths[b]
+                b_grand = 0
+                for pi, plabel in enumerate(brand_products[b]):
+                    pv = sum(prod_idx_wk.get((wk, b, s, plabel), {}).get(field, 0) for s in sellers_list)
+                    c2 = ws.cell(row=tot_row, column=col2+pi, value=pv if pv else 0)
+                    c2.fill = HDR_BG2; c2.font = mft(FONT_BLACK, True, 8); c2.alignment = right
+                    if field=='total': c2.number_format = num_fmt
+                    b_grand += pv
+                cs = ws.cell(row=tot_row, column=col2+bw-1, value=b_grand if b_grand else 0)
+                cs.fill = HDR_BG2; cs.font = mft(FONT_BLACK, True, 8); cs.alignment = right
+                if field=='total': cs.number_format = num_fmt
+                wk_grand += b_grand
+                col2 += bw
+            cm = ws.cell(row=tot_row, column=col2, value=wk_grand if wk_grand else 0)
+            cm.fill = HDR_BG2; cm.font = mft(FONT_BLACK, True, 9); cm.alignment = right
+            if field=='total': cm.number_format = num_fmt
+            col2 += 1
+        ws.row_dimensions[tot_row].height = 18
+
+        # 수정6: 안쪽 점선(hair) 테두리
+        last_col = col_start + len(weeks)*week_width - 1
+        for r_ in range(3, tot_row+1):
+            for c_ in range(2, last_col+1):
+                cell = ws.cell(row=r_, column=c_)
+                left_s  = dotted if c_ > 2 else None
+                right_s = dotted if c_ < last_col else None
+                top_s   = dotted if r_ > 3 else None
+                bottom_s= dotted if r_ < tot_row else None
+                cell.border = Border(left=left_s, right=right_s, top=top_s, bottom=bottom_s)
+
+        ws.freeze_panes = get_column_letter(col_start) + '6'
 
     # ── 시트1: 주별 요약 (세로형 — 출력 최적화) ──
     ws_sum = wb.active; ws_sum.title="주별 요약"
@@ -3419,6 +3674,27 @@ def export_xlsx_weekly():
             ri+=1
     for ci,w in enumerate([10,26,14,36,12,16],2): ws4.column_dimensions[get_column_letter(ci)].width=w
 
+    # 수정1: 기초 데이터 시트 — 업로드된 원본 판매 데이터 그대로 (요약치 검증용)
+    ws_raw = wb.create_sheet("기초데이터")
+    ws_raw.column_dimensions['A'].width = 2.5
+    raw_hdrs = ['일자','거래처명','실적용거래처명','거래처코드','품목명','수량','단가','공급가액','부가세','합계','채널']
+    for ci, h in enumerate(raw_hdrs, 2):
+        c = ws_raw.cell(row=2, column=ci, value=h)
+        c.font=mft(FONT_BLACK,True,9); c.fill=mf("F2F2F2"); c.alignment=center
+    ws_raw.row_dimensions[2].height=20
+    raw_q = f"SELECT sale_date,seller_name,real_seller,trade_code,item_name,quantity,unit_price,supply_price,vat,total,channel FROM sales_data WHERE {' AND '.join(qp)} ORDER BY sale_date, real_seller"
+    ri_raw=3
+    for r in conn.execute(raw_q, pp).fetchall():
+        for ci,v in enumerate(r,2):
+            c=ws_raw.cell(row=ri_raw,column=ci,value=v); c.font=mft(FONT_BLACK,False,8)
+            c.alignment = right if ci in (7,8,9,10) else (center if ci in (2,6) else left)
+            if ci in (8,9,10): c.number_format=num_fmt
+        ri_raw+=1
+    for ci,w in zip(range(2,13),[11,20,20,14,26,8,10,11,10,11,9]):
+        ws_raw.column_dimensions[get_column_letter(ci)].width=w
+    ws_raw.freeze_panes='B3'
+
+    conn.close()
     buf=io.BytesIO(); wb.save(buf); buf.seek(0)
     fname=f"주별실적_{year}{'_'+month+'월' if month else ''}.xlsx"
     return send_file(buf,mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
@@ -8992,7 +9268,7 @@ def api_export_display():
 
         HDR_BG = mf('F2F2F2')  # 수정1: 흰색, 배경1, 5% 더 어둡게
         BLACK  = '000000'      # 수정1: 검정, 텍스트1
-        dotted = Side(style='dotted', color='808080')
+        dotted = Side(style='hair', color='808080')  # 수정6: 더 촘촘한 점선(hair 스타일)
 
         def _build_matrix_sheet(ws, sheet_title_text, sellers, value_map, number_format):
             ws.column_dimensions['A'].width = 2
@@ -9054,15 +9330,38 @@ def api_export_display():
                 ri += 1
             last_data_row = ri - 1
 
+            # 수정5: 하단 총합계 행
+            total_row = ri
+            ws.cell(row=total_row, column=col_start, value='총합계')
+            ws.merge_cells(start_row=total_row, start_column=col_start, end_row=total_row, end_column=col_start+n_fixed-1)
+            tc = ws.cell(row=total_row, column=col_start)
+            tc.font = Font(bold=True, size=10, name=FNAME, color=BLACK); tc.fill = HDR_BG; tc.alignment = ctr
+
+            col = col_start + n_fixed
+            for mo in months:
+                grand_total = 0
+                for pi, pk in enumerate(product_lines):
+                    col_sum = sum(value_map.get((s, mo, pk), 0) for s in sellers)
+                    c = ws.cell(row=total_row, column=col+pi, value=col_sum if col_sum else 0)
+                    c.font = Font(bold=True, size=9, name=FNAME, color=BLACK); c.fill = HDR_BG; c.alignment = ctr
+                    if number_format: c.number_format = number_format
+                    grand_total += col_sum
+                cs = ws.cell(row=total_row, column=col+n_prod, value=grand_total if grand_total else 0)
+                cs.font = Font(bold=True, size=9, name=FNAME, color=BLACK); cs.fill = HDR_BG; cs.alignment = ctr
+                if number_format: cs.number_format = number_format
+                col += month_block_width
+            ws.row_dimensions[total_row].height = 18
+            last_border_row = total_row
+
             # 수정1: 데이터 테두리 — 안쪽만 점선 (외곽선 없음)
             last_col = col_start + n_fixed + len(months)*month_block_width - 1
-            for r_ in range(3, last_data_row+1):
+            for r_ in range(3, last_border_row+1):
                 for c_ in range(col_start, last_col+1):
                     cell = ws.cell(row=r_, column=c_)
                     left_side  = dotted if c_ > col_start else None
                     right_side = dotted if c_ < last_col else None
                     top_side   = dotted if r_ > 3 else None
-                    bottom_side= dotted if r_ < last_data_row else None
+                    bottom_side= dotted if r_ < last_border_row else None
                     cell.border = Border(left=left_side, right=right_side, top=top_side, bottom=bottom_side)
 
             # 수정3: 숫자 컬럼(제품라인+합계) 너비 통일 — 콤마 포함 숫자가 '###'로 안 보이도록 충분히 확보
@@ -9098,6 +9397,34 @@ def api_export_display():
         if dept_sellers:
             ws_dept = wb.create_sheet('백화점'[:31])
             _build_matrix_sheet(ws_dept, f"※ 백화점 판매수량_{brand_sel}_{year}", dept_sellers, qty_map, None)
+
+        # 시트4: 기초 데이터 (수정7) — 요약 데이터의 근거가 된 원본 판매 데이터 그대로 (검증용)
+        ws_raw = wb.create_sheet('기초데이터')
+        ws_raw.column_dimensions['A'].width = 2
+        raw_hdrs = ['일자', '거래처명', '실적용거래처명', '거래처코드', '품목명', '수량', '단가', '공급가액', '부가세', '합계', '채널']
+        for ci, h in enumerate(raw_hdrs, 2):
+            c = ws_raw.cell(row=2, column=ci, value=h)
+            c.font = Font(bold=True, size=9, name=FNAME, color=BLACK); c.fill = HDR_BG; c.alignment = ctr
+        ws_raw.row_dimensions[2].height = 20
+        raw_rows = conn.execute("""
+            SELECT sale_date, seller_name, real_seller, trade_code, item_name,
+                   quantity, unit_price, supply_price, vat, total, channel
+            FROM sales_data
+            WHERE sale_date LIKE ? AND real_seller!=''
+            ORDER BY sale_date, real_seller""", (f"{year}%",)).fetchall()
+        ri_raw = 3
+        for r in raw_rows:
+            item_brand = remap_group('', r[4]) if not r[4].startswith('[') else remap_group('X', r[4])
+            if item_brand != brand_sel: continue
+            for ci, v in enumerate(r, 2):
+                c = ws_raw.cell(row=ri_raw, column=ci, value=v)
+                c.font = Font(size=8, name=FNAME, color=BLACK)
+                c.alignment = ctr if ci in (2,5,6,7) else left_a
+                if ci in (8,9,10,11): c.number_format = '#,##0'; c.alignment = Alignment(horizontal='right')
+            ri_raw += 1
+        for ci, w in zip(range(2,13), [11,20,20,14,26,8,10,11,10,11,9]):
+            ws_raw.column_dimensions[get_column_letter(ci)].width = w
+        ws_raw.freeze_panes = 'B3'
 
         conn.close()
         buf = io.BytesIO(); wb.save(buf); buf.seek(0)
