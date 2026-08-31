@@ -1326,6 +1326,18 @@ PRODUCT_LABEL_ORDER = {
     'ABC디자인': ['버디', '폴디', '태그', '루프트', '슈타트듀오'],
 }
 
+# 브랜드별 리포트 제외 제품 (수정2: 엔픽스 코어모빌홀더/허니쿨필로우 미표시)
+PRODUCT_LABEL_EXCLUDE = {
+    '엔픽스': ['코어모빌홀더', '허니쿨필로우'],
+}
+
+def is_product_excluded(brand, item_name):
+    """해당 브랜드의 제외 목록에 포함된 제품인지 확인 (item_name 원문 기준 부분일치)"""
+    for excl in PRODUCT_LABEL_EXCLUDE.get(brand, []):
+        if excl in item_name:
+            return True
+    return False
+
 def get_custom_product_label(brand, item_name):
     """브랜드별 특수 제품 라벨 규칙. 매칭되면 라벨 문자열, 아니면 None(기본 규칙 사용)"""
     if brand == '원더폴드':
@@ -1343,6 +1355,9 @@ def get_custom_product_label(brand, item_name):
         for material in ['오크', '비치', '리사이클']:
             if material in item_name:
                 return material
+        # 수정3: 베이비시트는 하이체어(오크/비치/리사이클)와 다른 별도 제품 — 중복 아님, 라벨만 명확화
+        if '베이비시트' in item_name:
+            return '베이비시트'
         return None
     return None
 
@@ -2754,6 +2769,7 @@ def export_xlsx_monthly():
     for grp, name in prod_rows_all:
         b = remap_group(grp, name)
         if not b or b == '기타': continue
+        if is_product_excluded(b, name): continue  # 수정2
         if b == '타프토이즈':
             # 수정2: 타프토이즈는 단일 카테고리로 취급 (세부 제품 나열 없음)
             brand_products.setdefault(b, ['전체'])
@@ -2771,6 +2787,7 @@ def export_xlsx_monthly():
         brand_products[b] = sort_product_labels(b, brand_products[b])
 
     def match_brand_product(brand, item_name):
+        if is_product_excluded(brand, item_name): return None  # 수정2
         if brand == '타프토이즈':
             return '전체'
         custom_label = get_custom_product_label(brand, item_name)
@@ -3152,12 +3169,16 @@ def export_xlsx_monthly():
         ws4.column_dimensions[get_column_letter(ci)].width=ww
 
     # 수정1: 기초 데이터 — 업로드하신 원본 엑셀 파일을 그대로 시트로 재현 (요약치 검증용)
-    raw_file_q = "SELECT filename, file_b64, months FROM sales_upload_file WHERE year=?"
-    raw_file_params = [int(year)]
-    if month:
-        raw_file_q += " AND months LIKE ?"
-        raw_file_params.append(f"%{year}-{month.zfill(2)}%")
-    raw_files = conn.execute(raw_file_q, raw_file_params).fetchall()
+    raw_files = []
+    try:
+        raw_file_q = "SELECT filename, file_b64, months FROM sales_upload_file WHERE year=?"
+        raw_file_params = [int(year)]
+        if month:
+            raw_file_q += " AND months LIKE ?"
+            raw_file_params.append(f"%{year}-{month.zfill(2)}%")
+        raw_files = conn.execute(raw_file_q, raw_file_params).fetchall()
+    except Exception:
+        raw_files = []
 
     raw_sheet_names = []
     if raw_files:
@@ -3339,6 +3360,7 @@ def export_xlsx_weekly():
     for r in raw:
         b = remap_group(r[1], r[2])
         if not b or b == '기타': continue
+        if is_product_excluded(b, r[2]): continue  # 수정2
         if b == '타프토이즈':
             brand_products.setdefault(b, ['전체'])
             continue
@@ -3357,6 +3379,7 @@ def export_xlsx_weekly():
         brand_products[b] = sort_product_labels(b, brand_products[b])
 
     def match_brand_product_wk(brand, item_name):
+        if is_product_excluded(brand, item_name): return None  # 수정2
         if brand == '타프토이즈':
             return '전체'
         custom_label = get_custom_product_label(brand, item_name)
@@ -3805,11 +3828,14 @@ def export_xlsx_weekly():
     # 이 리포트에 포함된 주차들이 걸치는 연-월 목록 추출
     covered_ym = sorted(set(f"{r['ws'][:7]}" for r in weeks if r.get('ws')) | set(f"{r['we'][:7]}" for r in weeks if r.get('we')))
     raw_files = []
-    if covered_ym:
-        placeholders = ' OR '.join(['months LIKE ?'] * len(covered_ym))
-        raw_files = conn.execute(
-            f"SELECT filename, file_b64, months FROM sales_upload_file WHERE {placeholders}",
-            [f"%{ym}%" for ym in covered_ym]).fetchall()
+    try:
+        if covered_ym:
+            placeholders = ' OR '.join(['months LIKE ?'] * len(covered_ym))
+            raw_files = conn.execute(
+                f"SELECT filename, file_b64, months FROM sales_upload_file WHERE {placeholders}",
+                [f"%{ym}%" for ym in covered_ym]).fetchall()
+    except Exception:
+        raw_files = []
 
     raw_sheet_names = []
     if raw_files:
@@ -4740,15 +4766,23 @@ def upload_xlsx_commit():
         conn.execute("DELETE FROM sales_data WHERE sale_date LIKE ?", (f"{m}%",))
 
     # 수정1: 원본 업로드 파일 그대로 보관 (기초데이터 시트 재현용) — 겹치는 월의 기존 원본 파일은 교체
-    import base64 as _b64
-    file_b64 = _b64.b64encode(data).decode('ascii')
-    years_covered = sorted(set(d[:4] for d in dates if d))
-    for m in months:
-        conn.execute("DELETE FROM sales_upload_file WHERE months LIKE ?", (f"%{m}%",))
-    conn.execute("""INSERT INTO sales_upload_file (upload_batch, year, months, filename, file_b64, uploaded_at)
-        VALUES(?,?,?,?,?,?)""",
-        (batch, int(years_covered[0]) if years_covered else datetime.now().year,
-         ','.join(months), f.filename or '', file_b64, datetime.now().strftime('%Y-%m-%d %H:%M')))
+    # 저장 실패해도 판매 데이터 업로드 자체는 절대 막히지 않도록 별도로 보호
+    try:
+        conn.execute("""CREATE TABLE IF NOT EXISTS sales_upload_file (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            upload_batch TEXT, year INTEGER, months TEXT DEFAULT '',
+            filename TEXT DEFAULT '', file_b64 TEXT, uploaded_at TEXT DEFAULT '')""")
+        import base64 as _b64
+        file_b64 = _b64.b64encode(data).decode('ascii')
+        years_covered = sorted(set(d[:4] for d in dates if d))
+        for m in months:
+            conn.execute("DELETE FROM sales_upload_file WHERE months LIKE ?", (f"%{m}%",))
+        conn.execute("""INSERT INTO sales_upload_file (upload_batch, year, months, filename, file_b64, uploaded_at)
+            VALUES(?,?,?,?,?,?)""",
+            (batch, int(years_covered[0]) if years_covered else datetime.now().year,
+             ','.join(months), f.filename or '', file_b64, datetime.now().strftime('%Y-%m-%d %H:%M')))
+    except Exception as _raw_save_err:
+        print(f"[경고] 원본 파일 저장 실패 (판매 데이터는 정상 저장됨): {_raw_save_err}")
 
     # 판매 데이터 저장
     for r in rows:
@@ -9337,6 +9371,7 @@ def api_export_display():
     for r in rows_all:
         brand = remap_group(r[0], r[1])
         if brand != brand_sel: continue
+        if is_product_excluded(brand, r[1]): continue  # 수정2
         norm  = normalize_item_name(r[1])
         color = re.sub(r'.*?_', '', r[1], count=1) if '_' in r[1] else '기본'
         color = re.sub(r'\s*\([^)]*\)', '', color).strip()
@@ -9400,6 +9435,7 @@ def api_export_display():
         def match_product_line(item_name):
             """item_name(색상·캐노피 포함)을 제품라인 중 하나로 매칭 — 캐노피형도 기본 모델에 통합
             원더폴드/카오스는 커스텀 라벨 규칙(수정5,6)으로 우선 매칭"""
+            if is_product_excluded(brand_sel, item_name): return None  # 수정2
             custom_label = get_custom_product_label(brand_sel, item_name)
             if custom_label:
                 return custom_label if custom_label in product_lines else None
