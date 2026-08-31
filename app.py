@@ -3183,10 +3183,11 @@ def export_xlsx_monthly():
     raw_sheet_names = []
     if raw_files:
         import base64 as _b64_dl
-        for idx, (fname_orig, fb64, months_str) in enumerate(raw_files):
+        for _file_i, (fname_orig, fb64, months_str) in enumerate(raw_files):
             try:
                 src_bytes = _b64_dl.b64decode(fb64)
-                src_wb = openpyxl.load_workbook(io.BytesIO(src_bytes))
+                src_wb = _load_workbook_resilient(src_bytes)
+                if src_wb is None: continue
                 for src_sheet_name in src_wb.sheetnames:
                     src_ws = src_wb[src_sheet_name]
                     tab_name = f"기초데이터_{months_str.split(',')[0][5:]}월"[:31] if len(raw_files)==1 and len(src_wb.sheetnames)==1 \
@@ -3213,7 +3214,7 @@ def export_xlsx_monthly():
             c.font=mft(FONT_BLACK,True,9); c.fill=mf("F2F2F2"); c.alignment=center
         ws_raw.row_dimensions[4].height=20
         raw_q = "SELECT sale_date,seller_name,real_seller,trade_code,item_name,quantity,unit_price,supply_price,vat,total,channel FROM sales_data WHERE sale_date LIKE ? AND real_seller!=''"
-        raw_params=[f"{year}%"]
+        raw_params=[f"{year}-{month.zfill(2)}%" if month else f"{year}%"]
         if seller: raw_q += " AND real_seller=?"; raw_params.append(seller)
         raw_q += " ORDER BY sale_date, real_seller"
         ri_raw=5
@@ -3230,8 +3231,93 @@ def export_xlsx_monthly():
 
     conn.close()
 
-    # 수정1: 시트 순서를 참조 양식과 동일하게 재배열 (월별 브랜드 요약이 맨 앞, 기초데이터 맨 뒤)
-    wb._sheets = [wb["월별 브랜드 요약"], wb["브랜드별 금액"], wb["브랜드별 수량"], wb["제품별 상세"]] + [wb[n] for n in raw_sheet_names]
+    # 수정3: 추이 대시보드 — 월별 매출 흐름을 한눈에 파악할 수 있는 요약 + 차트 시트
+    from openpyxl.chart import LineChart, BarChart, Reference
+    ws_dash = wb.create_sheet("추이 대시보드")
+    ws_dash.column_dimensions['A'].width = 2.5
+    ws_dash.merge_cells('B2:H2')
+    cdt = ws_dash.cell(row=2, column=2, value=f"※ 월별 매출 추이 대시보드_{year}년")
+    cdt.font = mft(FONT_BLACK, True, 13); cdt.alignment = left
+
+    # 월별 총 매출/수량/전월대비 표
+    dash_hdrs = ['월','총 매출(원)','총 수량','전월대비']
+    for ci, h in enumerate(dash_hdrs, 2):
+        c = ws_dash.cell(row=4, column=ci, value=h)
+        c.font = mft(FONT_BLACK, True, 9); c.fill = mf("F2F2F2"); c.alignment = center
+    ws_dash.row_dimensions[4].height = 20
+
+    monthly_totals = []
+    for mo in months:
+        mt = sum(v.get('total', 0) for k, v in idx.items() if k[1] == mo)
+        mq = sum(v.get('qty', 0) for k, v in idx.items() if k[1] == mo)
+        monthly_totals.append((mo, mt, mq))
+
+    ri_d = 5
+    prev_total = None
+    for mo, mt, mq in monthly_totals:
+        ws_dash.cell(row=ri_d, column=2, value=f"{mo}월").font = mft(FONT_BLACK, False, 9)
+        c_t = ws_dash.cell(row=ri_d, column=3, value=mt); c_t.number_format = num_fmt; c_t.font = mft(FONT_BLACK, True, 9); c_t.alignment = right
+        c_q = ws_dash.cell(row=ri_d, column=4, value=mq); c_q.alignment = right; c_q.font = mft(FONT_BLACK, False, 9)
+        if prev_total is not None and prev_total > 0:
+            growth = round((mt - prev_total) / prev_total * 100, 1)
+            c_g = ws_dash.cell(row=ri_d, column=5, value=f"{'▲' if growth>=0 else '▼'} {abs(growth)}%")
+            c_g.font = mft('16A34A' if growth>=0 else 'DC2626', True, 9); c_g.alignment = center
+        else:
+            ws_dash.cell(row=ri_d, column=5, value='—').alignment = center
+        prev_total = mt
+        ri_d += 1
+    ws_dash.column_dimensions['B'].width=8; ws_dash.column_dimensions['C'].width=18
+    ws_dash.column_dimensions['D'].width=12; ws_dash.column_dimensions['E'].width=12
+
+    # 월별 매출 추이 라인 차트 (수정3: 가시성 — 흐름을 한눈에)
+    if len(monthly_totals) >= 2:
+        line_chart = LineChart()
+        line_chart.title = "월별 매출 추이"
+        line_chart.style = 2
+        line_chart.y_axis.title = '매출(원)'
+        line_chart.x_axis.title = '월'
+        data_ref = Reference(ws_dash, min_col=3, min_row=4, max_row=ri_d-1)
+        cats_ref = Reference(ws_dash, min_col=2, min_row=5, max_row=ri_d-1)
+        line_chart.add_data(data_ref, titles_from_data=True)
+        line_chart.set_categories(cats_ref)
+        line_chart.width = 18; line_chart.height = 9
+        ws_dash.add_chart(line_chart, f"G4")
+
+    # 브랜드별 월별 추이 표 (하단)
+    ri_d += 2
+    brand_trend_start = ri_d
+    ws_dash.cell(row=ri_d, column=2, value="브랜드별 월별 매출 추이").font = mft(FONT_BLACK, True, 11)
+    ri_d += 1
+    hdr_row = ri_d
+    ws_dash.cell(row=ri_d, column=2, value="브랜드").font = mft(FONT_BLACK, True, 9); ws_dash.cell(row=ri_d,column=2).fill=mf("F2F2F2")
+    for ci, mo in enumerate(months, 3):
+        c = ws_dash.cell(row=ri_d, column=ci, value=f"{mo}월")
+        c.font = mft(FONT_BLACK, True, 9); c.fill = mf("F2F2F2"); c.alignment = center
+    ri_d += 1
+    brand_data_start = ri_d
+    for b in [bb for bb in brands if bb in brand_products]:
+        ws_dash.cell(row=ri_d, column=2, value=b).font = mft(FONT_BLACK, True, 9)
+        for ci, mo in enumerate(months, 3):
+            bt = sum(v.get('total',0) for k,v in idx.items() if k[1]==mo and k[2]==b)
+            c = ws_dash.cell(row=ri_d, column=ci, value=bt); c.number_format=num_fmt; c.alignment=right; c.font=mft(FONT_BLACK,False,8)
+        ri_d += 1
+    brand_data_end = ri_d - 1
+
+    if brand_data_end >= brand_data_start and len(months) >= 1:
+        bar_chart = BarChart()
+        bar_chart.type = "col"
+        bar_chart.title = "브랜드별 월별 매출 비교"
+        bar_chart.y_axis.title = '매출(원)'
+        bar_chart.style = 10
+        data_ref2 = Reference(ws_dash, min_col=3, max_col=2+len(months), min_row=hdr_row, max_row=brand_data_end)
+        cats_ref2 = Reference(ws_dash, min_col=2, min_row=brand_data_start, max_row=brand_data_end)
+        bar_chart.add_data(data_ref2, titles_from_data=True)
+        bar_chart.set_categories(cats_ref2)
+        bar_chart.width = 20; bar_chart.height = 10
+        ws_dash.add_chart(bar_chart, f"G22")
+
+    # 수정1: 시트 순서를 참조 양식과 동일하게 재배열 (추이 대시보드 → 월별 브랜드 요약 → ... → 기초데이터)
+    wb._sheets = [wb["추이 대시보드"], wb["월별 브랜드 요약"], wb["브랜드별 금액"], wb["브랜드별 수량"], wb["제품별 상세"]] + [wb[n] for n in raw_sheet_names]
 
     buf=io.BytesIO(); wb.save(buf); buf.seek(0)
     fname=f"오프라인_브랜드별정리_{year}{'_'+month+'월' if month else ''}.xlsx"
@@ -3843,7 +3929,8 @@ def export_xlsx_weekly():
         for fname_orig, fb64, months_str in raw_files:
             try:
                 src_bytes = _b64_dl.b64decode(fb64)
-                src_wb = openpyxl.load_workbook(io.BytesIO(src_bytes))
+                src_wb = _load_workbook_resilient(src_bytes)
+                if src_wb is None: continue
                 for src_sheet_name in src_wb.sheetnames:
                     src_ws = src_wb[src_sheet_name]
                     tab_name = f"기초_{months_str.split(',')[0][5:]}월_{src_sheet_name}"[:31]
@@ -3879,6 +3966,97 @@ def export_xlsx_weekly():
         ws_raw.freeze_panes='B5'
 
     conn.close()
+
+    # 수정3: 추이 대시보드 — 주별 매출 흐름을 한눈에 파악할 수 있는 요약 + 차트 시트
+    from openpyxl.chart import LineChart, BarChart, Reference
+    ws_dash = wb.create_sheet("추이 대시보드")
+    ws_dash.column_dimensions['A'].width = 2.5
+    ws_dash.merge_cells('B2:H2')
+    cdt = ws_dash.cell(row=2, column=2, value=f"※ 주별 매출 추이 대시보드_{single_week_label or year}")
+    cdt.font = mft(FONT_BLACK, True, 13); cdt.alignment = left
+
+    dash_hdrs = ['주차','기간','총 매출(원)','총 수량','전주대비']
+    for ci, h in enumerate(dash_hdrs, 2):
+        c = ws_dash.cell(row=4, column=ci, value=h)
+        c.font = mft(FONT_BLACK, True, 9); c.fill = mf("F2F2F2"); c.alignment = center
+    ws_dash.row_dimensions[4].height = 20
+
+    weekly_totals = []
+    for i, wr in enumerate(weeks):
+        wk = wr['wk']
+        wt = sum(v.get('total', 0) for k, v in idx.items() if k[0] == wk)
+        wq = sum(v.get('qty', 0) for k, v in idx.items() if k[0] == wk)
+        mw, dr = month_week_label(wr['ws'])
+        label = mw or f"{i+1}주차"
+        period = f"{wr['ws']}~{wr['we']}"
+        weekly_totals.append((label, period, wt, wq))
+
+    ri_d = 5
+    prev_total = None
+    for label, period, wt, wq in weekly_totals:
+        ws_dash.cell(row=ri_d, column=2, value=label).font = mft(FONT_BLACK, False, 9)
+        ws_dash.cell(row=ri_d, column=3, value=period).font = mft(FONT_BLACK, False, 8)
+        c_t = ws_dash.cell(row=ri_d, column=4, value=wt); c_t.number_format = num_fmt; c_t.font = mft(FONT_BLACK, True, 9); c_t.alignment = right
+        c_q = ws_dash.cell(row=ri_d, column=5, value=wq); c_q.alignment = right; c_q.font = mft(FONT_BLACK, False, 9)
+        if prev_total is not None and prev_total > 0:
+            growth = round((wt - prev_total) / prev_total * 100, 1)
+            c_g = ws_dash.cell(row=ri_d, column=6, value=f"{'▲' if growth>=0 else '▼'} {abs(growth)}%")
+            c_g.font = mft('16A34A' if growth>=0 else 'DC2626', True, 9); c_g.alignment = center
+        else:
+            ws_dash.cell(row=ri_d, column=6, value='—').alignment = center
+        prev_total = wt
+        ri_d += 1
+    ws_dash.column_dimensions['B'].width=10; ws_dash.column_dimensions['C'].width=20
+    ws_dash.column_dimensions['D'].width=18; ws_dash.column_dimensions['E'].width=12; ws_dash.column_dimensions['F'].width=12
+
+    if len(weekly_totals) >= 2:
+        line_chart = LineChart()
+        line_chart.title = "주별 매출 추이"
+        line_chart.style = 2
+        line_chart.y_axis.title = '매출(원)'
+        line_chart.x_axis.title = '주차'
+        data_ref = Reference(ws_dash, min_col=4, min_row=4, max_row=ri_d-1)
+        cats_ref = Reference(ws_dash, min_col=2, min_row=5, max_row=ri_d-1)
+        line_chart.add_data(data_ref, titles_from_data=True)
+        line_chart.set_categories(cats_ref)
+        line_chart.width = 18; line_chart.height = 9
+        ws_dash.add_chart(line_chart, "H4")
+
+    # 브랜드별 주별 추이 표
+    ri_d += 2
+    ws_dash.cell(row=ri_d, column=2, value="브랜드별 주별 매출 추이").font = mft(FONT_BLACK, True, 11)
+    ri_d += 1
+    hdr_row = ri_d
+    ws_dash.cell(row=ri_d, column=2, value="브랜드").font = mft(FONT_BLACK, True, 9); ws_dash.cell(row=ri_d,column=2).fill=mf("F2F2F2")
+    for ci, wr in enumerate(weeks, 3):
+        mw, dr = month_week_label(wr['ws'])
+        c = ws_dash.cell(row=ri_d, column=ci, value=mw or wr['wk'])
+        c.font = mft(FONT_BLACK, True, 9); c.fill = mf("F2F2F2"); c.alignment = center
+    ri_d += 1
+    brand_data_start = ri_d
+    for b in [bb for bb in brands if bb in brand_products]:
+        ws_dash.cell(row=ri_d, column=2, value=b).font = mft(FONT_BLACK, True, 9)
+        for ci, wr in enumerate(weeks, 3):
+            bt = sum(v.get('total',0) for k,v in idx.items() if k[0]==wr['wk'] and k[1]==b)
+            c = ws_dash.cell(row=ri_d, column=ci, value=bt); c.number_format=num_fmt; c.alignment=right; c.font=mft(FONT_BLACK,False,8)
+        ri_d += 1
+    brand_data_end = ri_d - 1
+
+    if brand_data_end >= brand_data_start and len(weeks) >= 1:
+        bar_chart = BarChart()
+        bar_chart.type = "col"
+        bar_chart.title = "브랜드별 주별 매출 비교"
+        bar_chart.y_axis.title = '매출(원)'
+        bar_chart.style = 10
+        data_ref2 = Reference(ws_dash, min_col=3, max_col=2+len(weeks), min_row=hdr_row, max_row=brand_data_end)
+        cats_ref2 = Reference(ws_dash, min_col=2, min_row=brand_data_start, max_row=brand_data_end)
+        bar_chart.add_data(data_ref2, titles_from_data=True)
+        bar_chart.set_categories(cats_ref2)
+        bar_chart.width = 20; bar_chart.height = 10
+        ws_dash.add_chart(bar_chart, "H22")
+
+    wb._sheets = [wb["추이 대시보드"]] + [s for s in wb._sheets if s.title != "추이 대시보드"]
+
     buf=io.BytesIO(); wb.save(buf); buf.seek(0)
     fname=f"주별실적_{year}{'_'+month+'월' if month else ''}.xlsx"
     return send_file(buf,mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
@@ -5593,6 +5771,45 @@ def api_export_communication_xlsx():
 # ── 매장 방문 보고서 API ────────────────────────────────
 import re as _re_visit
 
+
+def _load_workbook_resilient(file_bytes, data_only=False):
+    """일부 엑셀(이카운트 등 외부 시스템 내보내기)에 손상된 스타일시트(잘못된 RGB 색상값 등)가
+    포함되어 openpyxl 기본 로더가 실패하는 경우를 자동 복구해서 로드.
+    잘못된 aRGB 색상값(6자리·공백·오타 등)을 안전한 8자리 값으로 정규화 후 재시도."""
+    try:
+        return openpyxl.load_workbook(io.BytesIO(file_bytes), data_only=data_only)
+    except Exception:
+        pass
+    # 스타일시트 색상값 정규화 후 재시도
+    try:
+        import zipfile, re as _re_fix, shutil
+        zin = zipfile.ZipFile(io.BytesIO(file_bytes))
+        out_buf = io.BytesIO()
+        zout = zipfile.ZipFile(out_buf, 'w', zipfile.ZIP_DEFLATED)
+
+        def _fix_rgb(m):
+            val = m.group(1).strip().upper()
+            val = _re_fix.sub(r'[^0-9A-F]', '', val)  # 공백/특수문자 제거
+            if len(val) == 6:
+                val = 'FF' + val  # alpha 채널 보강
+            if len(val) != 8:
+                val = 'FF000000'  # 복구 불가 시 검정으로 대체
+            return f'rgb="{val}"'
+
+        for item in zin.namelist():
+            content = zin.read(item)
+            if item == 'xl/styles.xml':
+                text = content.decode('utf-8', errors='replace')
+                text = _re_fix.sub(r'rgb="([^"]*)"', _fix_rgb, text)
+                content = text.encode('utf-8')
+            zout.writestr(item, content)
+        zout.close()
+        out_buf.seek(0)
+        return openpyxl.load_workbook(out_buf, data_only=data_only)
+    except Exception:
+        return None
+
+
 def _copy_sheet_with_style(src_ws, dst_ws):
     """시트를 값+서식(폰트/배경색/테두리/정렬/병합/열너비/행높이)까지 통째로 복사"""
     from copy import copy as _copy_style
@@ -6181,7 +6398,8 @@ def api_export_visit_report_xlsx():
             try:
                 import base64
                 src_bytes = base64.b64decode(raw_xlsx_b64)
-                src_wb = openpyxl.load_workbook(io.BytesIO(src_bytes))
+                src_wb = _load_workbook_resilient(src_bytes)
+                if src_wb is None: raise ValueError("원본 로드 실패")
                 src_ws = src_wb[src_wb.sheetnames[0]]
                 _copy_sheet_with_style(src_ws, ws)
                 continue
@@ -6252,7 +6470,8 @@ def api_export_visit_report_by_store():
             try:
                 import base64
                 src_bytes = base64.b64decode(raw_xlsx_b64)
-                src_wb = openpyxl.load_workbook(io.BytesIO(src_bytes))
+                src_wb = _load_workbook_resilient(src_bytes)
+                if src_wb is None: raise ValueError("원본 로드 실패")
                 src_ws = src_wb[src_wb.sheetnames[0]]
                 _copy_sheet_with_style(src_ws, ws)
                 continue
