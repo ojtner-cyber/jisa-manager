@@ -2745,21 +2745,37 @@ def export_xlsx_monthly():
         return f"{months[0]}월~{months[-1]}월"
 
     # 수정2+4: 브랜드별 제품 목록 수집 (제품별관리 양식 참고 — 브랜드 아래 제품별 서브컬럼)
+    # 수정1: 제품별관리와 동일한 커스텀 순서/라벨 적용, 수정2: 타프토이즈는 세부 제품 나열 없이 단일 컬럼
     import re as _re_bp
-    brand_products = {}  # {brand: [norm_product_label, ...]}
+    brand_products = {}  # {brand: [product_label, ...]}
     prod_rows_all = conn.execute(f"""
         SELECT item_group, item_name FROM sales_data
         WHERE sale_date LIKE '{year}%' AND real_seller!='' GROUP BY item_group, item_name""").fetchall()
     for grp, name in prod_rows_all:
         b = remap_group(grp, name)
         if not b or b == '기타': continue
-        norm = normalize_item_name(name)
-        label = _re_bp.sub(r'^\[[^\]]+\]', '', norm).strip()
+        if b == '타프토이즈':
+            # 수정2: 타프토이즈는 단일 카테고리로 취급 (세부 제품 나열 없음)
+            brand_products.setdefault(b, ['전체'])
+            continue
+        custom_label = get_custom_product_label(b, name)
+        if custom_label:
+            label = custom_label
+        else:
+            norm = normalize_item_name(name)
+            label = _re_bp.sub(r'^\[[^\]]+\]', '', norm).strip()
         if b not in brand_products: brand_products[b] = []
         if label not in brand_products[b]: brand_products[b].append(label)
-    for b in brand_products: brand_products[b].sort()
+    for b in brand_products:
+        if b == '타프토이즈': continue
+        brand_products[b] = sort_product_labels(b, brand_products[b])
 
     def match_brand_product(brand, item_name):
+        if brand == '타프토이즈':
+            return '전체'
+        custom_label = get_custom_product_label(brand, item_name)
+        if custom_label:
+            return custom_label if custom_label in brand_products.get(brand, []) else None
         for label in brand_products.get(brand, []):
             if label in item_name:
                 return label
@@ -3316,21 +3332,36 @@ def export_xlsx_weekly():
     branch_group = {s: detect_group_for_export(s) for s in sellers_list}
 
     # 수정2+4: 브랜드별 제품 목록 수집 (제품별관리 양식 참고 — 브랜드 아래 제품별 서브컬럼)
+    # 수정1: 제품별관리와 동일한 커스텀 순서/라벨 적용, 수정2: 타프토이즈는 세부 제품 나열 없이 단일 컬럼
     import re as _re_wp
-    brand_products = {}  # {brand: [norm_product_label, ...]}
+    brand_products = {}  # {brand: [product_label, ...]}
     seen_products = set()
     for r in raw:
         b = remap_group(r[1], r[2])
         if not b or b == '기타': continue
-        norm = normalize_item_name(r[2])
-        label = _re_wp.sub(r'^\[[^\]]+\]', '', norm).strip()
+        if b == '타프토이즈':
+            brand_products.setdefault(b, ['전체'])
+            continue
+        custom_label = get_custom_product_label(b, r[2])
+        if custom_label:
+            label = custom_label
+        else:
+            norm = normalize_item_name(r[2])
+            label = _re_wp.sub(r'^\[[^\]]+\]', '', norm).strip()
         key = (b, label)
         if key in seen_products: continue
         seen_products.add(key)
         brand_products.setdefault(b, []).append(label)
-    for b in brand_products: brand_products[b].sort()
+    for b in brand_products:
+        if b == '타프토이즈': continue
+        brand_products[b] = sort_product_labels(b, brand_products[b])
 
     def match_brand_product_wk(brand, item_name):
+        if brand == '타프토이즈':
+            return '전체'
+        custom_label = get_custom_product_label(brand, item_name)
+        if custom_label:
+            return custom_label if custom_label in brand_products.get(brand, []) else None
         for label in brand_products.get(brand, []):
             if label in item_name:
                 return label
