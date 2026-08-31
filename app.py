@@ -425,6 +425,17 @@ def init_db():
         updated_at TEXT DEFAULT '',
         UNIQUE(year, month, manager, item_key)
     )""")
+
+    # 수정1: 판매실적 업로드 시 원본 엑셀 파일을 그대로 보관 (기초데이터 시트 재현용)
+    conn.execute("""CREATE TABLE IF NOT EXISTS sales_upload_file (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        upload_batch TEXT,
+        year INTEGER,
+        months TEXT DEFAULT '',
+        filename TEXT DEFAULT '',
+        file_b64 TEXT,
+        uploaded_at TEXT DEFAULT ''
+    )""")
     conn.execute("""CREATE TABLE IF NOT EXISTS work_retro (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         year INTEGER NOT NULL,
@@ -1306,6 +1317,58 @@ def normalize_item_name(name):
     if '[카오스]클랩' in cleaned and '베이비시트' in cleaned:
         cleaned = '[카오스]클랩하이체어'
     return cleaned if cleaned else name
+
+
+# ── 엑셀 리포트용 브랜드별 제품 라벨/정렬 커스텀 규칙 (수정2,4,5,6) ──
+PRODUCT_LABEL_ORDER = {
+    '줄즈':      ['지오3', '데이5', '허브2', '에어2'],
+    '레카로':    ['토론1', '제논1', '액시언1', '벨릭스'],
+    'ABC디자인': ['버디', '폴디', '태그', '루프트', '슈타트듀오'],
+}
+
+def get_custom_product_label(brand, item_name):
+    """브랜드별 특수 제품 라벨 규칙. 매칭되면 라벨 문자열, 아니면 None(기본 규칙 사용)"""
+    if brand == '원더폴드':
+        # 수정5: L2/L4/W2/W4/W2슈퍼맨/W4슈퍼맨/W2폭스/W4폭스
+        base = 'L' if 'L시리즈' in item_name else ('W' if 'W시리즈' in item_name else None)
+        if not base:
+            return None
+        seater = '2' if '2인승' in item_name else ('4' if '4인승' in item_name else '')
+        suffix = ''
+        if '슈퍼맨' in item_name: suffix = '슈퍼맨'
+        elif '폭스바겐' in item_name: suffix = '폭스'
+        return f"{base}{seater}{suffix}" if seater else None
+    if brand == '카오스':
+        # 수정6: 오크/비치/리사이클 소재 기준으로 구분
+        for material in ['오크', '비치', '리사이클']:
+            if material in item_name:
+                return material
+        return None
+    return None
+
+
+def get_product_display_label(brand, norm_name):
+    """제품 표시 라벨 — ABC디자인 등은 대괄호 브랜드 태그 완전 제거 (수정4)"""
+    import re as _re_lbl
+    return _re_lbl.sub(r'^\[[^\]]+\]', '', norm_name).strip()
+
+
+def sort_product_labels(brand, labels):
+    """브랜드별 지정 순서로 정렬 (수정2,4). 지정 안 된 브랜드/라벨은 알파벳 순 뒤에 배치"""
+    order = PRODUCT_LABEL_ORDER.get(brand)
+    if not order:
+        # 원더폴드: L2,L4,W2,W4,W2슈퍼맨,W4슈퍼맨,W2폭스,W4폭스 순
+        if brand == '원더폴드':
+            wf_order = ['L2','L4','W2','W4','W2슈퍼맨','W4슈퍼맨','W2폭스','W4폭스']
+            return sorted(labels, key=lambda x: (wf_order.index(x) if x in wf_order else 99, x))
+        # 카오스: 오크,비치,리사이클 순
+        if brand == '카오스':
+            ks_order = ['오크','비치','리사이클']
+            return sorted(labels, key=lambda x: (ks_order.index(x) if x in ks_order else 99, x))
+        return sorted(labels)
+    return sorted(labels, key=lambda x: (order.index(x) if x in order else 99, x))
+
+
 
 def get_group_sort_key(group):
     """브랜드 정렬 순서"""
@@ -3072,33 +3135,66 @@ def export_xlsx_monthly():
     for ci,ww in enumerate([8,18,16,10,10,16,16,12],2):
         ws4.column_dimensions[get_column_letter(ci)].width=ww
 
-    # 수정1: 기초 데이터 시트 — 업로드된 원본 판매 데이터 그대로 (요약치 검증용)
-    ws_raw = wb.create_sheet("기초데이터")
-    ws_raw.column_dimensions['A'].width = 2.5
-    raw_hdrs = ['일자','거래처명','실적용거래처명','거래처코드','품목명','수량','단가','공급가액','부가세','합계','채널']
-    for ci, h in enumerate(raw_hdrs, 2):
-        c = ws_raw.cell(row=2, column=ci, value=h)
-        c.font=mft(FONT_BLACK,True,9); c.fill=mf("F2F2F2"); c.alignment=center
-    ws_raw.row_dimensions[2].height=20
-    raw_q = "SELECT sale_date,seller_name,real_seller,trade_code,item_name,quantity,unit_price,supply_price,vat,total,channel FROM sales_data WHERE sale_date LIKE ? AND real_seller!=''"
-    raw_params=[f"{year}%"]
-    if seller: raw_q += " AND real_seller=?"; raw_params.append(seller)
-    raw_q += " ORDER BY sale_date, real_seller"
-    ri_raw=3
-    for r in conn.execute(raw_q, raw_params).fetchall():
-        for ci,v in enumerate(r,2):
-            c=ws_raw.cell(row=ri_raw,column=ci,value=v); c.font=mft(FONT_BLACK,False,8)
-            c.alignment = right if ci in (7,8,9,10) else (center if ci in (2,6) else left)
-            if ci in (8,9,10): c.number_format=num_fmt
-        ri_raw+=1
-    for ci,w in zip(range(2,13),[11,20,20,14,26,8,10,11,10,11,9]):
-        ws_raw.column_dimensions[get_column_letter(ci)].width=w
-    ws_raw.freeze_panes='B3'
+    # 수정1: 기초 데이터 — 업로드하신 원본 엑셀 파일을 그대로 시트로 재현 (요약치 검증용)
+    raw_file_q = "SELECT filename, file_b64, months FROM sales_upload_file WHERE year=?"
+    raw_file_params = [int(year)]
+    if month:
+        raw_file_q += " AND months LIKE ?"
+        raw_file_params.append(f"%{year}-{month.zfill(2)}%")
+    raw_files = conn.execute(raw_file_q, raw_file_params).fetchall()
+
+    raw_sheet_names = []
+    if raw_files:
+        import base64 as _b64_dl
+        for idx, (fname_orig, fb64, months_str) in enumerate(raw_files):
+            try:
+                src_bytes = _b64_dl.b64decode(fb64)
+                src_wb = openpyxl.load_workbook(io.BytesIO(src_bytes))
+                for src_sheet_name in src_wb.sheetnames:
+                    src_ws = src_wb[src_sheet_name]
+                    tab_name = f"기초데이터_{months_str.split(',')[0][5:]}월"[:31] if len(raw_files)==1 and len(src_wb.sheetnames)==1 \
+                        else f"기초_{months_str.split(',')[0][5:]}월_{src_sheet_name}"[:31]
+                    # 중복 시트명 방지
+                    base_tab = tab_name; suf = 1
+                    while tab_name in raw_sheet_names:
+                        tab_name = f"{base_tab[:28]}_{suf}"; suf += 1
+                    ws_raw = wb.create_sheet(tab_name)
+                    _copy_sheet_with_style(src_ws, ws_raw)
+                    raw_sheet_names.append(tab_name)
+            except Exception:
+                continue
+
+    if not raw_sheet_names:
+        # 원본 파일이 저장되기 전 데이터(과거 업로드분) 대비 — 요약 데이터로 폴백
+        ws_raw = wb.create_sheet("기초데이터")
+        ws_raw.column_dimensions['A'].width = 2.5
+        c0 = ws_raw.cell(row=2, column=2, value="⚠ 원본 파일이 저장되지 않은 기간입니다. 해당 월 데이터를 다시 업로드하면 원본 그대로 표시됩니다.")
+        c0.font = mft(FONT_BLACK, True, 10)
+        raw_hdrs = ['일자','거래처명','실적용거래처명','거래처코드','품목명','수량','단가','공급가액','부가세','합계','채널']
+        for ci, h in enumerate(raw_hdrs, 2):
+            c = ws_raw.cell(row=4, column=ci, value=h)
+            c.font=mft(FONT_BLACK,True,9); c.fill=mf("F2F2F2"); c.alignment=center
+        ws_raw.row_dimensions[4].height=20
+        raw_q = "SELECT sale_date,seller_name,real_seller,trade_code,item_name,quantity,unit_price,supply_price,vat,total,channel FROM sales_data WHERE sale_date LIKE ? AND real_seller!=''"
+        raw_params=[f"{year}%"]
+        if seller: raw_q += " AND real_seller=?"; raw_params.append(seller)
+        raw_q += " ORDER BY sale_date, real_seller"
+        ri_raw=5
+        for r in conn.execute(raw_q, raw_params).fetchall():
+            for ci,v in enumerate(r,2):
+                c=ws_raw.cell(row=ri_raw,column=ci,value=v); c.font=mft(FONT_BLACK,False,8)
+                c.alignment = right if ci in (7,8,9,10) else (center if ci in (2,6) else left)
+                if ci in (8,9,10): c.number_format=num_fmt
+            ri_raw+=1
+        for ci,w in zip(range(2,13),[11,20,20,14,26,8,10,11,10,11,9]):
+            ws_raw.column_dimensions[get_column_letter(ci)].width=w
+        ws_raw.freeze_panes='B5'
+        raw_sheet_names = ["기초데이터"]
 
     conn.close()
 
     # 수정1: 시트 순서를 참조 양식과 동일하게 재배열 (월별 브랜드 요약이 맨 앞, 기초데이터 맨 뒤)
-    wb._sheets = [wb["월별 브랜드 요약"], wb["브랜드별 금액"], wb["브랜드별 수량"], wb["제품별 상세"], wb["기초데이터"]]
+    wb._sheets = [wb["월별 브랜드 요약"], wb["브랜드별 금액"], wb["브랜드별 수량"], wb["제품별 상세"]] + [wb[n] for n in raw_sheet_names]
 
     buf=io.BytesIO(); wb.save(buf); buf.seek(0)
     fname=f"오프라인_브랜드별정리_{year}{'_'+month+'월' if month else ''}.xlsx"
@@ -3674,25 +3770,56 @@ def export_xlsx_weekly():
             ri+=1
     for ci,w in enumerate([10,26,14,36,12,16],2): ws4.column_dimensions[get_column_letter(ci)].width=w
 
-    # 수정1: 기초 데이터 시트 — 업로드된 원본 판매 데이터 그대로 (요약치 검증용)
-    ws_raw = wb.create_sheet("기초데이터")
-    ws_raw.column_dimensions['A'].width = 2.5
-    raw_hdrs = ['일자','거래처명','실적용거래처명','거래처코드','품목명','수량','단가','공급가액','부가세','합계','채널']
-    for ci, h in enumerate(raw_hdrs, 2):
-        c = ws_raw.cell(row=2, column=ci, value=h)
-        c.font=mft(FONT_BLACK,True,9); c.fill=mf("F2F2F2"); c.alignment=center
-    ws_raw.row_dimensions[2].height=20
-    raw_q = f"SELECT sale_date,seller_name,real_seller,trade_code,item_name,quantity,unit_price,supply_price,vat,total,channel FROM sales_data WHERE {' AND '.join(qp)} ORDER BY sale_date, real_seller"
-    ri_raw=3
-    for r in conn.execute(raw_q, pp).fetchall():
-        for ci,v in enumerate(r,2):
-            c=ws_raw.cell(row=ri_raw,column=ci,value=v); c.font=mft(FONT_BLACK,False,8)
-            c.alignment = right if ci in (7,8,9,10) else (center if ci in (2,6) else left)
-            if ci in (8,9,10): c.number_format=num_fmt
-        ri_raw+=1
-    for ci,w in zip(range(2,13),[11,20,20,14,26,8,10,11,10,11,9]):
-        ws_raw.column_dimensions[get_column_letter(ci)].width=w
-    ws_raw.freeze_panes='B3'
+    # 수정1: 기초 데이터 — 업로드하신 원본 엑셀 파일을 그대로 시트로 재현 (요약치 검증용)
+    # 이 리포트에 포함된 주차들이 걸치는 연-월 목록 추출
+    covered_ym = sorted(set(f"{r['ws'][:7]}" for r in weeks if r.get('ws')) | set(f"{r['we'][:7]}" for r in weeks if r.get('we')))
+    raw_files = []
+    if covered_ym:
+        placeholders = ' OR '.join(['months LIKE ?'] * len(covered_ym))
+        raw_files = conn.execute(
+            f"SELECT filename, file_b64, months FROM sales_upload_file WHERE {placeholders}",
+            [f"%{ym}%" for ym in covered_ym]).fetchall()
+
+    raw_sheet_names = []
+    if raw_files:
+        import base64 as _b64_dl
+        for fname_orig, fb64, months_str in raw_files:
+            try:
+                src_bytes = _b64_dl.b64decode(fb64)
+                src_wb = openpyxl.load_workbook(io.BytesIO(src_bytes))
+                for src_sheet_name in src_wb.sheetnames:
+                    src_ws = src_wb[src_sheet_name]
+                    tab_name = f"기초_{months_str.split(',')[0][5:]}월_{src_sheet_name}"[:31]
+                    base_tab = tab_name; suf = 1
+                    while tab_name in raw_sheet_names:
+                        tab_name = f"{base_tab[:28]}_{suf}"; suf += 1
+                    ws_raw = wb.create_sheet(tab_name)
+                    _copy_sheet_with_style(src_ws, ws_raw)
+                    raw_sheet_names.append(tab_name)
+            except Exception:
+                continue
+
+    if not raw_sheet_names:
+        ws_raw = wb.create_sheet("기초데이터")
+        ws_raw.column_dimensions['A'].width = 2.5
+        c0 = ws_raw.cell(row=2, column=2, value="⚠ 원본 파일이 저장되지 않은 기간입니다. 해당 월 데이터를 다시 업로드하면 원본 그대로 표시됩니다.")
+        c0.font = mft(FONT_BLACK, True, 10)
+        raw_hdrs = ['일자','거래처명','실적용거래처명','거래처코드','품목명','수량','단가','공급가액','부가세','합계','채널']
+        for ci, h in enumerate(raw_hdrs, 2):
+            c = ws_raw.cell(row=4, column=ci, value=h)
+            c.font=mft(FONT_BLACK,True,9); c.fill=mf("F2F2F2"); c.alignment=center
+        ws_raw.row_dimensions[4].height=20
+        raw_q = f"SELECT sale_date,seller_name,real_seller,trade_code,item_name,quantity,unit_price,supply_price,vat,total,channel FROM sales_data WHERE {' AND '.join(qp)} ORDER BY sale_date, real_seller"
+        ri_raw=5
+        for r in conn.execute(raw_q, pp).fetchall():
+            for ci,v in enumerate(r,2):
+                c=ws_raw.cell(row=ri_raw,column=ci,value=v); c.font=mft(FONT_BLACK,False,8)
+                c.alignment = right if ci in (7,8,9,10) else (center if ci in (2,6) else left)
+                if ci in (8,9,10): c.number_format=num_fmt
+            ri_raw+=1
+        for ci,w in zip(range(2,13),[11,20,20,14,26,8,10,11,10,11,9]):
+            ws_raw.column_dimensions[get_column_letter(ci)].width=w
+        ws_raw.freeze_panes='B5'
 
     conn.close()
     buf=io.BytesIO(); wb.save(buf); buf.seek(0)
@@ -4580,6 +4707,17 @@ def upload_xlsx_commit():
     months = sorted(set(d[:7] for d in dates if d))
     for m in months:
         conn.execute("DELETE FROM sales_data WHERE sale_date LIKE ?", (f"{m}%",))
+
+    # 수정1: 원본 업로드 파일 그대로 보관 (기초데이터 시트 재현용) — 겹치는 월의 기존 원본 파일은 교체
+    import base64 as _b64
+    file_b64 = _b64.b64encode(data).decode('ascii')
+    years_covered = sorted(set(d[:4] for d in dates if d))
+    for m in months:
+        conn.execute("DELETE FROM sales_upload_file WHERE months LIKE ?", (f"%{m}%",))
+    conn.execute("""INSERT INTO sales_upload_file (upload_batch, year, months, filename, file_b64, uploaded_at)
+        VALUES(?,?,?,?,?,?)""",
+        (batch, int(years_covered[0]) if years_covered else datetime.now().year,
+         ','.join(months), f.filename or '', file_b64, datetime.now().strftime('%Y-%m-%d %H:%M')))
 
     # 판매 데이터 저장
     for r in rows:
@@ -9172,10 +9310,12 @@ def api_export_display():
         color = re.sub(r'.*?_', '', r[1], count=1) if '_' in r[1] else '기본'
         color = re.sub(r'\s*\([^)]*\)', '', color).strip()
         # 수정5: 캐노피형을 별도 라인으로 분리하지 않고 기본 모델(예: 토론1)로 통합
-        norm_key = norm
+        # 수정4,5,6: 브랜드별 커스텀 라벨 규칙(원더폴드/카오스) 우선 적용, 없으면 기본(대괄호 제거) 라벨 사용
+        custom_label = get_custom_product_label(brand_sel, r[1])
+        norm_key = custom_label if custom_label else norm
         if norm_key not in brand_items:
             brand_items[norm_key] = {
-                'label': norm_key.replace('[' + brand_sel + ']','').strip(),
+                'label': custom_label if custom_label else get_product_display_label(brand_sel, norm),
                 'norm': norm,
                 'is_canopy': False,
                 'colors': [],
@@ -9206,7 +9346,19 @@ def api_export_display():
         left_a = Alignment(horizontal='left', vertical='center', wrap_text=True)
 
         # 제품라인 목록 (brand_items의 모델명 기준, 색상/캐노피 무관 통합 — 수정5)
-        product_lines = sorted(brand_items.keys(), key=lambda k: brand_items[k]['label'])
+        def _product_order_key(k):
+            label = brand_items[k]['label']
+            order = PRODUCT_LABEL_ORDER.get(brand_sel)
+            if brand_sel == '원더폴드':
+                wf_order = ['L2','L4','W2','W4','W2슈퍼맨','W4슈퍼맨','W2폭스','W4폭스']
+                return (wf_order.index(label) if label in wf_order else 99, label)
+            if brand_sel == '카오스':
+                ks_order = ['오크','비치','리사이클']
+                return (ks_order.index(label) if label in ks_order else 99, label)
+            if order:
+                return (order.index(label) if label in order else 99, label)
+            return (99, label)
+        product_lines = sorted(brand_items.keys(), key=_product_order_key)
         product_labels = [brand_items[k]['label'] for k in product_lines]
 
         import re as _re3
@@ -9215,7 +9367,11 @@ def api_export_display():
             return m.group(2).strip() if m else nm.strip()
 
         def match_product_line(item_name):
-            """item_name(색상·캐노피 포함)을 제품라인 중 하나로 매칭 — 캐노피형도 기본 모델에 통합"""
+            """item_name(색상·캐노피 포함)을 제품라인 중 하나로 매칭 — 캐노피형도 기본 모델에 통합
+            원더폴드/카오스는 커스텀 라벨 규칙(수정5,6)으로 우선 매칭"""
+            custom_label = get_custom_product_label(brand_sel, item_name)
+            if custom_label:
+                return custom_label if custom_label in product_lines else None
             for pk in product_lines:
                 base = extract_base2(brand_items[pk]['norm'])
                 if base in item_name:
@@ -9297,10 +9453,37 @@ def api_export_display():
                 col += month_block_width
             ws.row_dimensions[3].height = 20; ws.row_dimensions[4].height = 18
 
+            def _write_product_group_subtotal(grp_name, grp_seller_list):
+                nonlocal ri
+                ws.cell(row=ri, column=col_start, value=f"{grp_name} 소계")
+                ws.merge_cells(start_row=ri, start_column=col_start, end_row=ri, end_column=col_start+n_fixed-1)
+                tcell = ws.cell(row=ri, column=col_start)
+                tcell.font = Font(bold=True, size=9, name=FNAME, color=BLACK); tcell.fill = HDR_BG; tcell.alignment = ctr
+                col2 = col_start + n_fixed
+                for mo in months:
+                    grp_total = 0
+                    for pi, pk in enumerate(product_lines):
+                        pv = sum(value_map.get((s, mo, pk), 0) for s in grp_seller_list)
+                        c2 = ws.cell(row=ri, column=col2+pi, value=pv if pv else 0)
+                        c2.font = Font(size=9, name=FNAME, color=BLACK); c2.fill = HDR_BG; c2.alignment = ctr
+                        if number_format: c2.number_format = number_format
+                        grp_total += pv
+                    cs2 = ws.cell(row=ri, column=col2+n_prod, value=grp_total if grp_total else 0)
+                    cs2.font = Font(bold=True, size=9, name=FNAME, color=BLACK); cs2.fill = HDR_BG; cs2.alignment = ctr
+                    if number_format: cs2.number_format = number_format
+                    col2 += month_block_width
+                ws.row_dimensions[ri].height = 15
+                ri += 1
+
             ri = 5; prev_grp = None
             first_data_row = 5
+            current_grp_sellers = []
             for seller in sellers:
                 grp = seller_group(seller)
+                if prev_grp is not None and grp != prev_grp and current_grp_sellers:
+                    _write_product_group_subtotal(prev_grp, current_grp_sellers)
+                    current_grp_sellers = []
+                current_grp_sellers.append(seller)
                 info = seller_to_code.get(seller, {})
                 # 수정4: 실제 캡처된 거래처코드 우선, 없으면 매핑 테이블 값
                 code = real_code_map.get(seller, '') or info.get('code', '')
@@ -9328,6 +9511,8 @@ def api_export_display():
                     col += month_block_width
                 ws.row_dimensions[ri].height = 15
                 ri += 1
+            if current_grp_sellers:
+                _write_product_group_subtotal(prev_grp, current_grp_sellers)
             last_data_row = ri - 1
 
             # 수정5: 하단 총합계 행
