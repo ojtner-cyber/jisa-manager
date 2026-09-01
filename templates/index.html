@@ -332,13 +332,10 @@ td.center{text-align:center}
     </div>
     <h2 class="lr-title">로그인</h2>
     <p class="lr-sub">계속하려면 로그인하세요</p>
-    <div class="lf"><label>이메일</label><input type="email" id="l-email" value="hwkim@enfix.com" placeholder="이메일을 입력하세요"></div>
-    <div class="lf"><label>비밀번호</label><input type="password" id="l-pw" value="hwkim123!" placeholder="••••••••"></div>
+    <div class="lf"><label>이메일</label><input type="email" id="l-email" placeholder="이메일을 입력하세요"></div>
+    <div class="lf"><label>비밀번호</label><input type="password" id="l-pw" placeholder="••••••••"></div>
     <button class="login-btn" onclick="doLogin()"><span>로그인</span><span>→</span></button>
     <div class="login-err" id="login-err"></div>
-    <div class="login-hint" style="display:block">
-      <strong>기본 계정</strong> — hwkim@enfix.com / hwkim123!
-    </div>
   </div>
 </div>
 
@@ -1074,11 +1071,16 @@ td.center{text-align:center}
 
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
           <div style="font-size:13px;font-weight:700;color:var(--t-700)">사용내역 목록</div>
-          <button class="btn btn-ghost btn-sm" onclick="openGiftManualAdd()">+ 직접 입력</button>
+          <div style="display:flex;gap:8px;align-items:center">
+            <span id="gift-usage-selected-info" style="font-size:11.5px;color:var(--t-400);display:none"></span>
+            <button id="gift-usage-bulk-delete-btn" class="btn btn-ghost btn-sm" style="display:none;color:var(--red);border-color:var(--red)" onclick="bulkDeleteGiftUsage()">🗑 선택 삭제</button>
+            <button class="btn btn-ghost btn-sm" onclick="openGiftManualAdd()">+ 직접 입력</button>
+          </div>
         </div>
         <div style="background:var(--paper);border:1px solid var(--border);border-radius:12px;overflow-x:auto">
           <table style="width:100%;border-collapse:collapse;font-size:12px;white-space:nowrap">
             <thead><tr style="background:var(--bg)">
+              <th style="padding:8px 10px;text-align:center;width:28px;border-bottom:1.5px solid var(--border)"><input type="checkbox" id="gift-usage-select-all" onchange="toggleAllGiftUsage(this)"></th>
               <th style="padding:8px 10px;text-align:center;font-size:10.5px;font-weight:700;color:var(--t-500);border-bottom:1.5px solid var(--border)">No</th>
               <th style="padding:8px 10px;text-align:left;font-size:10.5px;font-weight:700;color:var(--t-500);border-bottom:1.5px solid var(--border)">사용일자</th>
               <th style="padding:8px 10px;text-align:left;font-size:10.5px;font-weight:700;color:var(--t-500);border-bottom:1.5px solid var(--border)">매장명</th>
@@ -1107,11 +1109,12 @@ td.center{text-align:center}
             <div id="gift-check-summary-badge" style="font-size:11px;color:var(--t-400)"></div>
           </div>
           <div>
+            <button id="gift-check-filter-btn" class="btn btn-ghost btn-sm" onclick="toggleGiftCheckMissingOnly()">누락만 보기</button>
             <button class="btn btn-ghost btn-sm" onclick="document.getElementById('gift-ecount-file').click()">📤 이카운트 판매현황 업로드</button>
             <input type="file" id="gift-ecount-file" accept=".xlsx,.xls" style="display:none" onchange="uploadGiftEcount(event)">
           </div>
         </div>
-        <div style="font-size:11px;color:var(--t-400);margin-bottom:10px">이카운트 판매현황 엑셀의 <b>구분=증정</b> 건만 자동으로 추출해서 대장(사용내역) 등록 여부를 확인해요.</div>
+        <div style="font-size:11px;color:var(--t-400);margin-bottom:10px">이카운트 판매현황 엑셀의 <b>구분=증정</b> 건만 자동으로 추출해서 대장(사용내역) 등록 여부를 확인해요. 확인된 건은 어떤 사용내역과 연결됐는지, 누락 건은 원인 진단을 함께 보여드려요.</div>
         <div style="background:var(--paper);border:1px solid var(--border);border-radius:12px;overflow-x:auto;margin-bottom:20px">
           <table style="width:100%;border-collapse:collapse;font-size:12px;white-space:nowrap">
             <thead><tr style="background:var(--bg)">
@@ -1121,6 +1124,7 @@ td.center{text-align:center}
               <th style="padding:8px 10px;text-align:left;font-size:10.5px;font-weight:700;color:var(--t-500);border-bottom:1.5px solid var(--border)">품목</th>
               <th style="padding:8px 10px;text-align:right;font-size:10.5px;font-weight:700;color:var(--t-500);border-bottom:1.5px solid var(--border)">수량</th>
               <th style="padding:8px 10px;text-align:center;font-size:10.5px;font-weight:700;color:var(--t-500);border-bottom:1.5px solid var(--border)">대장 등록여부</th>
+              <th style="padding:8px 10px;text-align:left;font-size:10.5px;font-weight:700;color:var(--t-500);border-bottom:1.5px solid var(--border)">진단</th>
             </tr></thead>
             <tbody id="gift-check-tbody"></tbody>
           </table>
@@ -2452,13 +2456,16 @@ async function loadGiftUsageList(){
   const q = month ? `?month=${month}` : '';
   const rows = await api(`/api/gift/usage/list${q}`) || [];
   const tbody = document.getElementById('gift-usage-tbody');
+  document.getElementById('gift-usage-select-all').checked = false;
+  updateGiftUsageSelection();
   if(!rows.length){
-    tbody.innerHTML = `<tr><td colspan="15" style="text-align:center;padding:30px;color:var(--t-300);font-size:12px">등록된 사용내역이 없습니다</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="16" style="text-align:center;padding:30px;color:var(--t-300);font-size:12px">등록된 사용내역이 없습니다</td></tr>`;
     return;
   }
   tbody.innerHTML = rows.map((r,i)=>{
     const statusColor = GIFT_MATCH_STATUS_COLOR[r.match_status] || '#9CA3AF';
     return `<tr>
+      <td style="padding:8px 10px;text-align:center;border-bottom:1px solid var(--border)"><input type="checkbox" class="gift-usage-check" value="${r.id}" onchange="updateGiftUsageSelection()"></td>
       <td style="padding:8px 10px;text-align:center;font-size:11px;color:var(--t-400);border-bottom:1px solid var(--border)">${rows.length-i}</td>
       <td style="padding:8px 10px;font-size:11.5px;border-bottom:1px solid var(--border)">${r.usage_date}</td>
       <td style="padding:8px 10px;font-size:11.5px;font-weight:600;border-bottom:1px solid var(--border)">${r.store_name}</td>
@@ -2480,6 +2487,35 @@ async function loadGiftUsageList(){
       </td>
     </tr>`;
   }).join('');
+}
+
+function toggleAllGiftUsage(el){
+  document.querySelectorAll('.gift-usage-check').forEach(cb=>cb.checked = el.checked);
+  updateGiftUsageSelection();
+}
+
+function updateGiftUsageSelection(){
+  const checked = document.querySelectorAll('.gift-usage-check:checked');
+  const btn = document.getElementById('gift-usage-bulk-delete-btn');
+  const info = document.getElementById('gift-usage-selected-info');
+  if(checked.length > 0){
+    btn.style.display = 'inline-flex';
+    btn.textContent = `🗑 선택 삭제 (${checked.length}건)`;
+    info.style.display = 'inline';
+    info.textContent = `${checked.length}건 선택됨`;
+  } else {
+    btn.style.display = 'none';
+    info.style.display = 'none';
+  }
+}
+
+async function bulkDeleteGiftUsage(){
+  const ids = Array.from(document.querySelectorAll('.gift-usage-check:checked')).map(cb=>parseInt(cb.value));
+  if(!ids.length) return;
+  if(!confirm(`선택한 ${ids.length}건을 삭제하시겠습니까? 되돌릴 수 없어요.`)) return;
+  const r = await api('/api/gift/usage/bulk-delete', {method:'POST', body:{ids}});
+  if(r?.ok){ toast(`${r.deleted}건 삭제됐어요`); loadGiftUsageList(); }
+  else { toast('삭제에 실패했습니다', false); }
 }
 
 async function uploadGiftUsageExcel(e){
@@ -2571,20 +2607,46 @@ async function uploadGiftEcount(e){
   e.target.value = '';
 }
 
+let giftCheckShowMissingOnly = false;
+function toggleGiftCheckMissingOnly(){
+  giftCheckShowMissingOnly = !giftCheckShowMissingOnly;
+  const btn = document.getElementById('gift-check-filter-btn');
+  if(btn){
+    btn.textContent = giftCheckShowMissingOnly ? '✓ 누락만 보기' : '누락만 보기';
+    btn.classList.toggle('btn-dark', giftCheckShowMissingOnly);
+    btn.classList.toggle('btn-ghost', !giftCheckShowMissingOnly);
+  }
+  loadGiftCheckList();
+}
+
 async function loadGiftCheckList(){
   const month = document.getElementById('gift-month').value;
   const q = month ? `?month=${month}` : '';
-  const rows = await api(`/api/gift/check/list${q}`) || [];
+  let rows = await api(`/api/gift/check/list${q}`) || [];
   const tbody = document.getElementById('gift-check-tbody');
   const badge = document.getElementById('gift-check-summary-badge');
-  if(!rows.length){
-    tbody.innerHTML = `<tr><td colspan="6" style="text-align:center;padding:30px;color:var(--t-300);font-size:12px">이카운트 판매현황을 업로드하면 증정 건이 여기 표시돼요</td></tr>`;
+  const totalCnt = rows.length;
+  const okCnt = rows.filter(r=>r.status==='확인').length;
+  if(giftCheckShowMissingOnly) rows = rows.filter(r=>r.status==='누락');
+  if(!totalCnt){
+    tbody.innerHTML = `<tr><td colspan="7" style="text-align:center;padding:30px;color:var(--t-300);font-size:12px">이카운트 판매현황을 업로드하면 증정 건이 여기 표시돼요</td></tr>`;
     badge.textContent = '';
+  } else if(!rows.length){
+    tbody.innerHTML = `<tr><td colspan="7" style="text-align:center;padding:30px;color:var(--t-300);font-size:12px">누락 건이 없어요 🎉</td></tr>`;
+    badge.textContent = `총 ${totalCnt}건 · 확인 ${okCnt}건 · 누락 ${totalCnt-okCnt}건`;
   } else {
-    const okCnt = rows.filter(r=>r.status==='확인').length;
-    badge.textContent = `총 ${rows.length}건 · 확인 ${okCnt}건 · 누락 ${rows.length-okCnt}건`;
+    badge.textContent = `총 ${totalCnt}건 · 확인 ${okCnt}건 · 누락 ${totalCnt-okCnt}건`;
     tbody.innerHTML = rows.map(r=>{
       const color = r.status==='확인' ? '#16A34A' : '#DC2626';
+      let diagCell = '';
+      if(r.status==='확인' && r.matched_usage){
+        diagCell = `<span style="color:var(--t-400)">→ 사용내역 ${r.matched_usage.usage_date} · ${r.matched_usage.item_name||''} 매칭</span>`;
+      } else if(r.status==='누락'){
+        diagCell = `<span style="color:#DC2626">${r.diagnosis||''}</span>`;
+        if(r.nearby_usage && r.nearby_usage.length){
+          diagCell += `<div style="font-size:10px;color:var(--t-400);margin-top:2px">해당 매장 사용내역: ${r.nearby_usage.map(n=>`${n.usage_date}(${n.item_name||'-'})`).join(', ')}</div>`;
+        }
+      }
       return `<tr>
         <td style="padding:8px 10px;font-size:11.5px;font-weight:600;border-bottom:1px solid var(--border)">${r.real_seller}</td>
         <td style="padding:8px 10px;font-size:11px;color:var(--t-500);border-bottom:1px solid var(--border)">${r.ecount_date_raw}</td>
@@ -2594,6 +2656,7 @@ async function loadGiftCheckList(){
         <td style="padding:8px 10px;text-align:center;border-bottom:1px solid var(--border)">
           <span style="font-size:10.5px;font-weight:700;color:${color};background:${color}15;padding:2px 8px;border-radius:5px">${r.status}</span>
         </td>
+        <td style="padding:8px 10px;font-size:10.5px;border-bottom:1px solid var(--border);white-space:normal;max-width:260px">${diagCell}</td>
       </tr>`;
     }).join('');
   }

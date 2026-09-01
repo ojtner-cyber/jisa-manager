@@ -3240,6 +3240,8 @@ def export_xlsx_monthly():
         ws4.column_dimensions[get_column_letter(ci)].width=ww
 
     # 수정1: 기초 데이터 — 업로드하신 원본 엑셀 파일을 그대로 시트로 재현 (요약치 검증용)
+    # 수정5: "전체"(월 미지정) 다운로드 시 원본 파일이 여러 개(달마다 하나씩) 걸리면 전체를 픽셀 단위로
+    # 복원하려다 시간이 오래 걸려 서버 오류가 나던 문제 — 파일 수가 많으면 가벼운 요약 시트로 자동 전환한다.
     raw_files = []
     try:
         raw_file_q = "SELECT filename, file_b64, months FROM sales_upload_file WHERE year=?"
@@ -3248,6 +3250,8 @@ def export_xlsx_monthly():
             raw_file_q += " AND months LIKE ?"
             raw_file_params.append(f"%{year}-{month.zfill(2)}%")
         raw_files = conn.execute(raw_file_q, raw_file_params).fetchall()
+        if len(raw_files) > 3:
+            raw_files = []  # 너무 많으면 원본 복원을 건너뛰고 아래에서 요약 시트로 대체
     except Exception:
         raw_files = []
 
@@ -3898,7 +3902,8 @@ def export_xlsx_weekly():
     for ci,w in enumerate([10,26,14,36,12,16],2): ws4.column_dimensions[get_column_letter(ci)].width=w
 
     # 수정1: 기초 데이터 — 업로드하신 원본 엑셀 파일을 그대로 시트로 재현 (요약치 검증용)
-    # 이 리포트에 포함된 주차들이 걸치는 연-월 목록 추출
+    # 수정5: 걸치는 원본 파일이 많으면(예: 연간 전체) 픽셀 단위 복원이 오래 걸려 서버 오류가 나던 문제 —
+    # 파일 수가 많으면 가벼운 요약 시트로 자동 전환한다.
     covered_ym = sorted(set(f"{r['ws'][:7]}" for r in weeks if r.get('ws')) | set(f"{r['we'][:7]}" for r in weeks if r.get('we')))
     raw_files = []
     try:
@@ -3907,6 +3912,8 @@ def export_xlsx_weekly():
             raw_files = conn.execute(
                 f"SELECT filename, file_b64, months FROM sales_upload_file WHERE {placeholders}",
                 [f"%{ym}%" for ym in covered_ym]).fetchall()
+        if len(raw_files) > 3:
+            raw_files = []  # 너무 많으면 원본 복원을 건너뛰고 아래에서 요약 시트로 대체
     except Exception:
         raw_files = []
 
@@ -8707,23 +8714,37 @@ def _gift_build_canonical_store_index(conn):
     return canonical, trade_code_map
 
 
-def _gift_learn_store(conn, key_type, key_value, canonical_name):
+def _gift_load_learned_cache(conn):
+    """학습된 매장명 매핑 전체를 메모리로 한 번에 로드 — 레코드마다 DB를 조회하지 않도록 해서
+    대량 데이터에서도 매장명 재해석/정리가 느려지거나 타임아웃 나지 않게 한다."""
+    cache = {}
+    for kt, kv, cn in conn.execute("SELECT key_type, key_value, canonical_name FROM gift_store_learned").fetchall():
+        cache[(kt, kv)] = cn
+    return cache
+
+
+def _gift_learn_store(conn, key_type, key_value, canonical_name, learned_cache=None):
     """매장명 해석 결과를 영구 저장 — 같은 거래처코드/매장명은 이후 항상 동일한 정식 매장명으로 인식되도록 한다."""
     if not key_value or not canonical_name:
         return
+    if learned_cache is not None and learned_cache.get((key_type, key_value)) == canonical_name:
+        return  # 이미 동일하게 학습돼 있으면 DB에 다시 쓸 필요 없음
     now = datetime.now().strftime('%Y-%m-%d %H:%M')
     conn.execute("""INSERT INTO gift_store_learned (key_type, key_value, canonical_name, updated_at)
         VALUES(?,?,?,?)
         ON CONFLICT(key_type, key_value) DO UPDATE SET canonical_name=excluded.canonical_name, updated_at=excluded.updated_at""",
         (key_type, key_value, canonical_name, now))
+    if learned_cache is not None:
+        learned_cache[(key_type, key_value)] = canonical_name
 
 
 def _gift_resolve_store_name(conn, raw_seller='', real_seller_hint='', trade_code='',
-                              canonical_index=None, trade_code_map=None, persist=True):
+                              canonical_index=None, trade_code_map=None, persist=True, learned_cache=None):
     """매장명 3단계 검증 — ① 원본 거래처명 → ② 실적용거래처명 → ③ 거래처코드(가장 확실) 순으로
     이미 학습된(gift_store_learned) 정식 매장명이 있는지 확인하고, 없으면 새로 해석해서 영구 저장한다.
     한 번 확정된 매핑은 이후 몇 번을 다시 업로드해도 항상 동일한 결과를 내므로 '매번 새로 추가되는' 문제와
-    '매장명이 중복 표시되는' 문제를 근본적으로 방지한다."""
+    '매장명이 중복 표시되는' 문제를 근본적으로 방지한다.
+    learned_cache를 전달하면 DB 조회 없이 메모리에서 조회해서 대량 처리 시에도 빠르게 동작한다."""
     trade_code = (trade_code or '').strip()
     raw_seller = (raw_seller or '').strip().replace('_', ' ')
     real_seller_hint = (real_seller_hint or '').strip().replace('_', ' ')
@@ -8731,23 +8752,21 @@ def _gift_resolve_store_name(conn, raw_seller='', real_seller_hint='', trade_cod
     raw_key = _gift_normalize_store_key(raw_seller) if raw_seller else ''
     real_key = _gift_normalize_store_key(real_seller_hint) if real_seller_hint else ''
 
+    def _lookup(key_type, key_value):
+        if not key_value:
+            return None
+        if learned_cache is not None:
+            return learned_cache.get((key_type, key_value))
+        r = conn.execute("SELECT canonical_name FROM gift_store_learned WHERE key_type=? AND key_value=?", (key_type, key_value)).fetchone()
+        return r[0] if r else None
+
     # ① 원본 거래처명으로 1차 검증 (이미 학습된 매핑 우선)
-    if raw_key:
-        r = conn.execute("SELECT canonical_name FROM gift_store_learned WHERE key_type='raw' AND key_value=?", (raw_key,)).fetchone()
-        canonical_guess = r[0] if r else None
-    else:
-        canonical_guess = None
-
+    canonical_guess = _lookup('raw', raw_key)
     # ② 실적용거래처명으로 2차 검증
-    if not canonical_guess and real_key:
-        r = conn.execute("SELECT canonical_name FROM gift_store_learned WHERE key_type='real' AND key_value=?", (real_key,)).fetchone()
-        if r: canonical_guess = r[0]
-
+    if not canonical_guess:
+        canonical_guess = _lookup('real', real_key)
     # ③ 거래처코드로 3차 검증 (가장 확실 — 이미 학습됐다면 최우선으로 덮어씀)
-    code_learned = None
-    if trade_code:
-        r = conn.execute("SELECT canonical_name FROM gift_store_learned WHERE key_type='code' AND key_value=?", (trade_code,)).fetchone()
-        if r: code_learned = r[0]
+    code_learned = _lookup('code', trade_code)
     if code_learned:
         canonical_guess = code_learned
 
@@ -8767,11 +8786,11 @@ def _gift_resolve_store_name(conn, raw_seller='', real_seller_hint='', trade_cod
 
     if persist and canonical_guess:
         if trade_code:
-            _gift_learn_store(conn, 'code', trade_code, canonical_guess)
+            _gift_learn_store(conn, 'code', trade_code, canonical_guess, learned_cache)
         if raw_key:
-            _gift_learn_store(conn, 'raw', raw_key, canonical_guess)
+            _gift_learn_store(conn, 'raw', raw_key, canonical_guess, learned_cache)
         if real_key:
-            _gift_learn_store(conn, 'real', real_key, canonical_guess)
+            _gift_learn_store(conn, 'real', real_key, canonical_guess, learned_cache)
 
     return canonical_guess or raw_seller or real_seller_hint
 
@@ -9012,6 +9031,7 @@ def api_gift_usage_add():
     conn = get_db()
     now = datetime.now().strftime('%Y-%m-%d %H:%M')
     canonical_index, trade_code_map = _gift_build_canonical_store_index(conn)
+    learned_cache = _gift_load_learned_cache(conn)
 
     # 기존 DB에 이미 있는 건들의 중복판정 키 집합 (재업로드/재입력 시 누적 방지)
     existing_keys = set()
@@ -9021,13 +9041,15 @@ def api_gift_usage_add():
     inserted = 0
     skipped_dup = 0
     seen_in_batch = set()
+    touched_months = set()
     for it in items:
         usage_date = it.get('usage_date', '').strip()
         store_name = it.get('store_name', '').strip()
         if not usage_date or not store_name:
             continue
         brand = _gift_normalize_brand(it.get('brand', ''))
-        real_seller = _gift_resolve_store_name(conn, raw_seller=store_name, canonical_index=canonical_index, trade_code_map=trade_code_map)
+        real_seller = _gift_resolve_store_name(conn, raw_seller=store_name, canonical_index=canonical_index,
+                                                trade_code_map=trade_code_map, learned_cache=learned_cache)
         qty = int(it.get('quantity', 1) or 1)
         unit_price = int(it.get('unit_price', 0) or 0)
         item_name = it.get('item_name', '')
@@ -9046,12 +9068,13 @@ def api_gift_usage_add():
              it.get('reason',''), real_seller, it.get('manager',''), it.get('note',''),
              usage_date[:7], it.get('source','수동입력'), it.get('kakao_raw_text',''), now))
         inserted += 1
+        touched_months.add(usage_date[:7])
     conn.commit()
-    # 방금 저장한 건들의 매장명 표기가 기존 건과 갈렸을 경우까지 포함해 즉시 통합 정리
-    _gift_reconcile_store_names(conn, canonical_index, trade_code_map)
-    conn.commit()
-    removed_u, removed_e = _gift_dedupe_existing_records(conn)
-    conn.commit()
+    # 방금 저장한 건들이 속한 월에 한해서만 중복 정리 (전체 이력을 매번 훑지 않아 대량 데이터에서도 빠름)
+    removed_u = removed_e = 0
+    if touched_months:
+        removed_u, removed_e = _gift_dedupe_existing_records(conn, months=touched_months)
+        conn.commit()
     _gift_auto_match(conn)
     conn.commit(); conn.close()
     return jsonify({'ok': True, 'inserted': inserted, 'skipped_dup': skipped_dup, 'cleaned_dup': removed_u})
@@ -9064,6 +9087,21 @@ def api_gift_usage_delete(rid):
     conn.execute("DELETE FROM gift_usage_record WHERE id=?", (rid,))
     conn.commit(); conn.close()
     return jsonify({'ok': True})
+
+
+@app.route("/api/gift/usage/bulk-delete", methods=["POST"])
+@login_required
+def api_gift_usage_bulk_delete():
+    """사용내역(건별) 여러 건 한 번에 삭제"""
+    ids = (request.json or {}).get('ids') or []
+    ids = [int(i) for i in ids if str(i).isdigit() or isinstance(i, int)]
+    if not ids:
+        return jsonify({'ok': False, 'msg': '삭제할 항목이 없습니다'}), 400
+    conn = get_db()
+    placeholders = ','.join('?' * len(ids))
+    conn.execute(f"DELETE FROM gift_usage_record WHERE id IN ({placeholders})", ids)
+    conn.commit(); conn.close()
+    return jsonify({'ok': True, 'deleted': len(ids)})
 
 
 @app.route("/api/gift/usage/<int:rid>", methods=["PUT"])
@@ -9140,69 +9178,89 @@ def api_gift_ecount_upload():
     if not header_row_idx or not col_map.get('gubun'):
         return jsonify({'ok': False, 'msg': '"구분" 컬럼을 찾을 수 없습니다. 이카운트 판매현황 형식을 확인해주세요'}), 400
 
-    conn = get_db()
-    canonical_index, trade_code_map = _gift_build_canonical_store_index(conn)
-    # 수정4: 판매실적 업로드 이력에 쌓인 거래처코드 매핑을 아직 학습되지 않은 것들 위주로 선반영
-    for tc, name in trade_code_map.items():
-        if not conn.execute("SELECT 1 FROM gift_store_learned WHERE key_type='code' AND key_value=?", (tc,)).fetchone():
-            _gift_learn_store(conn, 'code', tc, name)
-    now = datetime.now().strftime('%Y-%m-%d %H:%M')
-    batch = now.replace(' ','').replace(':','').replace('-','')
-    inserted = 0
-    for ri in range(header_row_idx+1, ws.max_row+1):
-        gubun = ws.cell(ri, col_map['gubun']).value
-        if not gubun or '증정' not in str(gubun):
-            continue
-        date_raw = ws.cell(ri, col_map['date']).value
-        seller_raw = str(ws.cell(ri, col_map['seller_raw']).value or '').strip() if col_map.get('seller_raw') else ''
-        seller_real = str(ws.cell(ri, col_map['seller_real']).value or '').strip() if col_map.get('seller_real') else ''
-        if not seller_raw and not seller_real:
-            continue
-        item = ws.cell(ri, col_map['item']).value
-        item_group = ws.cell(ri, col_map['item_group']).value if col_map.get('item_group') else ''
-        trade_code = str(ws.cell(ri, col_map['trade_code']).value or '').strip() if col_map.get('trade_code') else ''
-        qty = ws.cell(ri, col_map['qty']).value
-        if not date_raw or not item:
-            continue
-        ecount_date, voucher = _gift_parse_ecount_date(date_raw)
-        # 수정3: ①원본 거래처명 → ②실적용거래처명 → ③거래처코드(가장 확실) 3단계 검증으로 정식 매장명 확정
-        real_seller = _gift_resolve_store_name(conn, raw_seller=seller_raw, real_seller_hint=seller_real,
-                                                trade_code=trade_code, canonical_index=canonical_index,
-                                                trade_code_map=trade_code_map)
-        brand = remap_group(str(item_group or ''), str(item))
-        try:
-            conn.execute("""INSERT INTO gift_ecount_record
-                (upload_batch, ecount_date_raw, ecount_date, voucher_no, real_seller, brand, item_name, quantity, uploaded_at, raw_seller, trade_code)
-                VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
-                (batch, str(date_raw), ecount_date, voucher, real_seller, brand, str(item), int(qty or 0), now, seller_raw, trade_code))
-            inserted += 1
-        except sqlite3.IntegrityError:
-            pass  # 이미 동일 건 존재 (중복 업로드 방지)
+    try:
+        conn = get_db()
+        canonical_index, trade_code_map = _gift_build_canonical_store_index(conn)
+        learned_cache = _gift_load_learned_cache(conn)
+        # 수정4: 판매실적 업로드 이력에 쌓인 거래처코드 매핑을 아직 학습되지 않은 것들 위주로 선반영 (메모리 캐시로 처리, DB 왕복 없음)
+        for tc, name in trade_code_map.items():
+            if learned_cache.get(('code', tc)) != name:
+                _gift_learn_store(conn, 'code', tc, name, learned_cache)
+        now = datetime.now().strftime('%Y-%m-%d %H:%M')
+        batch = now.replace(' ','').replace(':','').replace('-','')
+        inserted = 0
+        touched_dates = set()
+        for ri in range(header_row_idx+1, ws.max_row+1):
+            gubun = ws.cell(ri, col_map['gubun']).value
+            if not gubun or '증정' not in str(gubun):
+                continue
+            date_raw = ws.cell(ri, col_map['date']).value
+            seller_raw = str(ws.cell(ri, col_map['seller_raw']).value or '').strip() if col_map.get('seller_raw') else ''
+            seller_real = str(ws.cell(ri, col_map['seller_real']).value or '').strip() if col_map.get('seller_real') else ''
+            if not seller_raw and not seller_real:
+                continue
+            item = ws.cell(ri, col_map['item']).value
+            item_group = ws.cell(ri, col_map['item_group']).value if col_map.get('item_group') else ''
+            trade_code_raw = ws.cell(ri, col_map['trade_code']).value if col_map.get('trade_code') else ''
+            # 거래처코드가 숫자(정수/실수)로 읽힌 경우도 안전하게 문자열화 (예: 1234567890.0 → 1234567890)
+            if isinstance(trade_code_raw, float) and trade_code_raw == int(trade_code_raw):
+                trade_code = str(int(trade_code_raw))
+            else:
+                trade_code = str(trade_code_raw or '').strip()
+            qty_raw = ws.cell(ri, col_map['qty']).value
+            try:
+                qty = int(float(str(qty_raw).replace(',', '').strip())) if qty_raw not in (None, '') else 0
+            except Exception:
+                qty = 0
+            if not date_raw or not item:
+                continue
+            ecount_date, voucher = _gift_parse_ecount_date(date_raw)
+            # 수정3: ①원본 거래처명 → ②실적용거래처명 → ③거래처코드(가장 확실) 3단계 검증으로 정식 매장명 확정
+            real_seller = _gift_resolve_store_name(conn, raw_seller=seller_raw, real_seller_hint=seller_real,
+                                                    trade_code=trade_code, canonical_index=canonical_index,
+                                                    trade_code_map=trade_code_map, learned_cache=learned_cache)
+            brand = remap_group(str(item_group or ''), str(item))
+            try:
+                conn.execute("""INSERT INTO gift_ecount_record
+                    (upload_batch, ecount_date_raw, ecount_date, voucher_no, real_seller, brand, item_name, quantity, uploaded_at, raw_seller, trade_code)
+                    VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
+                    (batch, str(date_raw), ecount_date, voucher, real_seller, brand, str(item), qty, now, seller_raw, trade_code))
+                inserted += 1
+                if ecount_date: touched_dates.add(ecount_date[:7])
+            except sqlite3.IntegrityError:
+                pass  # 이미 동일 건 존재 (중복 업로드 방지)
 
-    conn.commit()
+        conn.commit()
 
-    # 수정2: 기존에 흩어져 있던 매장명 표기도 3단계 검증으로 다시 통합
-    _gift_reconcile_store_names(conn, canonical_index, trade_code_map)
-    conn.commit()
-    # 통합 후 드러난 기존 중복 레코드 정리
-    _gift_dedupe_existing_records(conn)
-    conn.commit()
+        # 이번 업로드로 새로 들어온 월(月)에 한해서만 중복 정리 (전체 이력을 매번 훑지 않아 대량 데이터에서도 빠름)
+        if touched_dates:
+            _gift_dedupe_existing_records(conn, months=touched_dates)
+            conn.commit()
 
-    # 자동 매칭: gift_usage_record와 real_seller + 날짜 + 브랜드 기준으로 대사
-    _gift_auto_match(conn)
-    conn.commit(); conn.close()
+        # 자동 매칭: gift_usage_record와 real_seller + 날짜 + 브랜드 기준으로 대사
+        _gift_auto_match(conn)
+        conn.commit(); conn.close()
 
-    return jsonify({'ok': True, 'inserted': inserted})
+        return jsonify({'ok': True, 'inserted': inserted})
+    except Exception as e:
+        import traceback; traceback.print_exc()
+        try: conn.close()
+        except Exception: pass
+        return jsonify({'ok': False, 'msg': f'업로드 처리 중 오류: {e}'}), 500
 
 
-def _gift_reconcile_store_names(conn, canonical_index, trade_code_map):
+def _gift_reconcile_store_names(conn, canonical_index, trade_code_map, learned_cache=None):
     """기존에 이미 저장된 사용내역/이카운트 레코드의 매장명을 3단계 검증 로직으로 다시 확정해서
-    같은 매장이 서로 다른 표기로 흩어져 보이던 기존 데이터를 즉시 하나로 통합한다."""
+    같은 매장이 서로 다른 표기로 흩어져 보이던 기존 데이터를 즉시 하나로 통합한다.
+    learned_cache를 전달하면 레코드마다 DB를 조회하지 않아 대량 데이터에서도 빠르게 끝난다."""
+    if learned_cache is None:
+        learned_cache = _gift_load_learned_cache(conn)
     changed = 0
     for r in conn.execute("SELECT id, store_name, real_seller FROM gift_usage_record").fetchall():
         rid, store_name, old_real = r
         new_real = _gift_resolve_store_name(conn, raw_seller=store_name,
-                                             canonical_index=canonical_index, trade_code_map=trade_code_map)
+                                             canonical_index=canonical_index, trade_code_map=trade_code_map,
+                                             learned_cache=learned_cache)
         if new_real and new_real != old_real:
             conn.execute("UPDATE gift_usage_record SET real_seller=? WHERE id=?", (new_real, rid))
             changed += 1
@@ -9210,19 +9268,28 @@ def _gift_reconcile_store_names(conn, canonical_index, trade_code_map):
         rid, raw_seller, old_real, trade_code = r
         new_real = _gift_resolve_store_name(conn, raw_seller=raw_seller, real_seller_hint=old_real,
                                              trade_code=trade_code, canonical_index=canonical_index,
-                                             trade_code_map=trade_code_map)
+                                             trade_code_map=trade_code_map, learned_cache=learned_cache)
         if new_real and new_real != old_real:
             conn.execute("UPDATE gift_ecount_record SET real_seller=? WHERE id=?", (new_real, rid))
             changed += 1
     return changed
 
 
-def _gift_dedupe_existing_records(conn):
+def _gift_dedupe_existing_records(conn, months=None):
     """이미 DB에 쌓인 중복 레코드 정리 — 매장명 표기가 통합되면서 드러난 기존 중복 건들을
     (일자+정식매장명+브랜드+품목+수량+단가) 기준으로 묶어 가장 먼저 등록된 1건만 남기고 정리한다."""
     removed_usage = 0
+    """이미 DB에 쌓인 중복 레코드 정리 — 매장명 표기가 통합되면서 드러난 기존 중복 건들을
+    (일자+정식매장명+브랜드+품목+수량+단가) 기준으로 묶어 가장 먼저 등록된 1건만 남기고 정리한다.
+    months가 주어지면 해당 월(YYYY-MM 집합)만 대상으로 해서 대량 데이터에서도 매 업로드마다 빠르게 끝난다."""
+    removed_usage = 0
     groups = {}
-    for r in conn.execute("SELECT id, usage_date, real_seller, brand, item_name, quantity, unit_price FROM gift_usage_record ORDER BY id").fetchall():
+    uq = "SELECT id, usage_date, real_seller, brand, item_name, quantity, unit_price FROM gift_usage_record"
+    if months:
+        placeholders = ','.join('?' * len(months))
+        uq += f" WHERE substr(usage_date,1,7) IN ({placeholders})"
+    uq += " ORDER BY id"
+    for r in conn.execute(uq, list(months) if months else []).fetchall():
         rid, usage_date, real_seller, brand, item_name, quantity, unit_price = r
         key = (usage_date, real_seller, brand, (item_name or '').replace(' ', ''), quantity, unit_price)
         groups.setdefault(key, []).append(rid)
@@ -9234,7 +9301,12 @@ def _gift_dedupe_existing_records(conn):
 
     removed_ecount = 0
     egroups = {}
-    for r in conn.execute("SELECT id, ecount_date, real_seller, item_name, quantity, matched_usage_id FROM gift_ecount_record ORDER BY id").fetchall():
+    eq = "SELECT id, ecount_date, real_seller, item_name, quantity, matched_usage_id FROM gift_ecount_record"
+    if months:
+        placeholders = ','.join('?' * len(months))
+        eq += f" WHERE substr(ecount_date,1,7) IN ({placeholders})"
+    eq += " ORDER BY id"
+    for r in conn.execute(eq, list(months) if months else []).fetchall():
         rid, ecount_date, real_seller, item_name, quantity, matched = r
         key = (ecount_date, real_seller, (item_name or '').replace(' ', ''), quantity)
         egroups.setdefault(key, []).append((rid, matched))
@@ -9300,26 +9372,34 @@ def _gift_auto_match(conn):
 @login_required
 def api_gift_reconcile():
     """수동 정리 버튼 — 지금까지 쌓인 사용내역/이카운트 레코드의 매장명을 3단계 검증으로 다시 통합하고
-    그 결과로 드러난 중복 레코드를 정리한다. 엑셀을 새로 올리지 않아도 바로 실행할 수 있다."""
-    conn = get_db()
-    canonical_index, trade_code_map = _gift_build_canonical_store_index(conn)
-    for tc, name in trade_code_map.items():
-        if not conn.execute("SELECT 1 FROM gift_store_learned WHERE key_type='code' AND key_value=?", (tc,)).fetchone():
-            _gift_learn_store(conn, 'code', tc, name)
-    conn.commit()
-    changed = _gift_reconcile_store_names(conn, canonical_index, trade_code_map)
-    conn.commit()
-    removed_u, removed_e = _gift_dedupe_existing_records(conn)
-    conn.commit()
-    _gift_auto_match(conn)
-    conn.commit(); conn.close()
-    return jsonify({'ok': True, 'reconciled': changed, 'removed_usage_dup': removed_u, 'removed_ecount_dup': removed_e})
+    그 결과로 드러난 중복 레코드를 정리한다. 엑셀을 새로 올리지 않아도 바로 실행할 수 있다.
+    (메모리 캐시를 사용해서 레코드 수가 많아도 타임아웃 없이 빠르게 끝난다)"""
+    try:
+        conn = get_db()
+        canonical_index, trade_code_map = _gift_build_canonical_store_index(conn)
+        learned_cache = _gift_load_learned_cache(conn)
+        for tc, name in trade_code_map.items():
+            if learned_cache.get(('code', tc)) != name:
+                _gift_learn_store(conn, 'code', tc, name, learned_cache)
+        conn.commit()
+        changed = _gift_reconcile_store_names(conn, canonical_index, trade_code_map, learned_cache=learned_cache)
+        conn.commit()
+        removed_u, removed_e = _gift_dedupe_existing_records(conn)
+        conn.commit()
+        _gift_auto_match(conn)
+        conn.commit(); conn.close()
+        return jsonify({'ok': True, 'reconciled': changed, 'removed_usage_dup': removed_u, 'removed_ecount_dup': removed_e})
+    except Exception as e:
+        import traceback; traceback.print_exc()
+        return jsonify({'ok': False, 'msg': f'정리 중 오류: {e}'}), 500
 
 
 @app.route("/api/gift/check/list")
 @login_required
 def api_gift_check_list():
-    """누락점검 — 이카운트 증정 건 기준으로 대장(사용내역) 등록 여부 표시"""
+    """누락점검 — 이카운트 증정 건 기준으로 대장(사용내역) 등록 여부 표시.
+    수정4: 매칭된 경우 어떤 사용내역과 연결됐는지, 누락인 경우 같은 매장의 비슷한 날짜에
+    등록된 사용내역이 있는지(날짜 오기재 등 진단)까지 함께 내려줘서 원인 파악이 쉽도록 한다."""
     month = request.args.get('month', '').strip()
     conn = get_db()
     q = "SELECT * FROM gift_ecount_record WHERE 1=1"
@@ -9327,9 +9407,31 @@ def api_gift_check_list():
     if month: q += " AND ecount_date LIKE ?"; params.append(f"{month}%")
     q += " ORDER BY ecount_date, real_seller"
     rows = [dict(r) for r in conn.execute(q, params).fetchall()]
+
+    # 매칭된 건: 연결된 사용내역 요약 정보
+    matched_ids = [r['matched_usage_id'] for r in rows if r.get('matched_usage_id')]
+    usage_map = {}
+    if matched_ids:
+        placeholders = ','.join('?' * len(matched_ids))
+        for u in conn.execute(f"SELECT id, usage_date, item_name, manager FROM gift_usage_record WHERE id IN ({placeholders})", matched_ids).fetchall():
+            usage_map[u[0]] = {'usage_date': u[1], 'item_name': u[2], 'manager': u[3]}
+
+    # 누락 건: 같은 매장(store_key)의 근처 사용내역이 있는지 진단(날짜 오기재 의심 등)
+    usage_by_store = {}
+    for u in conn.execute("SELECT store_key, usage_date, item_name FROM gift_usage_record").fetchall():
+        usage_by_store.setdefault(u[0], []).append({'usage_date': u[1], 'item_name': u[2]})
     conn.close()
+
     for r in rows:
         r['status'] = '확인' if r.get('matched_usage_id') else '누락'
+        if r.get('matched_usage_id') and r['matched_usage_id'] in usage_map:
+            r['matched_usage'] = usage_map[r['matched_usage_id']]
+        elif not r.get('matched_usage_id'):
+            candidates = usage_by_store.get(r.get('store_key'), [])
+            near = [c for c in candidates if c['usage_date'] != r.get('ecount_date')]
+            r['diagnosis'] = ('같은 매장의 다른 날짜 사용내역 있음 (날짜 확인 필요)' if near
+                               else '해당 매장 사용내역 자체가 없음 (사용내역 미등록 의심)')
+            r['nearby_usage'] = near[:3]
     return jsonify(rows)
 
 
@@ -10913,6 +11015,57 @@ def api_export_display():
             ws.column_dimensions[get_column_letter(ci6)].width = max(12, len(real_colors[ci6-6])+2)
         ws.column_dimensions[get_column_letter(sum_col)].width = 8
         ws.freeze_panes = 'B5'
+
+    # 수정6: 판매실적처럼 기초데이터(원본 엑셀) 시트 추가 — 파일이 많으면(예: 연간 전체) 가벼운 요약으로 대체
+    def mft2(color, bold, size): return Font(name='맑은 고딕', bold=bold, size=size, color=color)
+    def mf2(hexv): return PatternFill('solid', fgColor=hexv)
+    try:
+        raw_files = conn.execute(
+            "SELECT filename, file_b64, months FROM sales_upload_file WHERE year=?", (int(year),)).fetchall()
+        if len(raw_files) > 3:
+            raw_files = []
+    except Exception:
+        raw_files = []
+
+    raw_sheet_names = []
+    if raw_files:
+        import base64 as _b64_dl2
+        for fname_orig, fb64, months_str in raw_files:
+            try:
+                src_bytes = _b64_dl2.b64decode(fb64)
+                src_wb = _load_workbook_resilient(src_bytes)
+                if src_wb is None: continue
+                for src_sheet_name in src_wb.sheetnames:
+                    src_ws = src_wb[src_sheet_name]
+                    tab_name = f"기초_{months_str.split(',')[0][5:]}월_{src_sheet_name}"[:31]
+                    base_tab = tab_name; suf = 1
+                    while tab_name in raw_sheet_names:
+                        tab_name = f"{base_tab[:28]}_{suf}"; suf += 1
+                    ws_raw = wb.create_sheet(tab_name)
+                    _copy_sheet_with_style(src_ws, ws_raw)
+                    raw_sheet_names.append(tab_name)
+            except Exception:
+                continue
+
+    if not raw_sheet_names:
+        ws_raw = wb.create_sheet("기초데이터")
+        ws_raw.column_dimensions['A'].width = 2.5
+        c0 = ws_raw.cell(row=2, column=2, value="⚠ 원본 파일이 저장되지 않았거나 파일 수가 많아 요약으로 대체된 기간입니다.")
+        c0.font = mft2(None, True, 10)
+        raw_hdrs = ['일자','거래처명','실적용거래처명','거래처코드','품목명','수량','단가','공급가액','부가세','합계','채널']
+        for ci, h in enumerate(raw_hdrs, 2):
+            c = ws_raw.cell(row=4, column=ci, value=h)
+            c.font=mft2(None,True,9); c.fill=mf2("F2F2F2")
+        ws_raw.row_dimensions[4].height=20
+        ri_raw=5
+        for r in conn.execute("""SELECT sale_date,seller_name,real_seller,trade_code,item_name,quantity,unit_price,supply_price,vat,total,channel
+                FROM sales_data WHERE sale_date LIKE ? AND real_seller!='' ORDER BY sale_date, real_seller""", (f"{year}%",)).fetchall():
+            for ci,v in enumerate(r,2):
+                c=ws_raw.cell(row=ri_raw,column=ci,value=v); c.font=mft2(None,False,8)
+            ri_raw+=1
+        for ci,w in zip(range(2,13),[11,20,20,14,26,8,10,11,10,11,9]):
+            ws_raw.column_dimensions[get_column_letter(ci)].width=w
+        ws_raw.freeze_panes='B5'
 
     conn.close()
     buf = io.BytesIO(); wb.save(buf); buf.seek(0)
