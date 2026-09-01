@@ -175,6 +175,13 @@ def init_db():
                 conn.execute(f"ALTER TABLE display_record ADD COLUMN {col} {typ}")
     except Exception:
         pass
+    # 마이그레이션: 캠페인당 제품명을 단일 고정값으로 관리 (Sheet1 등 시트명에 따라 제품이 여러 개로 쪼개지는 문제 방지)
+    try:
+        dc_cols = [r[1] for r in conn.execute("PRAGMA table_info(display_campaign)").fetchall()]
+        if 'product_name' not in dc_cols:
+            conn.execute("ALTER TABLE display_campaign ADD COLUMN product_name TEXT DEFAULT ''")
+    except Exception:
+        pass
     # 마이그레이션: 구버전 테이블도 유지 (기존 데이터 보호)
     conn.execute("""CREATE TABLE IF NOT EXISTS display_event (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -477,6 +484,16 @@ def init_db():
         approved_qty INTEGER DEFAULT 0,
         updated_at TEXT DEFAULT ''
     )""")
+    # 수정3/4: 매장명 3단계 검증(원본거래처명→실적용거래처명→거래처코드) 결과를 영구 저장해서
+    # 같은 입력이 업로드 시점마다 다르게 해석되는 것을 방지하고, 한 번 확정된 매장은 항상 동일하게 인식되도록 한다.
+    conn.execute("""CREATE TABLE IF NOT EXISTS gift_store_learned (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        key_type TEXT NOT NULL,
+        key_value TEXT NOT NULL,
+        canonical_name TEXT NOT NULL,
+        updated_at TEXT DEFAULT '',
+        UNIQUE(key_type, key_value)
+    )""")
     try:
         gu_cols = [r[1] for r in conn.execute("PRAGMA table_info(gift_usage_record)").fetchall()]
         if 'store_key' not in gu_cols:
@@ -484,6 +501,10 @@ def init_db():
         ge_cols = [r[1] for r in conn.execute("PRAGMA table_info(gift_ecount_record)").fetchall()]
         if 'store_key' not in ge_cols:
             conn.execute("ALTER TABLE gift_ecount_record ADD COLUMN store_key TEXT DEFAULT ''")
+        if 'raw_seller' not in ge_cols:
+            conn.execute("ALTER TABLE gift_ecount_record ADD COLUMN raw_seller TEXT DEFAULT ''")
+        if 'trade_code' not in ge_cols:
+            conn.execute("ALTER TABLE gift_ecount_record ADD COLUMN trade_code TEXT DEFAULT ''")
     except Exception:
         pass
     conn.execute("""CREATE TABLE IF NOT EXISTS work_retro (
@@ -8662,8 +8683,8 @@ def _gift_normalize_store_key(name):
 
 def _gift_build_canonical_store_index(conn):
     """'매장 관리 시스템'에서 이미 쓰이고 있는 정식 매장명(sales_data.real_seller / branches.name)을
-    정규화 키 기준으로 인덱싱 — 이카운트/수기입력 매장명이 다소 다르게 적혀 있어도 기존에 쓰던 정식
-    매장명으로 통합 인식하기 위함. 거래처코드→real_seller 매핑도 함께 반환(가장 강력한 매칭 근거)."""
+    정규화 키 기준으로 인덱싱 — 새로 나타난 매장명을 처음 해석할 때 참고하는 소스.
+    거래처코드→real_seller 매핑도 함께 반환(가장 강력한 매칭 근거)."""
     canonical = {}  # normalize_key -> real_seller(정식명)
     for r in conn.execute("SELECT DISTINCT real_seller FROM sales_data WHERE real_seller!=''").fetchall():
         key = _gift_normalize_store_key(r[0])
@@ -8686,22 +8707,73 @@ def _gift_build_canonical_store_index(conn):
     return canonical, trade_code_map
 
 
-def _gift_resolve_store_name(raw_name, trade_code, canonical_index, trade_code_map):
-    """이카운트/수기입력 매장명을 '매장 관리 시스템'에서 쓰이는 정식 매장명으로 최대한 통합해서 해석.
-    우선순위: ① 거래처코드 매핑(가장 확실) → ② SELLER_ALIAS/resolve_seller → ③ 정규화 키로 정식명 매칭 → ④ 원본 그대로"""
-    raw = (raw_name or '').strip().replace('_', ' ')
-    if not raw:
-        return ''
-    # ① 거래처코드로 확정
-    if trade_code and trade_code in trade_code_map:
-        return trade_code_map[trade_code]
-    # ② 기존 별칭 규칙
-    resolved = resolve_seller(SELLER_ALIAS.get(raw, raw))
-    # ③ 정규화 키로 기존에 쓰던 정식 매장명 매칭
-    key = _gift_normalize_store_key(resolved)
-    if key and key in canonical_index:
-        return canonical_index[key]
-    return resolved
+def _gift_learn_store(conn, key_type, key_value, canonical_name):
+    """매장명 해석 결과를 영구 저장 — 같은 거래처코드/매장명은 이후 항상 동일한 정식 매장명으로 인식되도록 한다."""
+    if not key_value or not canonical_name:
+        return
+    now = datetime.now().strftime('%Y-%m-%d %H:%M')
+    conn.execute("""INSERT INTO gift_store_learned (key_type, key_value, canonical_name, updated_at)
+        VALUES(?,?,?,?)
+        ON CONFLICT(key_type, key_value) DO UPDATE SET canonical_name=excluded.canonical_name, updated_at=excluded.updated_at""",
+        (key_type, key_value, canonical_name, now))
+
+
+def _gift_resolve_store_name(conn, raw_seller='', real_seller_hint='', trade_code='',
+                              canonical_index=None, trade_code_map=None, persist=True):
+    """매장명 3단계 검증 — ① 원본 거래처명 → ② 실적용거래처명 → ③ 거래처코드(가장 확실) 순으로
+    이미 학습된(gift_store_learned) 정식 매장명이 있는지 확인하고, 없으면 새로 해석해서 영구 저장한다.
+    한 번 확정된 매핑은 이후 몇 번을 다시 업로드해도 항상 동일한 결과를 내므로 '매번 새로 추가되는' 문제와
+    '매장명이 중복 표시되는' 문제를 근본적으로 방지한다."""
+    trade_code = (trade_code or '').strip()
+    raw_seller = (raw_seller or '').strip().replace('_', ' ')
+    real_seller_hint = (real_seller_hint or '').strip().replace('_', ' ')
+
+    raw_key = _gift_normalize_store_key(raw_seller) if raw_seller else ''
+    real_key = _gift_normalize_store_key(real_seller_hint) if real_seller_hint else ''
+
+    # ① 원본 거래처명으로 1차 검증 (이미 학습된 매핑 우선)
+    if raw_key:
+        r = conn.execute("SELECT canonical_name FROM gift_store_learned WHERE key_type='raw' AND key_value=?", (raw_key,)).fetchone()
+        canonical_guess = r[0] if r else None
+    else:
+        canonical_guess = None
+
+    # ② 실적용거래처명으로 2차 검증
+    if not canonical_guess and real_key:
+        r = conn.execute("SELECT canonical_name FROM gift_store_learned WHERE key_type='real' AND key_value=?", (real_key,)).fetchone()
+        if r: canonical_guess = r[0]
+
+    # ③ 거래처코드로 3차 검증 (가장 확실 — 이미 학습됐다면 최우선으로 덮어씀)
+    code_learned = None
+    if trade_code:
+        r = conn.execute("SELECT canonical_name FROM gift_store_learned WHERE key_type='code' AND key_value=?", (trade_code,)).fetchone()
+        if r: code_learned = r[0]
+    if code_learned:
+        canonical_guess = code_learned
+
+    if not canonical_guess:
+        # 아직 한 번도 학습되지 않은 신규 매장명 — 새로 해석
+        if trade_code and trade_code_map and trade_code in trade_code_map:
+            canonical_guess = trade_code_map[trade_code]
+        else:
+            # 실적용거래처명이 있으면 그것을 우선 근거로, 없으면 원본 거래처명으로 해석
+            base = real_seller_hint or raw_seller
+            resolved = resolve_seller(SELLER_ALIAS.get(base, base))
+            key = _gift_normalize_store_key(resolved)
+            if canonical_index and key in canonical_index:
+                canonical_guess = canonical_index[key]
+            else:
+                canonical_guess = resolved
+
+    if persist and canonical_guess:
+        if trade_code:
+            _gift_learn_store(conn, 'code', trade_code, canonical_guess)
+        if raw_key:
+            _gift_learn_store(conn, 'raw', raw_key, canonical_guess)
+        if real_key:
+            _gift_learn_store(conn, 'real', real_key, canonical_guess)
+
+    return canonical_guess or raw_seller or real_seller_hint
 
 def _gift_normalize_brand(raw):
     """브랜드 표기(영문 등)를 표준 브랜드명으로 정규화"""
@@ -8955,7 +9027,7 @@ def api_gift_usage_add():
         if not usage_date or not store_name:
             continue
         brand = _gift_normalize_brand(it.get('brand', ''))
-        real_seller = _gift_resolve_store_name(store_name, '', canonical_index, trade_code_map)
+        real_seller = _gift_resolve_store_name(conn, raw_seller=store_name, canonical_index=canonical_index, trade_code_map=trade_code_map)
         qty = int(it.get('quantity', 1) or 1)
         unit_price = int(it.get('unit_price', 0) or 0)
         item_name = it.get('item_name', '')
@@ -8974,8 +9046,15 @@ def api_gift_usage_add():
              it.get('reason',''), real_seller, it.get('manager',''), it.get('note',''),
              usage_date[:7], it.get('source','수동입력'), it.get('kakao_raw_text',''), now))
         inserted += 1
+    conn.commit()
+    # 방금 저장한 건들의 매장명 표기가 기존 건과 갈렸을 경우까지 포함해 즉시 통합 정리
+    _gift_reconcile_store_names(conn, canonical_index, trade_code_map)
+    conn.commit()
+    removed_u, removed_e = _gift_dedupe_existing_records(conn)
+    conn.commit()
+    _gift_auto_match(conn)
     conn.commit(); conn.close()
-    return jsonify({'ok': True, 'inserted': inserted, 'skipped_dup': skipped_dup})
+    return jsonify({'ok': True, 'inserted': inserted, 'skipped_dup': skipped_dup, 'cleaned_dup': removed_u})
 
 
 @app.route("/api/gift/usage/<int:rid>", methods=["DELETE"])
@@ -8997,7 +9076,7 @@ def api_gift_usage_update(rid):
     consumer_amount = unit_price * qty
     cost_amount = round(consumer_amount * 0.5)
     canonical_index, trade_code_map = _gift_build_canonical_store_index(conn)
-    real_seller = _gift_resolve_store_name(d.get('store_name',''), '', canonical_index, trade_code_map)
+    real_seller = _gift_resolve_store_name(conn, raw_seller=d.get('store_name',''), canonical_index=canonical_index, trade_code_map=trade_code_map)
     conn.execute("""UPDATE gift_usage_record SET
         usage_date=?, store_name=?, brand=?, item_name=?, quantity=?, unit_price=?,
         consumer_amount=?, cost_amount=?, reason=?, real_seller=?, manager=?, note=?, usage_month=?
@@ -9063,6 +9142,10 @@ def api_gift_ecount_upload():
 
     conn = get_db()
     canonical_index, trade_code_map = _gift_build_canonical_store_index(conn)
+    # 수정4: 판매실적 업로드 이력에 쌓인 거래처코드 매핑을 아직 학습되지 않은 것들 위주로 선반영
+    for tc, name in trade_code_map.items():
+        if not conn.execute("SELECT 1 FROM gift_store_learned WHERE key_type='code' AND key_value=?", (tc,)).fetchone():
+            _gift_learn_store(conn, 'code', tc, name)
     now = datetime.now().strftime('%Y-%m-%d %H:%M')
     batch = now.replace(' ','').replace(':','').replace('-','')
     inserted = 0
@@ -9071,30 +9154,38 @@ def api_gift_ecount_upload():
         if not gubun or '증정' not in str(gubun):
             continue
         date_raw = ws.cell(ri, col_map['date']).value
-        # 실적용거래처명(정식 매장명) 우선, 없으면 원본 거래처명
-        seller = None
-        if col_map.get('seller_real'):
-            seller = ws.cell(ri, col_map['seller_real']).value
-        if not seller and col_map.get('seller_raw'):
-            seller = ws.cell(ri, col_map['seller_raw']).value
+        seller_raw = str(ws.cell(ri, col_map['seller_raw']).value or '').strip() if col_map.get('seller_raw') else ''
+        seller_real = str(ws.cell(ri, col_map['seller_real']).value or '').strip() if col_map.get('seller_real') else ''
+        if not seller_raw and not seller_real:
+            continue
         item = ws.cell(ri, col_map['item']).value
         item_group = ws.cell(ri, col_map['item_group']).value if col_map.get('item_group') else ''
         trade_code = str(ws.cell(ri, col_map['trade_code']).value or '').strip() if col_map.get('trade_code') else ''
         qty = ws.cell(ri, col_map['qty']).value
-        if not date_raw or not seller or not item:
+        if not date_raw or not item:
             continue
         ecount_date, voucher = _gift_parse_ecount_date(date_raw)
-        real_seller = _gift_resolve_store_name(str(seller), trade_code, canonical_index, trade_code_map)
+        # 수정3: ①원본 거래처명 → ②실적용거래처명 → ③거래처코드(가장 확실) 3단계 검증으로 정식 매장명 확정
+        real_seller = _gift_resolve_store_name(conn, raw_seller=seller_raw, real_seller_hint=seller_real,
+                                                trade_code=trade_code, canonical_index=canonical_index,
+                                                trade_code_map=trade_code_map)
         brand = remap_group(str(item_group or ''), str(item))
         try:
             conn.execute("""INSERT INTO gift_ecount_record
-                (upload_batch, ecount_date_raw, ecount_date, voucher_no, real_seller, brand, item_name, quantity, uploaded_at)
-                VALUES(?,?,?,?,?,?,?,?,?)""",
-                (batch, str(date_raw), ecount_date, voucher, real_seller, brand, str(item), int(qty or 0), now))
+                (upload_batch, ecount_date_raw, ecount_date, voucher_no, real_seller, brand, item_name, quantity, uploaded_at, raw_seller, trade_code)
+                VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
+                (batch, str(date_raw), ecount_date, voucher, real_seller, brand, str(item), int(qty or 0), now, seller_raw, trade_code))
             inserted += 1
         except sqlite3.IntegrityError:
             pass  # 이미 동일 건 존재 (중복 업로드 방지)
 
+    conn.commit()
+
+    # 수정2: 기존에 흩어져 있던 매장명 표기도 3단계 검증으로 다시 통합
+    _gift_reconcile_store_names(conn, canonical_index, trade_code_map)
+    conn.commit()
+    # 통합 후 드러난 기존 중복 레코드 정리
+    _gift_dedupe_existing_records(conn)
     conn.commit()
 
     # 자동 매칭: gift_usage_record와 real_seller + 날짜 + 브랜드 기준으로 대사
@@ -9102,6 +9193,60 @@ def api_gift_ecount_upload():
     conn.commit(); conn.close()
 
     return jsonify({'ok': True, 'inserted': inserted})
+
+
+def _gift_reconcile_store_names(conn, canonical_index, trade_code_map):
+    """기존에 이미 저장된 사용내역/이카운트 레코드의 매장명을 3단계 검증 로직으로 다시 확정해서
+    같은 매장이 서로 다른 표기로 흩어져 보이던 기존 데이터를 즉시 하나로 통합한다."""
+    changed = 0
+    for r in conn.execute("SELECT id, store_name, real_seller FROM gift_usage_record").fetchall():
+        rid, store_name, old_real = r
+        new_real = _gift_resolve_store_name(conn, raw_seller=store_name,
+                                             canonical_index=canonical_index, trade_code_map=trade_code_map)
+        if new_real and new_real != old_real:
+            conn.execute("UPDATE gift_usage_record SET real_seller=? WHERE id=?", (new_real, rid))
+            changed += 1
+    for r in conn.execute("SELECT id, raw_seller, real_seller, trade_code FROM gift_ecount_record").fetchall():
+        rid, raw_seller, old_real, trade_code = r
+        new_real = _gift_resolve_store_name(conn, raw_seller=raw_seller, real_seller_hint=old_real,
+                                             trade_code=trade_code, canonical_index=canonical_index,
+                                             trade_code_map=trade_code_map)
+        if new_real and new_real != old_real:
+            conn.execute("UPDATE gift_ecount_record SET real_seller=? WHERE id=?", (new_real, rid))
+            changed += 1
+    return changed
+
+
+def _gift_dedupe_existing_records(conn):
+    """이미 DB에 쌓인 중복 레코드 정리 — 매장명 표기가 통합되면서 드러난 기존 중복 건들을
+    (일자+정식매장명+브랜드+품목+수량+단가) 기준으로 묶어 가장 먼저 등록된 1건만 남기고 정리한다."""
+    removed_usage = 0
+    groups = {}
+    for r in conn.execute("SELECT id, usage_date, real_seller, brand, item_name, quantity, unit_price FROM gift_usage_record ORDER BY id").fetchall():
+        rid, usage_date, real_seller, brand, item_name, quantity, unit_price = r
+        key = (usage_date, real_seller, brand, (item_name or '').replace(' ', ''), quantity, unit_price)
+        groups.setdefault(key, []).append(rid)
+    for key, ids in groups.items():
+        if len(ids) > 1:
+            for dup_id in ids[1:]:
+                conn.execute("DELETE FROM gift_usage_record WHERE id=?", (dup_id,))
+                removed_usage += 1
+
+    removed_ecount = 0
+    egroups = {}
+    for r in conn.execute("SELECT id, ecount_date, real_seller, item_name, quantity, matched_usage_id FROM gift_ecount_record ORDER BY id").fetchall():
+        rid, ecount_date, real_seller, item_name, quantity, matched = r
+        key = (ecount_date, real_seller, (item_name or '').replace(' ', ''), quantity)
+        egroups.setdefault(key, []).append((rid, matched))
+    for key, rows in egroups.items():
+        if len(rows) > 1:
+            # 매칭된(matched_usage_id 있는) 건을 우선 보존, 없으면 가장 먼저 등록된 건 보존
+            keep = next((rid for rid, m in rows if m), rows[0][0])
+            for rid, m in rows:
+                if rid != keep:
+                    conn.execute("DELETE FROM gift_ecount_record WHERE id=?", (rid,))
+                    removed_ecount += 1
+    return removed_usage, removed_ecount
 
 
 def _gift_auto_match(conn):
@@ -9149,6 +9294,26 @@ def _gift_auto_match(conn):
         conn.execute("UPDATE gift_usage_record SET match_status=? WHERE id=?", (status, uid))
         for eid, _, _, _ in final_matches:
             conn.execute("UPDATE gift_ecount_record SET matched_usage_id=? WHERE id=?", (uid, eid))
+
+
+@app.route("/api/gift/reconcile", methods=["POST"])
+@login_required
+def api_gift_reconcile():
+    """수동 정리 버튼 — 지금까지 쌓인 사용내역/이카운트 레코드의 매장명을 3단계 검증으로 다시 통합하고
+    그 결과로 드러난 중복 레코드를 정리한다. 엑셀을 새로 올리지 않아도 바로 실행할 수 있다."""
+    conn = get_db()
+    canonical_index, trade_code_map = _gift_build_canonical_store_index(conn)
+    for tc, name in trade_code_map.items():
+        if not conn.execute("SELECT 1 FROM gift_store_learned WHERE key_type='code' AND key_value=?", (tc,)).fetchone():
+            _gift_learn_store(conn, 'code', tc, name)
+    conn.commit()
+    changed = _gift_reconcile_store_names(conn, canonical_index, trade_code_map)
+    conn.commit()
+    removed_u, removed_e = _gift_dedupe_existing_records(conn)
+    conn.commit()
+    _gift_auto_match(conn)
+    conn.commit(); conn.close()
+    return jsonify({'ok': True, 'reconciled': changed, 'removed_usage_dup': removed_u, 'removed_ecount_dup': removed_e})
 
 
 @app.route("/api/gift/check/list")
@@ -10781,18 +10946,25 @@ def api_display_campaigns():
 @app.route("/api/display/campaign/create", methods=["POST"])
 @login_required
 def api_display_campaign_create():
-    """새 캠페인 생성"""
+    """새 캠페인 생성 — product_name(제품명)을 캠페인당 고정값으로 저장해서
+    업로드하는 엑셀의 시트명이 무엇이든(Sheet1 등) 항상 같은 제품으로 취급되도록 한다."""
     d = request.json or {}
     from datetime import datetime as dt2
+    import re as _re_cc
+    campaign_name = d.get('campaign_name','')
+    product_name = (d.get('product_name') or '').strip()
+    if not product_name:
+        product_name = _re_cc.sub(r'\s*(진열|행사)?\s*신청.*$', '', campaign_name or '').strip() or campaign_name
     conn = get_db()
     conn.execute("""INSERT INTO display_campaign
         (campaign_name, brand, event_type, period_start, period_end,
-         score_in_period, score_out_period, created_at)
-        VALUES(?,?,?,?,?,?,?,?)""",
-        (d.get('campaign_name',''), d.get('brand',''),
+         score_in_period, score_out_period, product_name, created_at)
+        VALUES(?,?,?,?,?,?,?,?,?)""",
+        (campaign_name, d.get('brand',''),
          d.get('event_type','display'),
          d.get('period_start',''), d.get('period_end',''),
          int(d.get('score_in_period', 5)), int(d.get('score_out_period', 2)),
+         product_name,
          dt2.now().strftime('%Y-%m-%d %H:%M')))
     cid = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
     conn.commit(); conn.close()
@@ -10801,15 +10973,16 @@ def api_display_campaign_create():
 @app.route("/api/display/campaign/update", methods=["POST"])
 @login_required
 def api_display_campaign_update():
-    """캠페인 기간/점수 수정"""
+    """캠페인 기간/점수/제품명 수정"""
     d = request.json or {}
     conn = get_db()
     conn.execute("""UPDATE display_campaign SET
         campaign_name=?, period_start=?, period_end=?,
-        score_in_period=?, score_out_period=?
+        score_in_period=?, score_out_period=?, product_name=?
         WHERE id=?""",
         (d.get('campaign_name',''), d.get('period_start',''), d.get('period_end',''),
-         int(d.get('score_in_period',5)), int(d.get('score_out_period',2)), d.get('id')))
+         int(d.get('score_in_period',5)), int(d.get('score_out_period',2)),
+         (d.get('product_name') or '').strip(), d.get('id')))
     conn.commit(); conn.close()
     return jsonify({'ok': True})
 
@@ -10956,6 +11129,12 @@ def api_display_upload():
                 camp_name_clean = _re.sub(r'\s*(진열|행사)?\s*신청.*$', '', campaign.get('campaign_name','') or '').strip()
                 found = camp_name_clean or campaign.get('brand','') or f"제품_{sheet_name}"
             sheet_clean = found
+
+        # 수정5: 캠페인은 하나의 제품(product_name)으로 고정 관리 — 시트명이 무엇이었든(Sheet1 등)
+        # 이 캠페인에 올리는 모든 업로드는 항상 같은 제품 하나로 귀속시켜서 중복 제품 생성을 원천 차단한다.
+        campaign_product = (campaign.get('product_name') or '').strip()
+        if campaign_product:
+            sheet_clean = campaign_product
 
         # 컬럼 인덱스 파악
         def find_col(keys, hdrs):
@@ -11439,7 +11618,8 @@ def api_display_export_ranking():
 @login_required
 def api_display_fix_product_names(campaign_id):
     """캠페인 내에서 'Sheet1' 같은 일반 시트명으로 잘못 저장된 제품명을
-    올바른 제품명(다른 정상 제품명 또는 캠페인명)으로 병합 정리"""
+    올바른 제품명(캠페인 고정 제품명) 하나로 병합 정리. 수량은 합산하지 않고
+    가장 최근에 업로드된 값으로 덮어써서 항상 최신 엑셀 수량과 일치시킨다."""
     import re as _re_fix
 
     conn = get_db()
@@ -11452,29 +11632,51 @@ def api_display_fix_product_names(campaign_id):
     all_products = [r[0] for r in conn.execute(
         "SELECT DISTINCT product_name FROM display_upload WHERE campaign_id=?", (campaign_id,)).fetchall()]
 
+    if len(all_products) <= 1:
+        # 이미 단일 제품 — 캠페인 고정 제품명만 없으면 채워둔다
+        if not (campaign.get('product_name') or '').strip() and all_products:
+            conn.execute("UPDATE display_campaign SET product_name=? WHERE id=?", (all_products[0], campaign_id))
+            conn.commit()
+        conn.close()
+        return jsonify({'ok': True, 'merged': 0, 'msg': '정리할 항목이 없습니다'})
+
     JUNK_PATTERN = _re_fix.compile(r'^(sheet|시트)\s*\d*$', _re_fix.IGNORECASE)
     junk_products = [p for p in all_products if JUNK_PATTERN.match(p or '')]
     normal_products = [p for p in all_products if not JUNK_PATTERN.match(p or '')]
 
-    if not junk_products:
-        conn.close()
-        return jsonify({'ok': True, 'merged': 0, 'msg': '정리할 항목이 없습니다'})
+    # 병합 대상 결정: 캠페인 고정 제품명 > 정상 제품명 1개 > 캠페인명에서 파생
+    target_name = (campaign.get('product_name') or '').strip()
+    if not target_name:
+        if len(normal_products) == 1:
+            target_name = normal_products[0]
+        elif normal_products:
+            # 정상 제품명이 여러 개면 가장 최근에 업로드된 것을 기준으로 삼는다
+            latest = conn.execute("""SELECT product_name FROM display_upload
+                WHERE campaign_id=? AND product_name IN ({}) ORDER BY upload_at DESC LIMIT 1""".format(
+                ','.join('?'*len(normal_products))), [campaign_id]+normal_products).fetchone()
+            target_name = latest[0] if latest else normal_products[0]
+        else:
+            camp_name_clean = _re_fix.sub(r'\s*(진열|행사)?\s*신청.*$', '', campaign.get('campaign_name','') or '').strip()
+            target_name = camp_name_clean or campaign.get('brand','') or '통합제품'
 
-    # 병합 대상 결정: 정상 제품명이 정확히 1개면 그것으로, 여러 개/없으면 캠페인명으로
-    if len(normal_products) == 1:
-        target_name = normal_products[0]
-    else:
-        camp_name_clean = _re_fix.sub(r'\s*(진열|행사)?\s*신청.*$', '', campaign.get('campaign_name','') or '').strip()
-        target_name = camp_name_clean or campaign.get('brand','') or '통합제품'
+    # 캠페인 제품명 고정 — 이후 업로드는 자동으로 이 이름 하나로 귀속됨
+    conn.execute("UPDATE display_campaign SET product_name=? WHERE id=?", (target_name, campaign_id))
+
+    junk_to_merge = [p for p in all_products if p != target_name]
+
+    # 각 제품명 그룹의 가장 최근 업로드 시각 — 최신 값이 최종 수량으로 채택되도록
+    upload_time = {}
+    for p in all_products:
+        r = conn.execute("SELECT MAX(upload_at) FROM display_upload WHERE campaign_id=? AND product_name=?",
+                          (campaign_id, p)).fetchone()
+        upload_time[p] = r[0] or ''
 
     merged_count = 0
-    for junk in junk_products:
-        if junk == target_name:
-            continue
-        # display_record 병합 — 매장별로 겹치면 더 높은 점수/수량 유지, UNIQUE(campaign_id,seller_name,product_name) 제약 고려
+    for junk in junk_to_merge:
         junk_records = conn.execute(
             "SELECT id, seller_name, has_display, quantity, score, color_detail, applied_date FROM display_record "
             "WHERE campaign_id=? AND product_name=?", (campaign_id, junk)).fetchall()
+        junk_is_newer = upload_time.get(junk, '') >= upload_time.get(target_name, '')
         for jr in junk_records:
             jr_id, seller, has_d, qty, score, color_detail, applied = jr
             existing = conn.execute(
@@ -11483,9 +11685,11 @@ def api_display_fix_product_names(campaign_id):
                 (campaign_id, seller, target_name)).fetchone()
             if existing:
                 ex_id, ex_has, ex_qty, ex_score, ex_applied = existing
-                new_qty = (ex_qty or 0) + (qty or 0)
-                new_has = max(ex_has or 0, has_d or 0)
-                new_score = max(ex_score or 0, score or 0)
+                # 수정5: 합산하지 않고, 더 최근에 업로드된 값으로 교체(최신 엑셀 수량과 일치시킴)
+                if junk_is_newer:
+                    new_qty, new_has, new_score = qty or 0, has_d or 0, score or 0
+                else:
+                    new_qty, new_has, new_score = ex_qty or 0, ex_has or 0, ex_score or 0
                 new_applied = ex_applied or applied
                 conn.execute("UPDATE display_record SET has_display=?, quantity=?, score=?, applied_date=? WHERE id=?",
                              (new_has, new_qty, new_score, new_applied, ex_id))
@@ -11507,13 +11711,14 @@ def api_display_fix_product_names(campaign_id):
 
     conn.commit(); conn.close()
     return jsonify({'ok': True, 'merged': merged_count, 'target_name': target_name,
-                     'cleaned_products': junk_products})
+                     'cleaned_products': junk_to_merge})
 
 
 @app.route("/api/display/export/campaign")
 @login_required
 def api_display_export_campaign():
-    """특정 캠페인 매장별 발주 현황 엑셀 다운로드 — 깔끔한 보고용 디자인"""
+    """특정 캠페인 매장별 발주 현황 엑셀 다운로드 — 참고 양식처럼 제품명 아래에 색상별 컬럼을 나눠서 표시
+    (예: '루프트' 헤더 아래 단델리온골드/스톤블랙/카모그린 서브컬럼으로 숫자만 깔끔하게 분류)"""
     from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
     from openpyxl.utils import get_column_letter
     campaign_id = request.args.get('campaign_id')
@@ -11561,14 +11766,9 @@ def api_display_export_campaign():
     left=Alignment(horizontal='left',vertical='center')
     FNAME='맑은 고딕'
 
-    EXTRA_COLS = ['발주 수량','방문 및 설명\n(1차)','미신청 후 전화\n(2차)','비고']
-    # A열은 여백(spacer)으로 비워두고 B열부터 시작 — 깔끔한 레이아웃
-    ws.column_dimensions['A'].width = 2
-    COL0 = 2  # 실제 컨텐츠 시작 컬럼(B)
-    col_count = COL0 - 1 + 3 + len(products) + len(EXTRA_COLS)
-
-    # 매장별 집계
+    # 매장별 집계 (+ 각 제품별로 실제 등장한 색상 목록 수집 — 참고 양식처럼 색상별 서브컬럼 구성)
     seller_map={}
+    product_colors = {p: [] for p in products}  # product -> [color1, color2, ...] (첫 등장 순서 유지)
     for r in records:
         s=r['seller_name']
         if s not in seller_map: seller_map[s]={'prods':{},'total_qty':0}
@@ -11578,11 +11778,25 @@ def api_display_export_campaign():
             r['color_detail_parsed'] = {}
         seller_map[s]['prods'][r['product_name']]=r
         seller_map[s]['total_qty']+=r['quantity'] or 0
+        for cname in r['color_detail_parsed'].keys():
+            if cname not in product_colors.setdefault(r['product_name'], []):
+                product_colors[r['product_name']].append(cname)
 
     # 수정: 전체 매장 = 업로드된(엑셀에 있는) 매장 수만 기준
     total_seller_cnt  = len(seller_map)
     participating_cnt = sum(1 for v in seller_map.values() if v['total_qty']>0)
     total_qty_sum     = sum(v['total_qty'] for v in seller_map.values())
+
+    # ── 컬럼 레이아웃 계산: 색상이 있는 제품은 색상 수만큼 서브컬럼, 없으면 단일 컬럼 ──
+    EXTRA_COLS = ['발주 수량','방문 및 설명\n(1차)','미신청 후 전화\n(2차)','비고']
+    ws.column_dimensions['A'].width = 2
+    COL0 = 2  # 실제 컨텐츠 시작 컬럼(B)
+
+    product_col_span = {}  # product -> 컬럼 수 (색상 있으면 색상 개수, 없으면 1)
+    for p in products:
+        product_col_span[p] = len(product_colors.get(p) or []) or 1
+    products_total_cols = sum(product_col_span.values())
+    col_count = COL0 - 1 + 3 + products_total_cols + len(EXTRA_COLS)
 
     # ── 상단 타이틀 + KPI (절제된 색상) ─────────
     ws.merge_cells(f'B1:{get_column_letter(col_count)}1')
@@ -11596,22 +11810,75 @@ def api_display_export_campaign():
     c=ws.cell(row=2,column=COL0,value=period); c.font=Font(size=9,name=FNAME,color='6B7280'); c.alignment=left
     ws.row_dimensions[2].height=16
 
-    # ── 헤더 ──────────────────────────────────
-    headers = ['구분','매장명','담당자'] + products + EXTRA_COLS
-    for offset,h in enumerate(headers):
+    # ── 헤더 (2행 구조: 3행=구분/매장명/담당자/제품명(색상 있으면 병합)/기타, 4행=색상 서브헤더) ──
+    HDR1, HDR2 = 3, 4
+    has_any_color = any(product_colors.get(p) for p in products)
+
+    # 구분/매장명/담당자 — 색상 서브헤더 행까지 세로 병합
+    for offset, h in enumerate(['구분','매장명','담당자']):
         ci = COL0 + offset
-        c=ws.cell(row=3,column=ci,value=h)
-        c.font=Font(bold=True,size=9,name=FNAME,color='374151')
-        c.fill=mf(HGRAY); c.border=bdr
+        if has_any_color:
+            ws.merge_cells(start_row=HDR1, start_column=ci, end_row=HDR2, end_column=ci)
+        c=ws.cell(row=HDR1,column=ci,value=h)
+        c.font=Font(bold=True,size=9,name=FNAME,color='374151'); c.fill=mf(HGRAY); c.border=bdr
         c.alignment=Alignment(horizontal='center',vertical='center',wrap_text=True)
-    ws.row_dimensions[3].height=30
+        if has_any_color:
+            c2=ws.cell(row=HDR2,column=ci); c2.fill=mf(HGRAY); c2.border=bdr
+
+    ci = COL0 + 3
+    product_start_col = {}
+    for p in products:
+        colors = product_colors.get(p) or []
+        product_start_col[p] = ci
+        if colors:
+            end_ci = ci + len(colors) - 1
+            ws.merge_cells(start_row=HDR1, start_column=ci, end_row=HDR1, end_column=end_ci)
+            c=ws.cell(row=HDR1,column=ci,value=p)
+            c.font=Font(bold=True,size=9,name=FNAME,color='374151'); c.fill=mf(HGRAY); c.border=bdr
+            c.alignment=Alignment(horizontal='center',vertical='center',wrap_text=True)
+            for extra_ci in range(ci, end_ci+1):
+                ws.cell(row=HDR1,column=extra_ci).border=bdr
+            for cj, cname in enumerate(colors):
+                cc = ws.cell(row=HDR2, column=ci+cj, value=cname)
+                cc.font=Font(bold=True,size=8.5,name=FNAME,color='6B7280'); cc.fill=mf('F9FAFB'); cc.border=bdr
+                cc.alignment=Alignment(horizontal='center',vertical='center',wrap_text=True)
+            ci = end_ci + 1
+        else:
+            if has_any_color:
+                ws.merge_cells(start_row=HDR1, start_column=ci, end_row=HDR2, end_column=ci)
+            c=ws.cell(row=HDR1,column=ci,value=p)
+            c.font=Font(bold=True,size=9,name=FNAME,color='374151'); c.fill=mf(HGRAY); c.border=bdr
+            c.alignment=Alignment(horizontal='center',vertical='center',wrap_text=True)
+            if has_any_color:
+                c2=ws.cell(row=HDR2,column=ci); c2.fill=mf(HGRAY); c2.border=bdr
+            ci += 1
+
+    extra_start = ci
+    for offset, h in enumerate(EXTRA_COLS):
+        eci = extra_start + offset
+        if has_any_color:
+            ws.merge_cells(start_row=HDR1, start_column=eci, end_row=HDR2, end_column=eci)
+        c=ws.cell(row=HDR1,column=eci,value=h)
+        c.font=Font(bold=True,size=9,name=FNAME,color='374151'); c.fill=mf(HGRAY); c.border=bdr
+        c.alignment=Alignment(horizontal='center',vertical='center',wrap_text=True)
+        if has_any_color:
+            c2=ws.cell(row=HDR2,column=eci); c2.fill=mf(HGRAY); c2.border=bdr
+
+    ws.row_dimensions[HDR1].height=26
+    if has_any_color:
+        ws.row_dimensions[HDR2].height=22
 
     ws.column_dimensions[get_column_letter(COL0)].width=12
     ws.column_dimensions[get_column_letter(COL0+1)].width=22
     ws.column_dimensions[get_column_letter(COL0+2)].width=12
-    for pi in range(len(products)):
-        ws.column_dimensions[get_column_letter(COL0+3+pi)].width=max(16,len(products[pi])+4)
-    extra_start = COL0+3+len(products)
+    for p in products:
+        colors = product_colors.get(p) or []
+        start = product_start_col[p]
+        if colors:
+            for cj, cname in enumerate(colors):
+                ws.column_dimensions[get_column_letter(start+cj)].width=max(11,len(cname)+3)
+        else:
+            ws.column_dimensions[get_column_letter(start)].width=max(16,len(p)+4)
     ws.column_dimensions[get_column_letter(extra_start)].width=10
     ws.column_dimensions[get_column_letter(extra_start+1)].width=14
     ws.column_dimensions[get_column_letter(extra_start+2)].width=14
@@ -11621,7 +11888,8 @@ def api_display_export_campaign():
     def grp(n): return next((g for g in GRPS if g in n),'기타')
     sellers=sorted(seller_map.keys(),key=lambda s:(GRPS.index(grp(s)) if grp(s) in GRPS else 99,s))
 
-    ri=4; prev_g=''
+    ri=HDR2+1 if has_any_color else HDR1+1
+    prev_g=''
     grp_total_qty = {}
     for seller in sellers:
         g=grp(seller)
@@ -11630,40 +11898,45 @@ def api_display_export_campaign():
             prev_g=g
         info=seller_map[seller]
         manager = get_manager(seller)
-        # 구분: 그룹 첫 매장에만 표시 (반복 제거)
-        row=[g if first_in_group else '', seller, manager]
+
+        c=ws.cell(row=ri,column=COL0,value=(g if first_in_group else ''))
+        c.font=Font(bold=True,size=9,name=FNAME,color='374151') if (g if first_in_group else '') else Font(size=9,name=FNAME)
+        c.border=bdr; c.alignment=ctr
+        c=ws.cell(row=ri,column=COL0+1,value=seller); c.font=Font(size=9,name=FNAME,color='1F2937'); c.border=bdr; c.alignment=left
+        c=ws.cell(row=ri,column=COL0+2,value=manager); c.font=Font(size=9,name=FNAME,color='1F2937'); c.border=bdr; c.alignment=ctr
+
         visit_done = call_done = 0; note_val = ''
         for p in products:
             pd=info['prods'].get(p)
-            if pd and pd.get('has_display'):
-                colors = pd.get('color_detail_parsed') or {}
-                if colors:
-                    cell_val = ', '.join(f"{c_} {q_}개" for c_, q_ in colors.items())
-                else:
+            colors = product_colors.get(p) or []
+            start = product_start_col[p]
+            if colors:
+                cdet = (pd.get('color_detail_parsed') if pd else {}) or {}
+                for cj, cname in enumerate(colors):
+                    v = cdet.get(cname, '')
+                    c=ws.cell(row=ri,column=start+cj,value=(v if v else ''))
+                    c.font=Font(size=9,name=FNAME,color='1F2937'); c.border=bdr; c.alignment=ctr
+            else:
+                if pd and pd.get('has_display'):
                     qty=pd.get('quantity',0) or 0
                     cell_val=f"{qty}개" if qty>0 else "진열"
-            elif pd:
-                cell_val='—'
-            else:
-                cell_val=''
-            row.append(cell_val)
+                elif pd:
+                    cell_val='—'
+                else:
+                    cell_val=''
+                c=ws.cell(row=ri,column=start,value=cell_val)
+                c.font=Font(size=9,name=FNAME,color='1F2937'); c.border=bdr; c.alignment=ctr
             if pd:
                 visit_done = visit_done or pd.get('visit_done',0)
                 call_done  = call_done  or pd.get('call_done',0)
                 if pd.get('note'): note_val = pd.get('note')
-        row.append(info['total_qty'])
-        row.append('완료' if visit_done else '')
-        row.append('완료' if call_done else '')
-        row.append(note_val)
 
-        for offset,v in enumerate(row):
-            ci = COL0 + offset
-            c=ws.cell(row=ri,column=ci,value=v); c.font=Font(size=9,name=FNAME,color='1F2937'); c.border=bdr
-            c.alignment=ctr if offset!=1 else left
-            if offset==0 and v:  # 구분 강조 (그룹 첫 행)
-                c.font=Font(bold=True,size=9,name=FNAME,color='374151')
-            if ci==extra_start:  # 발주 수량만 약하게 강조
-                c.font=Font(bold=True,size=9,name=FNAME,color='1F2937')
+        row_extra = [info['total_qty'], '완료' if visit_done else '', '완료' if call_done else '', note_val]
+        for offset, v in enumerate(row_extra):
+            eci = extra_start + offset
+            c=ws.cell(row=ri,column=eci,value=v); c.border=bdr; c.alignment=ctr
+            c.font=Font(bold=True,size=9,name=FNAME,color='1F2937') if offset==0 else Font(size=9,name=FNAME,color='1F2937')
+
         ws.row_dimensions[ri].height=15; ri+=1
         grp_total_qty[g] = grp_total_qty.get(g,0) + info['total_qty']
 
@@ -11672,8 +11945,8 @@ def api_display_export_campaign():
     ws.merge_cells(f'{get_column_letter(COL0)}{ri}:{get_column_letter(COL0+2)}{ri}')
     c=ws.cell(row=ri,column=COL0,value='합계'); c.font=Font(bold=True,size=10,name=FNAME,color='374151')
     c.fill=mf(LGRAY); c.alignment=ctr; c.border=bdr
-    for ci in range(COL0+3, COL0+3+len(products)):
-        c=ws.cell(row=ri,column=ci,value=''); c.fill=mf(LGRAY); c.border=bdr
+    for pci in range(COL0+3, extra_start):
+        c=ws.cell(row=ri,column=pci,value=''); c.fill=mf(LGRAY); c.border=bdr
     c=ws.cell(row=ri,column=extra_start,value=grand_qty)
     c.font=Font(bold=True,size=10,name=FNAME,color='374151'); c.fill=mf(LGRAY); c.alignment=ctr; c.border=bdr
     ws.merge_cells(f'{get_column_letter(extra_start+1)}{ri}:{get_column_letter(col_count)}{ri}')
@@ -11695,7 +11968,7 @@ def api_display_export_campaign():
             c.font=Font(size=9,name=FNAME,color='9CA3AF'); c.alignment=left
             ri += 1
 
-    ws.freeze_panes=f'{get_column_letter(COL0)}4'
+    ws.freeze_panes=f'{get_column_letter(COL0)}{HDR2+1 if has_any_color else HDR1+1}'
     buf=io.BytesIO(); wb.save(buf); buf.seek(0)
     safe=campaign.get('campaign_name','캠페인').replace('/','_')
     return send_file(buf, mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',

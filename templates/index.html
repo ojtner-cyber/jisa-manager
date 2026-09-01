@@ -1037,6 +1037,7 @@ td.center{text-align:center}
           <select class="ysel" id="gift-month">
             <option value="">누적 전체</option>
           </select>
+          <button class="btn btn-ghost btn-sm" onclick="reconcileGiftStores()">🧹 매장명 통합/중복정리</button>
           <button class="btn btn-ghost btn-sm" onclick="downloadGiftXlsx()">📥 엑셀 다운로드</button>
         </div>
       </div>
@@ -1566,6 +1567,8 @@ td.center{text-align:center}
         <div style="font-size:15px;font-weight:700;margin-bottom:20px" id="cm-title">새 캠페인</div>
         <div style="margin-bottom:12px"><div class="flbl">캠페인 이름</div>
           <input class="fi" id="cm-name" placeholder="예: 레카로 벨릭스 진열신청 2차"></div>
+        <div style="margin-bottom:12px"><div class="flbl">제품명 <span style="font-weight:400;color:var(--t-400)">(비워두면 캠페인 이름에서 자동 추출 · 업로드하는 엑셀 시트명과 무관하게 항상 이 제품 하나로 집계돼요)</span></div>
+          <input class="fi" id="cm-product" placeholder="예: 벨릭스"></div>
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px">
           <div><div class="flbl">브랜드</div>
             <select class="fi" id="cm-brand">
@@ -2685,6 +2688,17 @@ async function promptGiftQuota(brand){
   await setGiftQuota(brand, v);
 }
 
+async function reconcileGiftStores(){
+  toast('매장명을 다시 확인하고 중복을 정리하고 있어요...');
+  const r = await api('/api/gift/reconcile', {method:'POST'});
+  if(r?.ok){
+    toast(`정리 완료 — 매장명 재확정 ${r.reconciled}건, 중복 제거(사용내역) ${r.removed_usage_dup}건 · (이카운트) ${r.removed_ecount_dup}건`);
+    loadGiftUsageList(); loadGiftCheckList(); loadGiftMonthly();
+  } else {
+    toast('정리에 실패했습니다', false);
+  }
+}
+
 function downloadGiftXlsx(){
   const month = document.getElementById('gift-month').value;
   const q = month ? `?month=${month}` : '';
@@ -3573,6 +3587,7 @@ function openCreateCampaign(){
   document.getElementById('cm-name').value='';
   document.getElementById('cm-brand').value='';
   document.getElementById('cm-type').value='display';
+  document.getElementById('cm-product').value='';
   const today=new Date().toISOString().slice(0,10);
   const end2=new Date(Date.now()+14*86400000).toISOString().slice(0,10);
   document.getElementById('cm-start').value=today;
@@ -3588,6 +3603,7 @@ function editCampaign(){
   document.getElementById('cm-edit-id').value=c.id;
   document.getElementById('cm-title').textContent='캠페인 수정';
   document.getElementById('cm-name').value=c.campaign_name;
+  document.getElementById('cm-product').value=c.product_name||'';
   document.getElementById('cm-brand').value=c.brand||'';
   document.getElementById('cm-type').value=c.event_type||'display';
   document.getElementById('cm-start').value=c.period_start||'';
@@ -3601,6 +3617,7 @@ async function saveCampaign(){
   const editId=document.getElementById('cm-edit-id').value;
   const d={
     campaign_name:   document.getElementById('cm-name').value.trim(),
+    product_name:    document.getElementById('cm-product').value.trim(),
     brand:           document.getElementById('cm-brand').value,
     event_type:      document.getElementById('cm-type').value,
     period_start:    document.getElementById('cm-start').value,
