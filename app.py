@@ -1235,6 +1235,22 @@ SELLER_ALIAS = {
     '베이비하우스 도봉':        '베이비하우스 도봉점',
     # 베이비스토리
     '베이비스토리':             '베이비스토리 판교점',
+    # 수정2(신규): 베이비스토리 딜리버리 = 베이비스토리 판교점과 동일 매장 → 합산
+    '베이비스토리 딜리버리':    '베이비스토리 판교점',
+    '베이비스토리딜리버리':     '베이비스토리 판교점',
+    # 수정3(신규): 주식회사 베이비세븐 → 베이비세븐 아산점
+    '주식회사 베이비세븐':      '베이비세븐 아산점',
+    # 수정4(신규): 주식회사 에이치원컴퍼니 → 링크맘 의정부민락점
+    '주식회사 에이치원컴퍼니':   '링크맘 의정부민락점',
+    # 수정7(신규): 매장명 통합 정리
+    '베네피아 평촌점':          '링크맘 평촌',
+    '울산 베이비하우스_용품':   '베이비하우스 울산점',
+    '울산 베이비하우스 용품':   '베이비하우스 울산점',
+    '베이비스토어 주식회사':    '베이비스토어 다산',
+    '베이비플러스 화곡점':      '링크맘 마곡점',
+    '베네피아구로 (발육기)':    '링크맘 구로점',
+    '베네피아구로(발육기)':     '링크맘 구로점',
+    '청라베이비하우스':         '베이비하우스 청라점',
     # 파주점 고객 데이터 → 삭제
     '베이비하우스 파주점/신성준고객': '',
 }
@@ -1276,6 +1292,16 @@ DISPLAY_NAME = {
     '베이비하우스 동탄오산점':          '베이비하우스 동탄점',
     '베네피아 창원2호점(링크맘)':       '링크맘 창원2호점',
     '베네피아 창원2호점':              '링크맘 창원2호점',
+    # 신규 매장 통합 표시
+    '베이비스토리 딜리버리':            '베이비스토리 판교점',
+    '주식회사 베이비세븐':              '베이비세븐 아산점',
+    '주식회사 에이치원컴퍼니':          '링크맘 의정부민락점',
+    '베네피아 평촌점':                  '링크맘 평촌',
+    '울산 베이비하우스_용품':          '베이비하우스 울산점',
+    '베이비스토어 주식회사':            '베이비스토어 다산',
+    '베이비플러스 화곡점':              '링크맘 마곡점',
+    '베네피아구로 (발육기)':            '링크맘 구로점',
+    '청라베이비하우스':                 '베이비하우스 청라점',
 }
 
 def display_seller(name):
@@ -2944,7 +2970,9 @@ def export_xlsx_monthly():
             if '베이비하우스' in nm: return '베이비하우스'
             if '링크맘' in nm or '베네피아' in nm or '베이비플러스' in nm: return '링크맘'
             if '베이비파크' in nm: return '베이비파크'
-            if '베이비스토리' in nm or '베이비스토어' in nm: return '베이비스토리'
+            # 수정1: 베이비스토어(다산)는 베이비스토리와 별도 매장/그룹
+            if '베이비스토어' in nm: return '베이비스토어'
+            if '베이비스토리' in nm: return '베이비스토리'
             if '베이비세븐' in nm: return '베이비세븐'
             return '기타'
 
@@ -3423,7 +3451,9 @@ def export_xlsx_weekly():
         if '베이비하우스' in nm: return '베이비하우스'
         if '링크맘' in nm or '베네피아' in nm or '베이비플러스' in nm: return '링크맘'
         if '베이비파크' in nm: return '베이비파크'
-        if '베이비스토리' in nm or '베이비스토어' in nm: return '베이비스토리'
+        # 수정1: 베이비스토어(다산)는 베이비스토리와 별도 매장/그룹
+        if '베이비스토어' in nm: return '베이비스토어'
+        if '베이비스토리' in nm: return '베이비스토리'
         if '베이비세븐' in nm: return '베이비세븐'
         return '기타'
 
@@ -8744,6 +8774,8 @@ def _gift_resolve_store_name(conn, raw_seller='', real_seller_hint='', trade_cod
     이미 학습된(gift_store_learned) 정식 매장명이 있는지 확인하고, 없으면 새로 해석해서 영구 저장한다.
     한 번 확정된 매핑은 이후 몇 번을 다시 업로드해도 항상 동일한 결과를 내므로 '매번 새로 추가되는' 문제와
     '매장명이 중복 표시되는' 문제를 근본적으로 방지한다.
+    단, SELLER_ALIAS에 명시적으로 등록된 규칙(관리자가 직접 확정한 매장 통합 규칙)은 과거에 다르게
+    학습된 캐시보다 항상 우선한다 — 그래야 새로 추가한 통합 규칙이 기존 데이터에도 즉시 반영된다.
     learned_cache를 전달하면 DB 조회 없이 메모리에서 조회해서 대량 처리 시에도 빠르게 동작한다."""
     trade_code = (trade_code or '').strip()
     raw_seller = (raw_seller or '').strip().replace('_', ' ')
@@ -8760,15 +8792,25 @@ def _gift_resolve_store_name(conn, raw_seller='', real_seller_hint='', trade_cod
         r = conn.execute("SELECT canonical_name FROM gift_store_learned WHERE key_type=? AND key_value=?", (key_type, key_value)).fetchone()
         return r[0] if r else None
 
-    # ① 원본 거래처명으로 1차 검증 (이미 학습된 매핑 우선)
-    canonical_guess = _lookup('raw', raw_key)
-    # ② 실적용거래처명으로 2차 검증
+    # ⓪ SELLER_ALIAS에 명시적으로 등록된 매장명이면 그 규칙이 최우선(캐시된 과거 학습값보다 우선)
+    explicit_alias = None
+    for base in (raw_seller, real_seller_hint):
+        if base and base in SELLER_ALIAS:
+            explicit_alias = resolve_seller(SELLER_ALIAS[base])
+            break
+
+    canonical_guess = explicit_alias
     if not canonical_guess:
-        canonical_guess = _lookup('real', real_key)
-    # ③ 거래처코드로 3차 검증 (가장 확실 — 이미 학습됐다면 최우선으로 덮어씀)
-    code_learned = _lookup('code', trade_code)
-    if code_learned:
-        canonical_guess = code_learned
+        # ① 원본 거래처명으로 1차 검증 (이미 학습된 매핑)
+        canonical_guess = _lookup('raw', raw_key)
+        # ② 실적용거래처명으로 2차 검증
+        if not canonical_guess:
+            canonical_guess = _lookup('real', real_key)
+    # ③ 거래처코드로 3차 검증 (가장 확실 — 학습됐다면 최우선으로 덮어씀, 단 위 ⓪ 명시적 규칙보다는 아래)
+    if not explicit_alias:
+        code_learned = _lookup('code', trade_code)
+        if code_learned:
+            canonical_guess = code_learned
 
     if not canonical_guess:
         # 아직 한 번도 학습되지 않은 신규 매장명 — 새로 해석
@@ -9270,8 +9312,14 @@ def _gift_reconcile_store_names(conn, canonical_index, trade_code_map, learned_c
                                              trade_code=trade_code, canonical_index=canonical_index,
                                              trade_code_map=trade_code_map, learned_cache=learned_cache)
         if new_real and new_real != old_real:
-            conn.execute("UPDATE gift_ecount_record SET real_seller=? WHERE id=?", (new_real, rid))
-            changed += 1
+            try:
+                conn.execute("UPDATE gift_ecount_record SET real_seller=? WHERE id=?", (new_real, rid))
+                changed += 1
+            except sqlite3.IntegrityError:
+                # 병합 결과 (일자+매장명+품목)이 이미 존재하는 다른 행과 같아짐 — 사실상 동일 건이므로
+                # 이 행은 중복으로 보고 제거한다 (전체 정리가 이 한 건 때문에 실패하지 않도록)
+                conn.execute("DELETE FROM gift_ecount_record WHERE id=?", (rid,))
+                changed += 1
     return changed
 
 
@@ -9408,13 +9456,13 @@ def api_gift_check_list():
     q += " ORDER BY ecount_date, real_seller"
     rows = [dict(r) for r in conn.execute(q, params).fetchall()]
 
-    # 매칭된 건: 연결된 사용내역 요약 정보
+    # 매칭된 건: 연결된 사용내역 요약 정보 (수정5: 수량까지 비교해서 상이하면 비고에 표시)
     matched_ids = [r['matched_usage_id'] for r in rows if r.get('matched_usage_id')]
     usage_map = {}
     if matched_ids:
         placeholders = ','.join('?' * len(matched_ids))
-        for u in conn.execute(f"SELECT id, usage_date, item_name, manager FROM gift_usage_record WHERE id IN ({placeholders})", matched_ids).fetchall():
-            usage_map[u[0]] = {'usage_date': u[1], 'item_name': u[2], 'manager': u[3]}
+        for u in conn.execute(f"SELECT id, usage_date, item_name, manager, quantity FROM gift_usage_record WHERE id IN ({placeholders})", matched_ids).fetchall():
+            usage_map[u[0]] = {'usage_date': u[1], 'item_name': u[2], 'manager': u[3], 'quantity': u[4]}
 
     # 누락 건: 같은 매장(store_key)의 근처 사용내역이 있는지 진단(날짜 오기재 의심 등)
     usage_by_store = {}
@@ -9424,14 +9472,21 @@ def api_gift_check_list():
 
     for r in rows:
         r['status'] = '확인' if r.get('matched_usage_id') else '누락'
+        r['note'] = ''
         if r.get('matched_usage_id') and r['matched_usage_id'] in usage_map:
-            r['matched_usage'] = usage_map[r['matched_usage_id']]
+            mu = usage_map[r['matched_usage_id']]
+            r['matched_usage'] = mu
+            # 수정5: 매칭은 됐지만 수량이 서로 다르면 비고에 표시
+            if (mu.get('quantity') or 0) != (r.get('quantity') or 0):
+                r['status'] = '수량상이'
+                r['note'] = f"수량 상이 — 이카운트 {r.get('quantity') or 0}개 vs 대장 {mu.get('quantity') or 0}개"
         elif not r.get('matched_usage_id'):
             candidates = usage_by_store.get(r.get('store_key'), [])
             near = [c for c in candidates if c['usage_date'] != r.get('ecount_date')]
             r['diagnosis'] = ('같은 매장의 다른 날짜 사용내역 있음 (날짜 확인 필요)' if near
                                else '해당 매장 사용내역 자체가 없음 (사용내역 미등록 의심)')
             r['nearby_usage'] = near[:3]
+            r['note'] = r['diagnosis']
     return jsonify(rows)
 
 

@@ -1109,7 +1109,7 @@ td.center{text-align:center}
             <div id="gift-check-summary-badge" style="font-size:11px;color:var(--t-400)"></div>
           </div>
           <div>
-            <button id="gift-check-filter-btn" class="btn btn-ghost btn-sm" onclick="toggleGiftCheckMissingOnly()">누락만 보기</button>
+            <button id="gift-check-filter-btn" class="btn btn-ghost btn-sm" onclick="toggleGiftCheckMissingOnly()">이상 건만 보기</button>
             <button class="btn btn-ghost btn-sm" onclick="document.getElementById('gift-ecount-file').click()">📤 이카운트 판매현황 업로드</button>
             <input type="file" id="gift-ecount-file" accept=".xlsx,.xls" style="display:none" onchange="uploadGiftEcount(event)">
           </div>
@@ -2612,7 +2612,7 @@ function toggleGiftCheckMissingOnly(){
   giftCheckShowMissingOnly = !giftCheckShowMissingOnly;
   const btn = document.getElementById('gift-check-filter-btn');
   if(btn){
-    btn.textContent = giftCheckShowMissingOnly ? '✓ 누락만 보기' : '누락만 보기';
+    btn.textContent = giftCheckShowMissingOnly ? '✓ 이상 건만 보기' : '이상 건만 보기';
     btn.classList.toggle('btn-dark', giftCheckShowMissingOnly);
     btn.classList.toggle('btn-ghost', !giftCheckShowMissingOnly);
   }
@@ -2627,20 +2627,25 @@ async function loadGiftCheckList(){
   const badge = document.getElementById('gift-check-summary-badge');
   const totalCnt = rows.length;
   const okCnt = rows.filter(r=>r.status==='확인').length;
-  if(giftCheckShowMissingOnly) rows = rows.filter(r=>r.status==='누락');
+  const qtyMismatchCnt = rows.filter(r=>r.status==='수량상이').length;
+  const missingCnt = rows.filter(r=>r.status==='누락').length;
+  if(giftCheckShowMissingOnly) rows = rows.filter(r=>r.status==='누락'||r.status==='수량상이');
   if(!totalCnt){
     tbody.innerHTML = `<tr><td colspan="7" style="text-align:center;padding:30px;color:var(--t-300);font-size:12px">이카운트 판매현황을 업로드하면 증정 건이 여기 표시돼요</td></tr>`;
     badge.textContent = '';
   } else if(!rows.length){
-    tbody.innerHTML = `<tr><td colspan="7" style="text-align:center;padding:30px;color:var(--t-300);font-size:12px">누락 건이 없어요 🎉</td></tr>`;
-    badge.textContent = `총 ${totalCnt}건 · 확인 ${okCnt}건 · 누락 ${totalCnt-okCnt}건`;
+    tbody.innerHTML = `<tr><td colspan="7" style="text-align:center;padding:30px;color:var(--t-300);font-size:12px">누락/수량상이 건이 없어요 🎉</td></tr>`;
+    badge.textContent = `총 ${totalCnt}건 · 확인 ${okCnt}건 · 수량상이 ${qtyMismatchCnt}건 · 누락 ${missingCnt}건`;
   } else {
-    badge.textContent = `총 ${totalCnt}건 · 확인 ${okCnt}건 · 누락 ${totalCnt-okCnt}건`;
+    badge.textContent = `총 ${totalCnt}건 · 확인 ${okCnt}건 · 수량상이 ${qtyMismatchCnt}건 · 누락 ${missingCnt}건`;
+    const STATUS_COLOR = {'확인':'#16A34A','수량상이':'#D97706','누락':'#DC2626'};
     tbody.innerHTML = rows.map(r=>{
-      const color = r.status==='확인' ? '#16A34A' : '#DC2626';
+      const color = STATUS_COLOR[r.status] || '#9CA3AF';
       let diagCell = '';
       if(r.status==='확인' && r.matched_usage){
         diagCell = `<span style="color:var(--t-400)">→ 사용내역 ${r.matched_usage.usage_date} · ${r.matched_usage.item_name||''} 매칭</span>`;
+      } else if(r.status==='수량상이'){
+        diagCell = `<span style="color:#D97706;font-weight:600">${r.note||''}</span>`;
       } else if(r.status==='누락'){
         diagCell = `<span style="color:#DC2626">${r.diagnosis||''}</span>`;
         if(r.nearby_usage && r.nearby_usage.length){
