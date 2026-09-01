@@ -1062,7 +1062,11 @@ td.center{text-align:center}
           <div style="font-size:11px;color:var(--t-400);margin-bottom:8px">카톡 내용을 그대로 복사해서 붙여넣으면 자동으로 날짜·매장명·브랜드·품목·수량을 인식해요. 인식 결과는 저장 전에 검토·수정할 수 있어요.</div>
           <textarea id="gift-kakao-input" rows="4" placeholder="예) 7/20 베이비하우스 송도 / RECARO / 백시트 프로텍터 2개 - 매장재고 판매로 행사 사은품 지원"
             style="width:100%;border:1px solid var(--border-md);border-radius:8px;padding:10px 12px;font-size:12.5px;resize:vertical;font-family:inherit;box-sizing:border-box;margin-bottom:8px"></textarea>
-          <button class="btn btn-dark btn-sm" onclick="parseGiftKakao()">🔍 텍스트 분석하기</button>
+          <div style="display:flex;gap:8px">
+            <button class="btn btn-dark btn-sm" onclick="parseGiftKakao()">🔍 텍스트 분석하기</button>
+            <button class="btn btn-ghost btn-sm" onclick="document.getElementById('gift-usage-excel-file').click()">📤 관리대장 엑셀 업로드</button>
+            <input type="file" id="gift-usage-excel-file" accept=".xlsx,.xls" style="display:none" onchange="uploadGiftUsageExcel(event)">
+          </div>
         </div>
 
         <div id="gift-kakao-preview" style="display:none;margin-bottom:16px"></div>
@@ -1071,16 +1075,23 @@ td.center{text-align:center}
           <div style="font-size:13px;font-weight:700;color:var(--t-700)">사용내역 목록</div>
           <button class="btn btn-ghost btn-sm" onclick="openGiftManualAdd()">+ 직접 입력</button>
         </div>
-        <div style="background:var(--paper);border:1px solid var(--border);border-radius:12px;overflow:hidden">
-          <table style="width:100%;border-collapse:collapse;font-size:12px">
+        <div style="background:var(--paper);border:1px solid var(--border);border-radius:12px;overflow-x:auto">
+          <table style="width:100%;border-collapse:collapse;font-size:12px;white-space:nowrap">
             <thead><tr style="background:var(--bg)">
-              <th style="padding:8px 10px;text-align:left;font-size:10.5px;font-weight:700;color:var(--t-500);border-bottom:1.5px solid var(--border)">일자</th>
+              <th style="padding:8px 10px;text-align:center;font-size:10.5px;font-weight:700;color:var(--t-500);border-bottom:1.5px solid var(--border)">No</th>
+              <th style="padding:8px 10px;text-align:left;font-size:10.5px;font-weight:700;color:var(--t-500);border-bottom:1.5px solid var(--border)">사용일자</th>
               <th style="padding:8px 10px;text-align:left;font-size:10.5px;font-weight:700;color:var(--t-500);border-bottom:1.5px solid var(--border)">매장명</th>
               <th style="padding:8px 10px;text-align:center;font-size:10.5px;font-weight:700;color:var(--t-500);border-bottom:1.5px solid var(--border)">브랜드</th>
-              <th style="padding:8px 10px;text-align:left;font-size:10.5px;font-weight:700;color:var(--t-500);border-bottom:1.5px solid var(--border)">품목</th>
+              <th style="padding:8px 10px;text-align:left;font-size:10.5px;font-weight:700;color:var(--t-500);border-bottom:1.5px solid var(--border)">사은품품목</th>
               <th style="padding:8px 10px;text-align:center;font-size:10.5px;font-weight:700;color:var(--t-500);border-bottom:1.5px solid var(--border)">수량</th>
-              <th style="padding:8px 10px;text-align:center;font-size:10.5px;font-weight:700;color:var(--t-500);border-bottom:1.5px solid var(--border)">이카운트 대사</th>
+              <th style="padding:8px 10px;text-align:right;font-size:10.5px;font-weight:700;color:var(--t-500);border-bottom:1.5px solid var(--border)">단가</th>
+              <th style="padding:8px 10px;text-align:right;font-size:10.5px;font-weight:700;color:var(--t-500);border-bottom:1.5px solid var(--border)">소비자가금액</th>
+              <th style="padding:8px 10px;text-align:right;font-size:10.5px;font-weight:700;color:var(--t-500);border-bottom:1.5px solid var(--border)">원가금액50%</th>
               <th style="padding:8px 10px;text-align:left;font-size:10.5px;font-weight:700;color:var(--t-500);border-bottom:1.5px solid var(--border)">사유</th>
+              <th style="padding:8px 10px;text-align:left;font-size:10.5px;font-weight:700;color:var(--t-500);border-bottom:1.5px solid var(--border)">실적용거래처명</th>
+              <th style="padding:8px 10px;text-align:center;font-size:10.5px;font-weight:700;color:var(--t-500);border-bottom:1.5px solid var(--border)">영업담당</th>
+              <th style="padding:8px 10px;text-align:left;font-size:10.5px;font-weight:700;color:var(--t-500);border-bottom:1.5px solid var(--border)">비고</th>
+              <th style="padding:8px 10px;text-align:center;font-size:10.5px;font-weight:700;color:var(--t-500);border-bottom:1.5px solid var(--border)">이카운트 대사</th>
               <th style="padding:8px 10px;border-bottom:1.5px solid var(--border)"></th>
             </tr></thead>
             <tbody id="gift-usage-tbody"></tbody>
@@ -2423,32 +2434,65 @@ async function confirmGiftKakaoSave(){
   }
 }
 
+const GIFT_MATCH_STATUS_COLOR = {
+  '일치': '#16A34A', '품목상이': '#D97706', '브랜드상이': '#DC2626', '누락': '#DC2626', '미확인': '#9CA3AF',
+};
+
 async function loadGiftUsageList(){
   const month = document.getElementById('gift-month').value;
   const q = month ? `?month=${month}` : '';
   const rows = await api(`/api/gift/usage/list${q}`) || [];
   const tbody = document.getElementById('gift-usage-tbody');
   if(!rows.length){
-    tbody.innerHTML = `<tr><td colspan="8" style="text-align:center;padding:30px;color:var(--t-300);font-size:12px">등록된 사용내역이 없습니다</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="15" style="text-align:center;padding:30px;color:var(--t-300);font-size:12px">등록된 사용내역이 없습니다</td></tr>`;
     return;
   }
-  tbody.innerHTML = rows.map(r=>{
-    const statusColor = r.match_status==='확인' ? '#16A34A' : (r.match_status==='누락' ? '#DC2626' : '#9CA3AF');
+  tbody.innerHTML = rows.map((r,i)=>{
+    const statusColor = GIFT_MATCH_STATUS_COLOR[r.match_status] || '#9CA3AF';
     return `<tr>
+      <td style="padding:8px 10px;text-align:center;font-size:11px;color:var(--t-400);border-bottom:1px solid var(--border)">${rows.length-i}</td>
       <td style="padding:8px 10px;font-size:11.5px;border-bottom:1px solid var(--border)">${r.usage_date}</td>
       <td style="padding:8px 10px;font-size:11.5px;font-weight:600;border-bottom:1px solid var(--border)">${r.store_name}</td>
       <td style="padding:8px 10px;text-align:center;font-size:11px;border-bottom:1px solid var(--border)">${r.brand||'—'}</td>
-      <td style="padding:8px 10px;font-size:11.5px;border-bottom:1px solid var(--border)">${r.item_name}</td>
+      <td style="padding:8px 10px;font-size:11.5px;border-bottom:1px solid var(--border)">${r.item_name||''}</td>
       <td style="padding:8px 10px;text-align:center;font-size:11.5px;font-weight:700;border-bottom:1px solid var(--border)">${r.quantity}</td>
+      <td style="padding:8px 10px;text-align:right;font-size:11px;border-bottom:1px solid var(--border)">${(r.unit_price||0).toLocaleString()}</td>
+      <td style="padding:8px 10px;text-align:right;font-size:11px;border-bottom:1px solid var(--border)">${(r.consumer_amount||0).toLocaleString()}</td>
+      <td style="padding:8px 10px;text-align:right;font-size:11px;border-bottom:1px solid var(--border)">${(r.cost_amount||0).toLocaleString()}</td>
+      <td style="padding:8px 10px;font-size:11px;color:var(--t-500);border-bottom:1px solid var(--border)">${r.reason||''}</td>
+      <td style="padding:8px 10px;font-size:11px;color:var(--t-500);border-bottom:1px solid var(--border)">${r.real_seller||''}</td>
+      <td style="padding:8px 10px;text-align:center;font-size:11px;border-bottom:1px solid var(--border)">${r.manager||''}</td>
+      <td style="padding:8px 10px;font-size:11px;color:var(--t-400);border-bottom:1px solid var(--border)">${r.note||''}</td>
       <td style="padding:8px 10px;text-align:center;border-bottom:1px solid var(--border)">
         <span style="font-size:10px;font-weight:700;color:${statusColor};background:${statusColor}15;padding:2px 8px;border-radius:5px">${r.match_status}</span>
       </td>
-      <td style="padding:8px 10px;font-size:11px;color:var(--t-500);border-bottom:1px solid var(--border)">${r.reason||''}</td>
       <td style="padding:8px 10px;text-align:center;border-bottom:1px solid var(--border)">
         <button onclick="deleteGiftUsage(${r.id})" style="background:none;border:none;color:var(--red);cursor:pointer;font-size:11px">삭제</button>
       </td>
     </tr>`;
   }).join('');
+}
+
+async function uploadGiftUsageExcel(e){
+  const file = e.target.files[0];
+  if(!file) return;
+  const formData = new FormData();
+  formData.append('file', file);
+  toast('관리대장 엑셀을 분석하고 있습니다...');
+  try{
+    const resp = await fetch('/api/gift/usage/upload-excel', {method:'POST', body:formData});
+    const r = await resp.json();
+    if(r.ok){
+      giftKakaoParsedItems = r.items;
+      renderGiftKakaoPreview();
+      toast(`${r.count}건 인식됐어요 — 검토 후 저장해주세요`);
+    } else {
+      toast(r.msg || '분석에 실패했습니다', false);
+    }
+  } catch(err){
+    toast('업로드 중 오류가 발생했습니다', false);
+  }
+  e.target.value = '';
 }
 
 async function deleteGiftUsage(id){
@@ -2555,29 +2599,74 @@ async function loadGiftCheckList(){
 async function loadGiftMonthly(){
   const data = await api('/api/gift/monthly-summary') || {};
   const el = document.getElementById('gift-monthly-content');
-  const months = Object.keys(data).sort().reverse();
-  if(!months.length){
-    el.innerHTML = `<div style="text-align:center;padding:40px;color:var(--t-300);font-size:12px">데이터가 없습니다</div>`;
-    return;
+  const brands = Object.keys(data).sort();
+  if(!brands.length){
+    el.innerHTML = `<div style="text-align:center;padding:40px;color:var(--t-300);font-size:12px">데이터가 없습니다. 승인수량(품의)을 먼저 등록해주세요.</div>`;
+  } else {
+    el.innerHTML = brands.map(brand=>{
+      const info = data[brand];
+      const remainNow = info.approved_qty - info.total_qty;
+      const remainColor = remainNow < 0 ? 'var(--red)' : 'var(--t-900)';
+      const rowsHtml = info.rows.length ? info.rows.map(r=>{
+        const rc = r.remaining_qty < 0 ? 'var(--red)' : 'var(--t-700)';
+        return `<tr>
+          <td style="padding:7px 10px;font-size:11.5px;font-weight:600;border-bottom:1px solid var(--border)">${r.month}</td>
+          <td style="padding:7px 10px;text-align:right;font-size:11px;color:var(--t-400);border-bottom:1px solid var(--border)">${r.approved_qty.toLocaleString()}</td>
+          <td style="padding:7px 10px;text-align:right;font-size:11.5px;font-weight:700;border-bottom:1px solid var(--border)">${r.monthly_qty.toLocaleString()}</td>
+          <td style="padding:7px 10px;text-align:right;font-size:11px;border-bottom:1px solid var(--border)">${r.cum_qty.toLocaleString()}</td>
+          <td style="padding:7px 10px;text-align:right;font-size:11px;font-weight:700;color:${rc};border-bottom:1px solid var(--border)">${r.remaining_qty.toLocaleString()}</td>
+          <td style="padding:7px 10px;text-align:right;font-size:11px;color:var(--t-500);border-bottom:1px solid var(--border)">${r.cum_consumer_amount.toLocaleString()}</td>
+          <td style="padding:7px 10px;text-align:right;font-size:11px;color:var(--t-500);border-bottom:1px solid var(--border)">${r.cum_cost_amount.toLocaleString()}</td>
+        </tr>`;
+      }).join('') : `<tr><td colspan="7" style="text-align:center;padding:16px;color:var(--t-300);font-size:11.5px">사용 내역 없음</td></tr>`;
+      return `<div style="background:var(--paper);border:1px solid var(--border);border-radius:12px;padding:16px;margin-bottom:14px">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;flex-wrap:wrap;gap:8px">
+          <div style="font-size:14px;font-weight:800;color:var(--t-900)">${brand}</div>
+          <div style="display:flex;align-items:center;gap:10px;font-size:11.5px;color:var(--t-500)">
+            <span>승인수량(품의): <input type="number" value="${info.approved_qty}" onchange="setGiftQuota('${brand.replace(/'/g,"\\'")}', this.value)"
+              style="width:80px;font-size:11.5px;font-weight:700;border:1px solid var(--border-md);border-radius:5px;padding:3px 6px;text-align:right"> 개</span>
+            <span>누적사용: <b style="color:var(--t-900)">${info.total_qty.toLocaleString()}</b>개</span>
+            <span>현재 잔여: <b style="color:${remainColor}">${remainNow.toLocaleString()}</b>개</span>
+          </div>
+        </div>
+        <div style="overflow-x:auto">
+          <table style="width:100%;border-collapse:collapse;font-size:12px;white-space:nowrap">
+            <thead><tr style="background:var(--bg)">
+              <th style="padding:7px 10px;text-align:left;font-size:10px;font-weight:700;color:var(--t-500);border-bottom:1.5px solid var(--border)">월</th>
+              <th style="padding:7px 10px;text-align:right;font-size:10px;font-weight:700;color:var(--t-500);border-bottom:1.5px solid var(--border)">승인수량(품의)</th>
+              <th style="padding:7px 10px;text-align:right;font-size:10px;font-weight:700;color:var(--t-500);border-bottom:1.5px solid var(--border)">월별사용</th>
+              <th style="padding:7px 10px;text-align:right;font-size:10px;font-weight:700;color:var(--t-500);border-bottom:1.5px solid var(--border)">사용누계</th>
+              <th style="padding:7px 10px;text-align:right;font-size:10px;font-weight:700;color:var(--t-500);border-bottom:1.5px solid var(--border)">잔여수량</th>
+              <th style="padding:7px 10px;text-align:right;font-size:10px;font-weight:700;color:var(--t-500);border-bottom:1.5px solid var(--border)">소비자가금액누계</th>
+              <th style="padding:7px 10px;text-align:right;font-size:10px;font-weight:700;color:var(--t-500);border-bottom:1.5px solid var(--border)">원가금액누계</th>
+            </tr></thead>
+            <tbody>${rowsHtml}</tbody>
+          </table>
+        </div>
+      </div>`;
+    }).join('');
   }
-  el.innerHTML = months.map(mo=>{
-    const items = data[mo];
-    const totalQty = items.reduce((s,i)=>s+(i.qty||0),0);
-    const totalAmt = items.reduce((s,i)=>s+(i.consumer_amount||0),0);
-    return `<div style="background:var(--paper);border:1px solid var(--border);border-radius:12px;padding:16px;margin-bottom:12px">
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
-        <div style="font-size:13.5px;font-weight:800;color:var(--t-900)">${mo}</div>
-        <div style="font-size:11.5px;color:var(--t-400)">총 ${totalQty}개 · ${totalAmt.toLocaleString()}원</div>
-      </div>
-      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:8px">
-        ${items.map(it=>`<div style="background:var(--bg);border-radius:8px;padding:10px">
-          <div style="font-size:10.5px;color:var(--t-400);font-weight:600">${it.brand||'(미분류)'}</div>
-          <div style="font-size:15px;font-weight:800;color:var(--t-900)">${it.qty}개</div>
-          <div style="font-size:10px;color:var(--t-400)">${(it.consumer_amount||0).toLocaleString()}원</div>
-        </div>`).join('')}
-      </div>
+  // 승인수량이 아직 없는 브랜드도 등록할 수 있게 안내
+  const allBrandNames = ['줄즈','레카로','ABC디자인','원더폴드','카오스','엔픽스','타프토이즈'];
+  const missing = allBrandNames.filter(b=>!brands.includes(b));
+  if(missing.length){
+    el.innerHTML += `<div style="background:var(--bg);border:1px dashed var(--border-md);border-radius:12px;padding:14px;display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+      <span style="font-size:11.5px;color:var(--t-400)">승인수량 미등록 브랜드:</span>
+      ${missing.map(b=>`<button class="btn btn-ghost btn-sm" onclick="promptGiftQuota('${b}')">${b} 등록</button>`).join('')}
     </div>`;
-  }).join('');
+  }
+}
+
+async function setGiftQuota(brand, value){
+  const approved_qty = parseInt(value) || 0;
+  const r = await api('/api/gift/quota/set', {method:'POST', body:{brand, approved_qty}});
+  if(r?.ok){ toast('승인수량이 저장됐어요'); loadGiftMonthly(); }
+}
+
+async function promptGiftQuota(brand){
+  const v = prompt(`${brand} 승인수량(품의)을 입력해주세요`, '0');
+  if(v===null) return;
+  await setGiftQuota(brand, v);
 }
 
 function downloadGiftXlsx(){

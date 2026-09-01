@@ -8951,8 +8951,8 @@ def api_gift_usage_upload_excel():
         'item_name': ['사은품 품목', '품목', '사은품품목'],
         'quantity': ['수량(EA)', '수량'],
         'unit_price': ['소비자가(단가)', '단가', '소비자가'],
-        'reason': ['사용 사유 / 행사내용', '사용사유', '사유', '행사내용'],
-        'real_seller': ['실적용 거래처명', '실적용거래처명'],
+        'reason': ['사용 사유/행사내용', '사용 사유 / 행사내용', '사용사유', '사유', '행사내용'],
+        'real_seller': ['실적용거래처명', '실적용 거래처명'],
         'manager': ['영업담당', '담당'],
         'note': ['비고'],
     }
@@ -9264,19 +9264,79 @@ def api_gift_check_summary():
     return jsonify(result)
 
 
+def _gift_build_monthly_pivot(conn):
+    """브랜드별 월별 피벗 집계 — 승인수량(품의)/월별사용/사용누계/잔여수량/소비자가금액누계/원가금액누계
+    원본 관리대장 '월별집계' 시트 양식과 동일한 구조로 브랜드별 섹션 + 월별 행을 구성한다."""
+    quotas = {r[0]: r[1] for r in conn.execute("SELECT brand, approved_qty FROM gift_brand_quota").fetchall()}
+    rows = conn.execute("""SELECT usage_month, brand, SUM(quantity) qty, SUM(consumer_amount) camt, SUM(cost_amount) coamt
+        FROM gift_usage_record GROUP BY usage_month, brand ORDER BY usage_month ASC""").fetchall()
+    by_brand = {}
+    for mo, brand, qty, camt, coamt in rows:
+        b = brand or '(미분류)'
+        by_brand.setdefault(b, []).append({'month': mo, 'qty': qty or 0, 'camt': camt or 0, 'coamt': coamt or 0})
+
+    all_brands = sorted(set(by_brand.keys()) | set(quotas.keys()))
+    result = {}
+    for b in all_brands:
+        items = sorted(by_brand.get(b, []), key=lambda x: x['month'])
+        approved = quotas.get(b, 0)
+        cum_qty = cum_camt = cum_coamt = 0
+        out_rows = []
+        for it in items:
+            cum_qty += it['qty']; cum_camt += it['camt']; cum_coamt += it['coamt']
+            out_rows.append({
+                'month': it['month'],
+                'approved_qty': approved,
+                'monthly_qty': it['qty'],
+                'cum_qty': cum_qty,
+                'remaining_qty': approved - cum_qty,
+                'cum_consumer_amount': cum_camt,
+                'cum_cost_amount': cum_coamt,
+            })
+        result[b] = {'approved_qty': approved, 'total_qty': cum_qty, 'rows': out_rows}
+    return result
+
+
 @app.route("/api/gift/monthly-summary")
 @login_required
 def api_gift_monthly_summary():
-    """월별집계 — 월별/브랜드별 사은품 사용 현황"""
+    """월별집계 — 브랜드×월 피벗(승인수량/월별사용/사용누계/잔여수량/소비자가금액누계/원가금액누계)"""
     conn = get_db()
-    rows = conn.execute("""
-        SELECT usage_month, brand, SUM(quantity) qty, SUM(consumer_amount) camt, SUM(cost_amount) coamt
-        FROM gift_usage_record GROUP BY usage_month, brand ORDER BY usage_month DESC""").fetchall()
+    result = _gift_build_monthly_pivot(conn)
     conn.close()
-    result = {}
-    for mo, brand, qty, camt, coamt in rows:
-        result.setdefault(mo, []).append({'brand': brand, 'qty': qty, 'consumer_amount': camt, 'cost_amount': coamt})
     return jsonify(result)
+
+
+@app.route("/api/gift/quota/list")
+@login_required
+def api_gift_quota_list():
+    """브랜드별 승인수량(품의) 목록"""
+    conn = get_db()
+    rows = [dict(r) for r in conn.execute(
+        "SELECT brand, approved_qty, updated_at FROM gift_brand_quota ORDER BY brand").fetchall()]
+    conn.close()
+    return jsonify(rows)
+
+
+@app.route("/api/gift/quota/set", methods=["POST"])
+@login_required
+def api_gift_quota_set():
+    """브랜드별 승인수량(품의) 등록/수정"""
+    d = request.json or {}
+    brand = (d.get('brand') or '').strip()
+    if not brand:
+        return jsonify({'ok': False, 'msg': '브랜드를 입력해주세요'}), 400
+    try:
+        approved_qty = int(d.get('approved_qty', 0) or 0)
+    except Exception:
+        approved_qty = 0
+    now = datetime.now().strftime('%Y-%m-%d %H:%M')
+    conn = get_db()
+    conn.execute("""INSERT INTO gift_brand_quota (brand, approved_qty, updated_at) VALUES(?,?,?)
+        ON CONFLICT(brand) DO UPDATE SET approved_qty=excluded.approved_qty, updated_at=excluded.updated_at""",
+        (brand, approved_qty, now))
+    conn.commit(); conn.close()
+    return jsonify({'ok': True})
 
 
 @app.route("/api/export/xlsx/gift")
@@ -9388,26 +9448,44 @@ def api_export_gift_xlsx():
     for ci, w in zip(range(2,13), [22,16,10,10,12,4,12,14,12,10,10]):
         ws2.column_dimensions[get_column_letter(ci)].width = w
 
-    # ── 시트3: 월별집계 ──
+    # ── 시트3: 월별집계 (브랜드별 섹션 × 월별 행 피벗) ──
     ws3 = wb.create_sheet("월별집계")
     ws3.column_dimensions['A'].width = 2
-    ws3.merge_cells('B2:F2')
-    c = ws3.cell(row=2, column=2, value="※ 사은품 월별 집계"); c.font=Font(bold=True,size=13,name=FNAME); c.alignment=left_a
-    hdrs3 = ['월','브랜드','수량(EA)','소비자가 금액','원가 금액(50%)']
-    for ci, h in enumerate(hdrs3, 2):
-        c = ws3.cell(row=4, column=ci, value=h)
-        c.font=Font(bold=True,size=9,name=FNAME); c.fill=mf("F2F2F2"); c.border=bdr; c.alignment=ctr
-    mrows = conn.execute("""SELECT usage_month, brand, SUM(quantity), SUM(consumer_amount), SUM(cost_amount)
-        FROM gift_usage_record GROUP BY usage_month, brand ORDER BY usage_month DESC""").fetchall()
-    ri4 = 5
-    for mo, brand, qty, camt, coamt in mrows:
-        vals = [mo, brand, qty, camt, coamt]
-        for ci, v in enumerate(vals, 2):
-            c = ws3.cell(row=ri4, column=ci, value=v); c.font=Font(size=9,name=FNAME); c.border=bdr
-            c.alignment = right_a if ci in (4,5) else ctr
-            if ci in (4,5): c.number_format='#,##0'
-        ri4 += 1
-    for ci, w in zip(range(2,7), [10,14,12,16,16]):
+    ws3.merge_cells('B2:H2')
+    c = ws3.cell(row=2, column=2, value="※ 사은품 월별 집계 (브랜드별 승인수량 대비 사용 현황)")
+    c.font=Font(bold=True,size=13,name=FNAME); c.alignment=left_a
+
+    pivot = _gift_build_monthly_pivot(conn)
+    hdrs3 = ['월','승인수량(품의)','월별사용','사용누계','잔여수량','소비자가금액누계','원가금액누계']
+    ri3 = 4
+    for brand in sorted(pivot.keys()):
+        info = pivot[brand]
+        ws3.merge_cells(start_row=ri3, start_column=2, end_row=ri3, end_column=8)
+        c = ws3.cell(row=ri3, column=2, value=f"■ {brand}  (승인수량(품의): {info['approved_qty']:,}개 · 누적사용: {info['total_qty']:,}개)")
+        c.font=Font(bold=True,size=10.5,name=FNAME,color='1E3A8A'); c.fill=mf("EFF6FF"); c.alignment=left_a
+        ri3 += 1
+        for ci, h in enumerate(hdrs3, 2):
+            c = ws3.cell(row=ri3, column=ci, value=h)
+            c.font=Font(bold=True,size=9,name=FNAME); c.fill=mf("F2F2F2"); c.border=bdr; c.alignment=ctr
+        ri3 += 1
+        if not info['rows']:
+            ws3.merge_cells(start_row=ri3, start_column=2, end_row=ri3, end_column=8)
+            c = ws3.cell(row=ri3, column=2, value="사용 내역 없음")
+            c.font=Font(size=9,name=FNAME,color='9CA3AF'); c.alignment=ctr; c.border=bdr
+            ri3 += 1
+        for r in info['rows']:
+            remaining_color = 'DC2626' if r['remaining_qty'] < 0 else '111827'
+            vals = [r['month'], r['approved_qty'], r['monthly_qty'], r['cum_qty'], r['remaining_qty'],
+                     r['cum_consumer_amount'], r['cum_cost_amount']]
+            for ci, v in enumerate(vals, 2):
+                c = ws3.cell(row=ri3, column=ci, value=v); c.font=Font(size=9,name=FNAME); c.border=bdr
+                c.alignment = right_a if ci in (3,4,5,6,7,8) else ctr
+                if ci in (6,7,8): c.number_format='#,##0'
+                if ci==6: c.font=Font(size=9,name=FNAME,color=remaining_color,bold=(r['remaining_qty']<0))
+            ri3 += 1
+        ri3 += 1  # 브랜드 사이 여백
+
+    for ci, w in zip(range(2,9), [10,15,11,11,11,16,16]):
         ws3.column_dimensions[get_column_letter(ci)].width = w
 
     conn.close()
