@@ -3281,93 +3281,9 @@ def export_xlsx_monthly():
 
     conn.close()
 
-    # 수정3: 추이 대시보드 — 월별 매출 흐름을 한눈에 파악할 수 있는 요약 + 차트 시트
-    from openpyxl.chart import LineChart, BarChart, Reference
-    ws_dash = wb.create_sheet("추이 대시보드")
-    ws_dash.column_dimensions['A'].width = 2.5
-    ws_dash.merge_cells('B2:H2')
-    cdt = ws_dash.cell(row=2, column=2, value=f"※ 월별 매출 추이 대시보드_{year}년")
-    cdt.font = mft(FONT_BLACK, True, 13); cdt.alignment = left
-
-    # 월별 총 매출/수량/전월대비 표
-    dash_hdrs = ['월','총 매출(원)','총 수량','전월대비']
-    for ci, h in enumerate(dash_hdrs, 2):
-        c = ws_dash.cell(row=4, column=ci, value=h)
-        c.font = mft(FONT_BLACK, True, 9); c.fill = mf("F2F2F2"); c.alignment = center
-    ws_dash.row_dimensions[4].height = 20
-
-    monthly_totals = []
-    for mo in months:
-        mt = sum(v.get('total', 0) for k, v in idx.items() if k[1] == mo)
-        mq = sum(v.get('qty', 0) for k, v in idx.items() if k[1] == mo)
-        monthly_totals.append((mo, mt, mq))
-
-    ri_d = 5
-    prev_total = None
-    for mo, mt, mq in monthly_totals:
-        ws_dash.cell(row=ri_d, column=2, value=f"{mo}월").font = mft(FONT_BLACK, False, 9)
-        c_t = ws_dash.cell(row=ri_d, column=3, value=mt); c_t.number_format = num_fmt; c_t.font = mft(FONT_BLACK, True, 9); c_t.alignment = right
-        c_q = ws_dash.cell(row=ri_d, column=4, value=mq); c_q.alignment = right; c_q.font = mft(FONT_BLACK, False, 9)
-        if prev_total is not None and prev_total > 0:
-            growth = round((mt - prev_total) / prev_total * 100, 1)
-            c_g = ws_dash.cell(row=ri_d, column=5, value=f"{'▲' if growth>=0 else '▼'} {abs(growth)}%")
-            c_g.font = mft('16A34A' if growth>=0 else 'DC2626', True, 9); c_g.alignment = center
-        else:
-            ws_dash.cell(row=ri_d, column=5, value='—').alignment = center
-        prev_total = mt
-        ri_d += 1
-    ws_dash.column_dimensions['B'].width=8; ws_dash.column_dimensions['C'].width=18
-    ws_dash.column_dimensions['D'].width=12; ws_dash.column_dimensions['E'].width=12
-
-    # 월별 매출 추이 라인 차트 (수정3: 가시성 — 흐름을 한눈에)
-    if len(monthly_totals) >= 2:
-        line_chart = LineChart()
-        line_chart.title = "월별 매출 추이"
-        line_chart.style = 2
-        line_chart.y_axis.title = '매출(원)'
-        line_chart.x_axis.title = '월'
-        data_ref = Reference(ws_dash, min_col=3, min_row=4, max_row=ri_d-1)
-        cats_ref = Reference(ws_dash, min_col=2, min_row=5, max_row=ri_d-1)
-        line_chart.add_data(data_ref, titles_from_data=True)
-        line_chart.set_categories(cats_ref)
-        line_chart.width = 18; line_chart.height = 9
-        ws_dash.add_chart(line_chart, f"G4")
-
-    # 브랜드별 월별 추이 표 (하단)
-    ri_d += 2
-    brand_trend_start = ri_d
-    ws_dash.cell(row=ri_d, column=2, value="브랜드별 월별 매출 추이").font = mft(FONT_BLACK, True, 11)
-    ri_d += 1
-    hdr_row = ri_d
-    ws_dash.cell(row=ri_d, column=2, value="브랜드").font = mft(FONT_BLACK, True, 9); ws_dash.cell(row=ri_d,column=2).fill=mf("F2F2F2")
-    for ci, mo in enumerate(months, 3):
-        c = ws_dash.cell(row=ri_d, column=ci, value=f"{mo}월")
-        c.font = mft(FONT_BLACK, True, 9); c.fill = mf("F2F2F2"); c.alignment = center
-    ri_d += 1
-    brand_data_start = ri_d
-    for b in [bb for bb in brands if bb in brand_products]:
-        ws_dash.cell(row=ri_d, column=2, value=b).font = mft(FONT_BLACK, True, 9)
-        for ci, mo in enumerate(months, 3):
-            bt = sum(v.get('total',0) for k,v in idx.items() if k[1]==mo and k[2]==b)
-            c = ws_dash.cell(row=ri_d, column=ci, value=bt); c.number_format=num_fmt; c.alignment=right; c.font=mft(FONT_BLACK,False,8)
-        ri_d += 1
-    brand_data_end = ri_d - 1
-
-    if brand_data_end >= brand_data_start and len(months) >= 1:
-        bar_chart = BarChart()
-        bar_chart.type = "col"
-        bar_chart.title = "브랜드별 월별 매출 비교"
-        bar_chart.y_axis.title = '매출(원)'
-        bar_chart.style = 10
-        data_ref2 = Reference(ws_dash, min_col=3, max_col=2+len(months), min_row=hdr_row, max_row=brand_data_end)
-        cats_ref2 = Reference(ws_dash, min_col=2, min_row=brand_data_start, max_row=brand_data_end)
-        bar_chart.add_data(data_ref2, titles_from_data=True)
-        bar_chart.set_categories(cats_ref2)
-        bar_chart.width = 20; bar_chart.height = 10
-        ws_dash.add_chart(bar_chart, f"G22")
-
-    # 수정1: 시트 순서를 참조 양식과 동일하게 재배열 (추이 대시보드 → 월별 브랜드 요약 → ... → 기초데이터)
-    wb._sheets = [wb["추이 대시보드"], wb["월별 브랜드 요약"], wb["브랜드별 금액"], wb["브랜드별 수량"], wb["제품별 상세"]] + [wb[n] for n in raw_sheet_names]
+    # 수정1: 시트 순서를 참조 양식과 동일하게 재배열 (있는 시트만 안전하게 재배열 — 없는 시트로 인한 서버 오류 방지)
+    _order = ["월별 브랜드 요약", "브랜드별 금액", "브랜드별 수량", "제품별 상세"]
+    wb._sheets = [wb[n] for n in _order if n in wb.sheetnames] + [wb[n] for n in raw_sheet_names if n in wb.sheetnames]
 
     buf=io.BytesIO(); wb.save(buf); buf.seek(0)
     fname=f"오프라인_브랜드별정리_{year}{'_'+month+'월' if month else ''}.xlsx"
@@ -4017,95 +3933,7 @@ def export_xlsx_weekly():
 
     conn.close()
 
-    # 수정3: 추이 대시보드 — 주별 매출 흐름을 한눈에 파악할 수 있는 요약 + 차트 시트
-    from openpyxl.chart import LineChart, BarChart, Reference
-    ws_dash = wb.create_sheet("추이 대시보드")
-    ws_dash.column_dimensions['A'].width = 2.5
-    ws_dash.merge_cells('B2:H2')
-    cdt = ws_dash.cell(row=2, column=2, value=f"※ 주별 매출 추이 대시보드_{single_week_label or year}")
-    cdt.font = mft(FONT_BLACK, True, 13); cdt.alignment = left
-
-    dash_hdrs = ['주차','기간','총 매출(원)','총 수량','전주대비']
-    for ci, h in enumerate(dash_hdrs, 2):
-        c = ws_dash.cell(row=4, column=ci, value=h)
-        c.font = mft(FONT_BLACK, True, 9); c.fill = mf("F2F2F2"); c.alignment = center
-    ws_dash.row_dimensions[4].height = 20
-
-    weekly_totals = []
-    for i, wr in enumerate(weeks):
-        wk = wr['wk']
-        wt = sum(v.get('total', 0) for k, v in idx.items() if k[0] == wk)
-        wq = sum(v.get('qty', 0) for k, v in idx.items() if k[0] == wk)
-        mw, dr = month_week_label(wr['ws'])
-        label = mw or f"{i+1}주차"
-        period = f"{wr['ws']}~{wr['we']}"
-        weekly_totals.append((label, period, wt, wq))
-
-    ri_d = 5
-    prev_total = None
-    for label, period, wt, wq in weekly_totals:
-        ws_dash.cell(row=ri_d, column=2, value=label).font = mft(FONT_BLACK, False, 9)
-        ws_dash.cell(row=ri_d, column=3, value=period).font = mft(FONT_BLACK, False, 8)
-        c_t = ws_dash.cell(row=ri_d, column=4, value=wt); c_t.number_format = num_fmt; c_t.font = mft(FONT_BLACK, True, 9); c_t.alignment = right
-        c_q = ws_dash.cell(row=ri_d, column=5, value=wq); c_q.alignment = right; c_q.font = mft(FONT_BLACK, False, 9)
-        if prev_total is not None and prev_total > 0:
-            growth = round((wt - prev_total) / prev_total * 100, 1)
-            c_g = ws_dash.cell(row=ri_d, column=6, value=f"{'▲' if growth>=0 else '▼'} {abs(growth)}%")
-            c_g.font = mft('16A34A' if growth>=0 else 'DC2626', True, 9); c_g.alignment = center
-        else:
-            ws_dash.cell(row=ri_d, column=6, value='—').alignment = center
-        prev_total = wt
-        ri_d += 1
-    ws_dash.column_dimensions['B'].width=10; ws_dash.column_dimensions['C'].width=20
-    ws_dash.column_dimensions['D'].width=18; ws_dash.column_dimensions['E'].width=12; ws_dash.column_dimensions['F'].width=12
-
-    if len(weekly_totals) >= 2:
-        line_chart = LineChart()
-        line_chart.title = "주별 매출 추이"
-        line_chart.style = 2
-        line_chart.y_axis.title = '매출(원)'
-        line_chart.x_axis.title = '주차'
-        data_ref = Reference(ws_dash, min_col=4, min_row=4, max_row=ri_d-1)
-        cats_ref = Reference(ws_dash, min_col=2, min_row=5, max_row=ri_d-1)
-        line_chart.add_data(data_ref, titles_from_data=True)
-        line_chart.set_categories(cats_ref)
-        line_chart.width = 18; line_chart.height = 9
-        ws_dash.add_chart(line_chart, "H4")
-
-    # 브랜드별 주별 추이 표
-    ri_d += 2
-    ws_dash.cell(row=ri_d, column=2, value="브랜드별 주별 매출 추이").font = mft(FONT_BLACK, True, 11)
-    ri_d += 1
-    hdr_row = ri_d
-    ws_dash.cell(row=ri_d, column=2, value="브랜드").font = mft(FONT_BLACK, True, 9); ws_dash.cell(row=ri_d,column=2).fill=mf("F2F2F2")
-    for ci, wr in enumerate(weeks, 3):
-        mw, dr = month_week_label(wr['ws'])
-        c = ws_dash.cell(row=ri_d, column=ci, value=mw or wr['wk'])
-        c.font = mft(FONT_BLACK, True, 9); c.fill = mf("F2F2F2"); c.alignment = center
-    ri_d += 1
-    brand_data_start = ri_d
-    for b in [bb for bb in brands if bb in brand_products]:
-        ws_dash.cell(row=ri_d, column=2, value=b).font = mft(FONT_BLACK, True, 9)
-        for ci, wr in enumerate(weeks, 3):
-            bt = sum(v.get('total',0) for k,v in idx.items() if k[0]==wr['wk'] and k[1]==b)
-            c = ws_dash.cell(row=ri_d, column=ci, value=bt); c.number_format=num_fmt; c.alignment=right; c.font=mft(FONT_BLACK,False,8)
-        ri_d += 1
-    brand_data_end = ri_d - 1
-
-    if brand_data_end >= brand_data_start and len(weeks) >= 1:
-        bar_chart = BarChart()
-        bar_chart.type = "col"
-        bar_chart.title = "브랜드별 주별 매출 비교"
-        bar_chart.y_axis.title = '매출(원)'
-        bar_chart.style = 10
-        data_ref2 = Reference(ws_dash, min_col=3, max_col=2+len(weeks), min_row=hdr_row, max_row=brand_data_end)
-        cats_ref2 = Reference(ws_dash, min_col=2, min_row=brand_data_start, max_row=brand_data_end)
-        bar_chart.add_data(data_ref2, titles_from_data=True)
-        bar_chart.set_categories(cats_ref2)
-        bar_chart.width = 20; bar_chart.height = 10
-        ws_dash.add_chart(bar_chart, "H22")
-
-    wb._sheets = [wb["추이 대시보드"]] + [s for s in wb._sheets if s.title != "추이 대시보드"]
+    wb._sheets = [s for s in wb._sheets if s.title != "추이 대시보드"]
 
     buf=io.BytesIO(); wb.save(buf); buf.seek(0)
     fname=f"주별실적_{year}{'_'+month+'월' if month else ''}.xlsx"
@@ -8811,21 +8639,69 @@ GIFT_BRAND_ALIAS = {
     'TAFTOYS': '타프토이즈', 'TAFT': '타프토이즈',
 }
 
-# 매장명 표기가 서로 크게 다른 경우(어순 도치, "점" 유무 등)까지 매칭하기 위한 정규화 키
+# 매장명 표기가 서로 크게 다른 경우(어순 도치, "점" 유무, 부서/법인명 등)까지 매칭하기 위한 정규화 키
 GIFT_STORE_PREFIX_WORDS = ['베이비하우스','링크맘','베이비파크','베이비스토리','베이비스토어',
                            '베네피아','베이비플러스','베이비세븐','베이비 투 키즈','베투키']
+# 매장명에 흔히 붙는 부서/카테고리/법인 표기 — 정규화 키 계산 시 노이즈로 간주해 제거
+GIFT_STORE_NOISE_WORDS = ['용품','발육','유아용품','완구','서적','도서','매장','지점',
+                           '주식회사','(주)','㈜','컴퍼니','법인']
 
 def _gift_normalize_store_key(name):
-    """매장명 비교용 정규화 키 — 공백/점 제거 후 브랜드 프리픽스를 걷어내고 지역명만 남긴다.
-    '베이비하우스 향남' / '베이비하우스 향남점' / '향남베이비하우스' 모두 동일 키로 수렴"""
+    """매장명 비교용 정규화 키 — 공백/점 제거 후 브랜드 프리픽스·부서/법인 표기를 걷어내고 지역명만 남긴다.
+    '베이비하우스 향남' / '베이비하우스 향남점' / '향남베이비하우스' / '울산 베이비하우스_용품' 모두 동일 키로 수렴"""
     import re as _re_sk
     if not name: return ''
-    cleaned = _re_sk.sub(r'점\s*$', '', str(name).strip())
+    cleaned = str(name).strip().replace('_', ' ')
+    cleaned = _re_sk.sub(r'점\s*$', '', cleaned.strip())
     cleaned = _re_sk.sub(r'[^\w가-힣]', '', cleaned)
-    for p in GIFT_STORE_PREFIX_WORDS:
+    for p in GIFT_STORE_PREFIX_WORDS + GIFT_STORE_NOISE_WORDS:
         p_clean = _re_sk.sub(r'[^\w가-힣]', '', p)
         cleaned = cleaned.replace(p_clean, '')
     return cleaned or _re_sk.sub(r'[^\w가-힣]', '', str(name).strip())
+
+
+def _gift_build_canonical_store_index(conn):
+    """'매장 관리 시스템'에서 이미 쓰이고 있는 정식 매장명(sales_data.real_seller / branches.name)을
+    정규화 키 기준으로 인덱싱 — 이카운트/수기입력 매장명이 다소 다르게 적혀 있어도 기존에 쓰던 정식
+    매장명으로 통합 인식하기 위함. 거래처코드→real_seller 매핑도 함께 반환(가장 강력한 매칭 근거)."""
+    canonical = {}  # normalize_key -> real_seller(정식명)
+    for r in conn.execute("SELECT DISTINCT real_seller FROM sales_data WHERE real_seller!=''").fetchall():
+        key = _gift_normalize_store_key(r[0])
+        if key and key not in canonical:
+            canonical[key] = r[0]
+    try:
+        for r in conn.execute("SELECT DISTINCT name FROM branches WHERE name!=''").fetchall():
+            key = _gift_normalize_store_key(r[0])
+            if key and key not in canonical:
+                canonical[key] = r[0]
+    except Exception:
+        pass
+
+    trade_code_map = {}  # trade_code -> real_seller (가장 많이 등장한 매핑 우선)
+    for r in conn.execute("""
+        SELECT trade_code, real_seller, COUNT(*) cnt FROM sales_data
+        WHERE trade_code!='' AND real_seller!='' GROUP BY trade_code, real_seller ORDER BY cnt DESC""").fetchall():
+        if r[0] not in trade_code_map:
+            trade_code_map[r[0]] = r[1]
+    return canonical, trade_code_map
+
+
+def _gift_resolve_store_name(raw_name, trade_code, canonical_index, trade_code_map):
+    """이카운트/수기입력 매장명을 '매장 관리 시스템'에서 쓰이는 정식 매장명으로 최대한 통합해서 해석.
+    우선순위: ① 거래처코드 매핑(가장 확실) → ② SELLER_ALIAS/resolve_seller → ③ 정규화 키로 정식명 매칭 → ④ 원본 그대로"""
+    raw = (raw_name or '').strip().replace('_', ' ')
+    if not raw:
+        return ''
+    # ① 거래처코드로 확정
+    if trade_code and trade_code in trade_code_map:
+        return trade_code_map[trade_code]
+    # ② 기존 별칭 규칙
+    resolved = resolve_seller(SELLER_ALIAS.get(raw, raw))
+    # ③ 정규화 키로 기존에 쓰던 정식 매장명 매칭
+    key = _gift_normalize_store_key(resolved)
+    if key and key in canonical_index:
+        return canonical_index[key]
+    return resolved
 
 def _gift_normalize_brand(raw):
     """브랜드 표기(영문 등)를 표준 브랜드명으로 정규화"""
@@ -9011,7 +8887,34 @@ def api_gift_usage_upload_excel():
     if not items:
         return jsonify({'ok': False, 'msg': '읽을 수 있는 데이터 행이 없습니다'}), 400
 
-    return jsonify({'ok': True, 'items': items, 'count': len(items)})
+    # 수정1: 엑셀 파일 내 동일 행(일자+매장명+브랜드+품목+수량+단가) 중복은 1건만 남김
+    dedup_items = []
+    seen = set()
+    dup_count = 0
+    for it in items:
+        key = (it['usage_date'], resolve_seller(SELLER_ALIAS.get(it['store_name'], it['store_name'])),
+               it['brand'], it['item_name'].replace(' ', ''), it['quantity'], it['unit_price'])
+        if key in seen:
+            dup_count += 1
+            continue
+        seen.add(key)
+        dedup_items.append(it)
+
+    # 이미 DB(사용내역)에 등록된 건과도 대조해서 알려줌(저장 시점에 최종적으로 한 번 더 걸러짐)
+    conn = get_db()
+    existing_keys = set()
+    for r in conn.execute("SELECT usage_date, real_seller, brand, item_name, quantity, unit_price FROM gift_usage_record").fetchall():
+        existing_keys.add((r[0], r[1], r[2], (r[3] or '').replace(' ', ''), r[4], r[5]))
+    conn.close()
+    already_saved = 0
+    for it in dedup_items:
+        key = (it['usage_date'], resolve_seller(SELLER_ALIAS.get(it['store_name'], it['store_name'])),
+               it['brand'], it['item_name'].replace(' ', ''), it['quantity'], it['unit_price'])
+        if key in existing_keys:
+            already_saved += 1
+
+    return jsonify({'ok': True, 'items': dedup_items, 'count': len(dedup_items),
+                     'dup_in_file': dup_count, 'already_saved': already_saved})
 
 
 @app.route("/api/gift/usage/list")
@@ -9031,33 +8934,48 @@ def api_gift_usage_list():
 @app.route("/api/gift/usage/add", methods=["POST"])
 @login_required
 def api_gift_usage_add():
-    """사용내역(건별) 단건 또는 다건(일괄) 추가"""
+    """사용내역(건별) 단건 또는 다건(일괄) 추가 — 동일 건(일자+매장+브랜드+품목+수량+단가) 중복은 1건만 반영"""
     d = request.json or {}
     items = d.get('items') if 'items' in d else [d]
     conn = get_db()
     now = datetime.now().strftime('%Y-%m-%d %H:%M')
+    canonical_index, trade_code_map = _gift_build_canonical_store_index(conn)
+
+    # 기존 DB에 이미 있는 건들의 중복판정 키 집합 (재업로드/재입력 시 누적 방지)
+    existing_keys = set()
+    for r in conn.execute("SELECT usage_date, real_seller, brand, item_name, quantity, unit_price FROM gift_usage_record").fetchall():
+        existing_keys.add((r[0], r[1], r[2], (r[3] or '').replace(' ', ''), r[4], r[5]))
+
     inserted = 0
+    skipped_dup = 0
+    seen_in_batch = set()
     for it in items:
         usage_date = it.get('usage_date', '').strip()
         store_name = it.get('store_name', '').strip()
         if not usage_date or not store_name:
             continue
         brand = _gift_normalize_brand(it.get('brand', ''))
-        real_seller = resolve_seller(SELLER_ALIAS.get(store_name, store_name))
+        real_seller = _gift_resolve_store_name(store_name, '', canonical_index, trade_code_map)
         qty = int(it.get('quantity', 1) or 1)
         unit_price = int(it.get('unit_price', 0) or 0)
+        item_name = it.get('item_name', '')
+        dup_key = (usage_date, real_seller, brand, item_name.replace(' ', ''), qty, unit_price)
+        if dup_key in existing_keys or dup_key in seen_in_batch:
+            skipped_dup += 1
+            continue
+        seen_in_batch.add(dup_key)
         consumer_amount = unit_price * qty
         cost_amount = round(consumer_amount * 0.5)
         conn.execute("""INSERT INTO gift_usage_record
             (usage_date, store_name, brand, item_name, quantity, unit_price, consumer_amount, cost_amount,
              reason, real_seller, manager, note, usage_month, source, kakao_raw_text, created_at)
             VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-            (usage_date, store_name, brand, it.get('item_name',''), qty, unit_price, consumer_amount, cost_amount,
+            (usage_date, store_name, brand, item_name, qty, unit_price, consumer_amount, cost_amount,
              it.get('reason',''), real_seller, it.get('manager',''), it.get('note',''),
              usage_date[:7], it.get('source','수동입력'), it.get('kakao_raw_text',''), now))
         inserted += 1
     conn.commit(); conn.close()
-    return jsonify({'ok': True, 'inserted': inserted})
+    return jsonify({'ok': True, 'inserted': inserted, 'skipped_dup': skipped_dup})
 
 
 @app.route("/api/gift/usage/<int:rid>", methods=["DELETE"])
@@ -9078,7 +8996,8 @@ def api_gift_usage_update(rid):
     unit_price = int(d.get('unit_price', 0) or 0)
     consumer_amount = unit_price * qty
     cost_amount = round(consumer_amount * 0.5)
-    real_seller = resolve_seller(SELLER_ALIAS.get(d.get('store_name',''), d.get('store_name','')))
+    canonical_index, trade_code_map = _gift_build_canonical_store_index(conn)
+    real_seller = _gift_resolve_store_name(d.get('store_name',''), '', canonical_index, trade_code_map)
     conn.execute("""UPDATE gift_usage_record SET
         usage_date=?, store_name=?, brand=?, item_name=?, quantity=?, unit_price=?,
         consumer_amount=?, cost_amount=?, reason=?, real_seller=?, manager=?, note=?, usage_month=?
@@ -9104,7 +9023,11 @@ def _gift_parse_ecount_date(raw):
 @app.route("/api/gift/ecount/upload", methods=["POST"])
 @login_required
 def api_gift_ecount_upload():
-    """이카운트 판매현황 엑셀 업로드 → '구분=증정' 건만 추출 저장 + 사용내역과 자동 매칭"""
+    """이카운트 판매현황 엑셀 업로드 → '구분=증정' 건만 추출 저장 + 사용내역과 자동 매칭
+    수정2: 매장명은 원본 거래처명이 아닌 '실적용거래처명'(이미 정리된 정식 매장명) 컬럼을 우선 사용,
+    거래처코드가 있으면 sales_data에 축적된 거래처코드→정식매장명 매핑을 최우선으로 적용해서
+    '주식회사 에이치원컴퍼니' 같은 법인명도 실제 매장으로 정확히 인식한다.
+    수정3: 브랜드는 품목그룹 컬럼 + 품목명의 [브랜드] 태그를 함께 봐서 remap_group으로 정규화한다."""
     if 'file' not in request.files:
         return jsonify({'ok': False, 'msg': '파일이 없습니다'}), 400
     f = request.files['file']
@@ -9114,7 +9037,7 @@ def api_gift_ecount_upload():
         return jsonify({'ok': False, 'msg': '엑셀 파일을 읽을 수 없습니다'}), 400
     ws = wb[wb.sheetnames[0]]
 
-    # 헤더 행 탐색 (일자/판매처명/품명/수량/구분 컬럼 위치 파악)
+    # 헤더 행 탐색 (일자/거래처명/실적용거래처명/거래처코드/품목그룹/품명/수량/구분 컬럼 위치 파악)
     header_row_idx = None
     col_map = {}
     for ri in range(1, min(6, ws.max_row+1)):
@@ -9122,11 +9045,14 @@ def api_gift_ecount_upload():
         for ci in range(1, ws.max_column+1):
             v = ws.cell(ri, ci).value
             if v: vals[str(v).strip()] = ci
-        if '일자' in vals and ('판매처명' in vals or '거래처명' in vals):
+        if '일자' in vals and ('판매처명' in vals or '거래처명' in vals or '실적용거래처명' in vals):
             header_row_idx = ri
             col_map = {
                 'date': vals.get('일자'),
-                'seller': vals.get('판매처명') or vals.get('거래처명'),
+                'seller_real': vals.get('실적용거래처명') or vals.get('실적용 거래처명'),
+                'seller_raw': vals.get('판매처명') or vals.get('거래처명'),
+                'trade_code': vals.get('거래처코드'),
+                'item_group': vals.get('품목그룹') or vals.get('품목 그룹'),
                 'item': vals.get('품명 및 규격') or vals.get('품명'),
                 'qty': vals.get('수량'),
                 'gubun': vals.get('구분'),
@@ -9136,6 +9062,7 @@ def api_gift_ecount_upload():
         return jsonify({'ok': False, 'msg': '"구분" 컬럼을 찾을 수 없습니다. 이카운트 판매현황 형식을 확인해주세요'}), 400
 
     conn = get_db()
+    canonical_index, trade_code_map = _gift_build_canonical_store_index(conn)
     now = datetime.now().strftime('%Y-%m-%d %H:%M')
     batch = now.replace(' ','').replace(':','').replace('-','')
     inserted = 0
@@ -9144,14 +9071,21 @@ def api_gift_ecount_upload():
         if not gubun or '증정' not in str(gubun):
             continue
         date_raw = ws.cell(ri, col_map['date']).value
-        seller = ws.cell(ri, col_map['seller']).value
+        # 실적용거래처명(정식 매장명) 우선, 없으면 원본 거래처명
+        seller = None
+        if col_map.get('seller_real'):
+            seller = ws.cell(ri, col_map['seller_real']).value
+        if not seller and col_map.get('seller_raw'):
+            seller = ws.cell(ri, col_map['seller_raw']).value
         item = ws.cell(ri, col_map['item']).value
+        item_group = ws.cell(ri, col_map['item_group']).value if col_map.get('item_group') else ''
+        trade_code = str(ws.cell(ri, col_map['trade_code']).value or '').strip() if col_map.get('trade_code') else ''
         qty = ws.cell(ri, col_map['qty']).value
         if not date_raw or not seller or not item:
             continue
         ecount_date, voucher = _gift_parse_ecount_date(date_raw)
-        real_seller = resolve_seller(SELLER_ALIAS.get(str(seller).strip(), str(seller).strip()))
-        brand = remap_group('', str(item)) if str(item).startswith('[') else ''
+        real_seller = _gift_resolve_store_name(str(seller), trade_code, canonical_index, trade_code_map)
+        brand = remap_group(str(item_group or ''), str(item))
         try:
             conn.execute("""INSERT INTO gift_ecount_record
                 (upload_batch, ecount_date_raw, ecount_date, voucher_no, real_seller, brand, item_name, quantity, uploaded_at)
@@ -9393,11 +9327,11 @@ def api_export_gift_xlsx():
     # ── 시트2: 누락점검 ──
     ws2 = wb.create_sheet("누락점검")
     ws2.column_dimensions['A'].width = 2
-    ws2.merge_cells('B2:F2')
+    ws2.merge_cells('B2:G2')
     c = ws2.cell(row=2, column=2, value="※ 누락 점검 (이카운트 ↔ 관리대장 대사)")
     c.font=Font(bold=True,size=13,name=FNAME); c.alignment=left_a
 
-    hdrs2 = ['매장명','일자','브랜드','수량(EA)','대장 등록여부']
+    hdrs2 = ['매장명','일자','브랜드','품목','수량(EA)','대장 등록여부']
     for ci, h in enumerate(hdrs2, 2):
         c = ws2.cell(row=4, column=ci, value=h)
         c.font=Font(bold=True,size=9,name=FNAME); c.fill=mf("F2F2F2"); c.border=bdr; c.alignment=ctr
@@ -9409,17 +9343,17 @@ def api_export_gift_xlsx():
     ri2 = 5
     for r in rows2:
         status = '확인' if r['matched_usage_id'] else '누락'
-        vals = [r['real_seller'], r['ecount_date_raw'], r['brand'], r['quantity'], status]
+        vals = [r['real_seller'], r['ecount_date_raw'], r['brand'], r['item_name'], r['quantity'], status]
         for ci, v in enumerate(vals, 2):
             c = ws2.cell(row=ri2, column=ci, value=v); c.font=Font(size=9,name=FNAME); c.border=bdr
-            c.alignment = ctr
-            if ci==6:
+            c.alignment = right_a if ci==6 else (left_a if ci in (2,5) else ctr)
+            if ci==7:
                 c.font = Font(bold=True, size=9, name=FNAME, color='16A34A' if status=='확인' else 'DC2626')
         ri2 += 1
 
     # 브랜드별 수량 대사 (우측)
-    ws2.cell(row=4, column=8, value='브랜드').font=Font(bold=True,size=9,name=FNAME); ws2.cell(row=4,column=8).fill=mf("F2F2F2"); ws2.cell(row=4,column=8).border=bdr; ws2.cell(row=4,column=8).alignment=ctr
-    for ci, h in zip(range(9,13), ['이카운트 수량','대장 수량','차이','판정']):
+    ws2.cell(row=4, column=9, value='브랜드').font=Font(bold=True,size=9,name=FNAME); ws2.cell(row=4,column=9).fill=mf("F2F2F2"); ws2.cell(row=4,column=9).border=bdr; ws2.cell(row=4,column=9).alignment=ctr
+    for ci, h in zip(range(10,14), ['이카운트 수량','대장 수량','차이','판정']):
         c = ws2.cell(row=4, column=ci, value=h); c.font=Font(bold=True,size=9,name=FNAME); c.fill=mf("F2F2F2"); c.border=bdr; c.alignment=ctr
 
     eq = "SELECT brand, SUM(quantity) FROM gift_ecount_record WHERE 1=1"
@@ -9437,15 +9371,18 @@ def api_export_gift_xlsx():
         diff = uv - ev
         verdict = '일치' if diff==0 else '불일치'
         vals = [b, ev, uv, diff, verdict]
-        for ci, v in enumerate(vals, 8):
-            c = ws2.cell(row=ri3, column=ci, value=v); c.font=Font(size=9,name=FNAME); c.border=bdr; c.alignment=ctr
-            if ci==12: c.font=Font(bold=True,size=9,name=FNAME,color='16A34A' if verdict=='일치' else 'DC2626')
+        for ci, v in enumerate(vals, 9):
+            c = ws2.cell(row=ri3, column=ci, value=v); c.font=Font(size=9,name=FNAME); c.border=bdr
+            c.alignment = right_a if ci in (10,11,12) else ctr
+            if ci in (10,11,12): c.number_format = '#,##0'
+            if ci==13: c.font=Font(bold=True,size=9,name=FNAME,color='16A34A' if verdict=='일치' else 'DC2626')
         ri3 += 1
     vals = ['총 합계', grand_e, grand_u, grand_u-grand_e, '일치' if grand_e==grand_u else '불일치']
-    for ci, v in enumerate(vals, 8):
+    for ci, v in enumerate(vals, 9):
         c = ws2.cell(row=ri3, column=ci, value=v); c.font=Font(bold=True,size=9,name=FNAME); c.fill=mf("F9FAFB"); c.border=bdr; c.alignment=ctr
+        if ci in (10,11,12): c.number_format = '#,##0'; c.alignment = right_a
 
-    for ci, w in zip(range(2,13), [22,16,10,10,12,4,12,14,12,10,10]):
+    for ci, w in zip(range(2,14), [22,16,10,20,10,12,4,12,14,12,10,10]):
         ws2.column_dimensions[get_column_letter(ci)].width = w
 
     # ── 시트3: 월별집계 (브랜드별 섹션 × 월별 행 피벗) ──

@@ -1100,20 +1100,25 @@ td.center{text-align:center}
       </div>
 
       <div id="gift-view-check" style="display:none">
-        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
-          <div style="font-size:13px;font-weight:700;color:var(--t-700)">① 이카운트 '증정' 건 ↔ 대장 등록여부</div>
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;flex-wrap:wrap;gap:8px">
+          <div style="display:flex;align-items:center;gap:10px">
+            <div style="font-size:13px;font-weight:700;color:var(--t-700)">① 이카운트 '증정' 건 ↔ 대장 등록여부</div>
+            <div id="gift-check-summary-badge" style="font-size:11px;color:var(--t-400)"></div>
+          </div>
           <div>
             <button class="btn btn-ghost btn-sm" onclick="document.getElementById('gift-ecount-file').click()">📤 이카운트 판매현황 업로드</button>
             <input type="file" id="gift-ecount-file" accept=".xlsx,.xls" style="display:none" onchange="uploadGiftEcount(event)">
           </div>
         </div>
-        <div style="background:var(--paper);border:1px solid var(--border);border-radius:12px;overflow:hidden;margin-bottom:20px">
-          <table style="width:100%;border-collapse:collapse;font-size:12px">
+        <div style="font-size:11px;color:var(--t-400);margin-bottom:10px">이카운트 판매현황 엑셀의 <b>구분=증정</b> 건만 자동으로 추출해서 대장(사용내역) 등록 여부를 확인해요.</div>
+        <div style="background:var(--paper);border:1px solid var(--border);border-radius:12px;overflow-x:auto;margin-bottom:20px">
+          <table style="width:100%;border-collapse:collapse;font-size:12px;white-space:nowrap">
             <thead><tr style="background:var(--bg)">
               <th style="padding:8px 10px;text-align:left;font-size:10.5px;font-weight:700;color:var(--t-500);border-bottom:1.5px solid var(--border)">매장명</th>
               <th style="padding:8px 10px;text-align:left;font-size:10.5px;font-weight:700;color:var(--t-500);border-bottom:1.5px solid var(--border)">일자</th>
               <th style="padding:8px 10px;text-align:center;font-size:10.5px;font-weight:700;color:var(--t-500);border-bottom:1.5px solid var(--border)">브랜드</th>
-              <th style="padding:8px 10px;text-align:center;font-size:10.5px;font-weight:700;color:var(--t-500);border-bottom:1.5px solid var(--border)">수량</th>
+              <th style="padding:8px 10px;text-align:left;font-size:10.5px;font-weight:700;color:var(--t-500);border-bottom:1.5px solid var(--border)">품목</th>
+              <th style="padding:8px 10px;text-align:right;font-size:10.5px;font-weight:700;color:var(--t-500);border-bottom:1.5px solid var(--border)">수량</th>
               <th style="padding:8px 10px;text-align:center;font-size:10.5px;font-weight:700;color:var(--t-500);border-bottom:1.5px solid var(--border)">대장 등록여부</th>
             </tr></thead>
             <tbody id="gift-check-tbody"></tbody>
@@ -1121,13 +1126,13 @@ td.center{text-align:center}
         </div>
 
         <div style="font-size:13px;font-weight:700;color:var(--t-700);margin-bottom:10px">② 브랜드별 수량 대사</div>
-        <div style="background:var(--paper);border:1px solid var(--border);border-radius:12px;overflow:hidden">
-          <table style="width:100%;border-collapse:collapse;font-size:12px">
+        <div style="background:var(--paper);border:1px solid var(--border);border-radius:12px;overflow-x:auto">
+          <table style="width:100%;border-collapse:collapse;font-size:12px;white-space:nowrap">
             <thead><tr style="background:var(--bg)">
               <th style="padding:8px 10px;text-align:left;font-size:10.5px;font-weight:700;color:var(--t-500);border-bottom:1.5px solid var(--border)">브랜드</th>
-              <th style="padding:8px 10px;text-align:center;font-size:10.5px;font-weight:700;color:var(--t-500);border-bottom:1.5px solid var(--border)">이카운트 수량</th>
-              <th style="padding:8px 10px;text-align:center;font-size:10.5px;font-weight:700;color:var(--t-500);border-bottom:1.5px solid var(--border)">대장 수량</th>
-              <th style="padding:8px 10px;text-align:center;font-size:10.5px;font-weight:700;color:var(--t-500);border-bottom:1.5px solid var(--border)">차이</th>
+              <th style="padding:8px 10px;text-align:right;font-size:10.5px;font-weight:700;color:var(--t-500);border-bottom:1.5px solid var(--border)">이카운트 수량</th>
+              <th style="padding:8px 10px;text-align:right;font-size:10.5px;font-weight:700;color:var(--t-500);border-bottom:1.5px solid var(--border)">대장 수량</th>
+              <th style="padding:8px 10px;text-align:right;font-size:10.5px;font-weight:700;color:var(--t-500);border-bottom:1.5px solid var(--border)">차이</th>
               <th style="padding:8px 10px;text-align:center;font-size:10.5px;font-weight:700;color:var(--t-500);border-bottom:1.5px solid var(--border)">판정</th>
             </tr></thead>
             <tbody id="gift-summary-tbody"></tbody>
@@ -2424,7 +2429,8 @@ function renderGiftKakaoPreview(){
 async function confirmGiftKakaoSave(){
   const r = await api('/api/gift/usage/add', {method:'POST', body:{items: giftKakaoParsedItems}});
   if(r?.ok){
-    toast(`${r.inserted}건 저장됐어요`);
+    const dupMsg = r.skipped_dup ? ` (중복 ${r.skipped_dup}건 제외)` : '';
+    toast(`${r.inserted}건 저장됐어요${dupMsg}`);
     giftKakaoParsedItems = [];
     document.getElementById('gift-kakao-input').value = '';
     renderGiftKakaoPreview();
@@ -2485,7 +2491,12 @@ async function uploadGiftUsageExcel(e){
     if(r.ok){
       giftKakaoParsedItems = r.items;
       renderGiftKakaoPreview();
-      toast(`${r.count}건 인식됐어요 — 검토 후 저장해주세요`);
+      let msg = `${r.count}건 인식됐어요`;
+      const extras = [];
+      if(r.dup_in_file) extras.push(`파일 내 중복 ${r.dup_in_file}건 제외`);
+      if(r.already_saved) extras.push(`이미 저장된 건 ${r.already_saved}건 포함(저장 시 자동 제외)`);
+      if(extras.length) msg += ` (${extras.join(', ')})`;
+      toast(msg + ' — 검토 후 저장해주세요');
     } else {
       toast(r.msg || '분석에 실패했습니다', false);
     }
@@ -2562,16 +2573,21 @@ async function loadGiftCheckList(){
   const q = month ? `?month=${month}` : '';
   const rows = await api(`/api/gift/check/list${q}`) || [];
   const tbody = document.getElementById('gift-check-tbody');
+  const badge = document.getElementById('gift-check-summary-badge');
   if(!rows.length){
-    tbody.innerHTML = `<tr><td colspan="5" style="text-align:center;padding:30px;color:var(--t-300);font-size:12px">이카운트 판매현황을 업로드하면 증정 건이 여기 표시돼요</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="6" style="text-align:center;padding:30px;color:var(--t-300);font-size:12px">이카운트 판매현황을 업로드하면 증정 건이 여기 표시돼요</td></tr>`;
+    badge.textContent = '';
   } else {
+    const okCnt = rows.filter(r=>r.status==='확인').length;
+    badge.textContent = `총 ${rows.length}건 · 확인 ${okCnt}건 · 누락 ${rows.length-okCnt}건`;
     tbody.innerHTML = rows.map(r=>{
       const color = r.status==='확인' ? '#16A34A' : '#DC2626';
       return `<tr>
         <td style="padding:8px 10px;font-size:11.5px;font-weight:600;border-bottom:1px solid var(--border)">${r.real_seller}</td>
         <td style="padding:8px 10px;font-size:11px;color:var(--t-500);border-bottom:1px solid var(--border)">${r.ecount_date_raw}</td>
         <td style="padding:8px 10px;text-align:center;font-size:11px;border-bottom:1px solid var(--border)">${r.brand||'—'}</td>
-        <td style="padding:8px 10px;text-align:center;font-size:11.5px;font-weight:700;border-bottom:1px solid var(--border)">${r.quantity}</td>
+        <td style="padding:8px 10px;font-size:11px;color:var(--t-500);border-bottom:1px solid var(--border)">${r.item_name||''}</td>
+        <td style="padding:8px 10px;text-align:right;font-size:11.5px;font-weight:700;border-bottom:1px solid var(--border)">${r.quantity}</td>
         <td style="padding:8px 10px;text-align:center;border-bottom:1px solid var(--border)">
           <span style="font-size:10.5px;font-weight:700;color:${color};background:${color}15;padding:2px 8px;border-radius:5px">${r.status}</span>
         </td>
@@ -2586,11 +2602,11 @@ async function loadGiftCheckList(){
     const color = s.verdict==='일치' ? '#16A34A' : '#DC2626';
     return `<tr style="${isTotal?'background:var(--bg)':''}">
       <td style="padding:8px 10px;font-size:11.5px;font-weight:${isTotal?800:600};border-bottom:1px solid var(--border)">${s.brand}</td>
-      <td style="padding:8px 10px;text-align:center;font-size:11.5px;border-bottom:1px solid var(--border)">${s.ecount_qty}</td>
-      <td style="padding:8px 10px;text-align:center;font-size:11.5px;border-bottom:1px solid var(--border)">${s.ledger_qty}</td>
-      <td style="padding:8px 10px;text-align:center;font-size:11.5px;font-weight:700;border-bottom:1px solid var(--border)">${s.diff}</td>
+      <td style="padding:8px 10px;text-align:right;font-size:11.5px;border-bottom:1px solid var(--border)">${s.ecount_qty.toLocaleString()}</td>
+      <td style="padding:8px 10px;text-align:right;font-size:11.5px;border-bottom:1px solid var(--border)">${s.ledger_qty.toLocaleString()}</td>
+      <td style="padding:8px 10px;text-align:right;font-size:11.5px;font-weight:700;border-bottom:1px solid var(--border)">${s.diff.toLocaleString()}</td>
       <td style="padding:8px 10px;text-align:center;border-bottom:1px solid var(--border)">
-        <span style="font-size:10.5px;font-weight:700;color:${color}">${s.verdict}</span>
+        <span style="font-size:10.5px;font-weight:700;color:${color};background:${color}15;padding:2px 8px;border-radius:5px">${s.verdict}</span>
       </td>
     </tr>`;
   }).join('');
