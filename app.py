@@ -436,6 +436,42 @@ def init_db():
         file_b64 TEXT,
         uploaded_at TEXT DEFAULT ''
     )""")
+
+    # ── 사은품 증정 관리 ──────────────────────────────
+    conn.execute("""CREATE TABLE IF NOT EXISTS gift_usage_record (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        usage_date TEXT NOT NULL,
+        store_name TEXT NOT NULL,
+        brand TEXT DEFAULT '',
+        item_name TEXT DEFAULT '',
+        quantity INTEGER DEFAULT 1,
+        unit_price INTEGER DEFAULT 0,
+        consumer_amount INTEGER DEFAULT 0,
+        cost_amount INTEGER DEFAULT 0,
+        reason TEXT DEFAULT '',
+        real_seller TEXT DEFAULT '',
+        manager TEXT DEFAULT '',
+        note TEXT DEFAULT '',
+        usage_month TEXT DEFAULT '',
+        source TEXT DEFAULT '수동입력',
+        kakao_raw_text TEXT DEFAULT '',
+        match_status TEXT DEFAULT '미확인',
+        created_at TEXT DEFAULT ''
+    )""")
+    conn.execute("""CREATE TABLE IF NOT EXISTS gift_ecount_record (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        upload_batch TEXT DEFAULT '',
+        ecount_date_raw TEXT DEFAULT '',
+        ecount_date TEXT DEFAULT '',
+        voucher_no TEXT DEFAULT '',
+        real_seller TEXT DEFAULT '',
+        brand TEXT DEFAULT '',
+        item_name TEXT DEFAULT '',
+        quantity INTEGER DEFAULT 0,
+        matched_usage_id INTEGER DEFAULT NULL,
+        uploaded_at TEXT DEFAULT '',
+        UNIQUE(ecount_date_raw, real_seller, item_name)
+    )""")
     conn.execute("""CREATE TABLE IF NOT EXISTS work_retro (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         year INTEGER NOT NULL,
@@ -8748,6 +8784,490 @@ def api_work_retro_save():
         (year, month, manager, d.get('keep_text',''), d.get('problem_text',''), d.get('try_text',''), now))
     conn.commit(); conn.close()
     return jsonify({'ok': True})
+
+
+
+# ══════════════════════════════════════════════════════
+# ── 사은품 증정 관리 API ─────────────────────────────
+# ══════════════════════════════════════════════════════
+
+GIFT_BRAND_ALIAS = {
+    'RECARO': '레카로', 'JOOLZ': '줄즈', 'KAOS': '카오스', 'CHAOS': '카오스',
+    'WONDERFOLD': '원더폴드', 'ENFIX': '엔픽스', 'ABC': 'ABC디자인',
+    'TAFTOYS': '타프토이즈', 'TAFT': '타프토이즈',
+}
+
+def _gift_normalize_brand(raw):
+    """브랜드 표기(영문 등)를 표준 브랜드명으로 정규화"""
+    if not raw: return ''
+    raw_u = raw.strip().upper()
+    for k, v in GIFT_BRAND_ALIAS.items():
+        if k in raw_u:
+            return v
+    # 이미 한글 표준명이면 그대로
+    for b in BRAND_ORDER:
+        if b in raw:
+            return b
+    return raw.strip()
+
+
+def _gift_parse_kakao_text(text):
+    """카카오톡 증정 안내 텍스트를 자유형식으로 파싱해서 구조화된 항목 리스트로 변환
+    지원 패턴 예시:
+      '7/20 베이비하우스 송도 RECARO 백시트프로텍터 2개 증정'
+      '2026-07-20 베이비 투 키즈 / JOOLZ / 범퍼바 1개 - 재고판매'
+      줄바꿈으로 여러 건이 이어지는 경우 각 줄을 독립 항목으로 처리
+    파싱에 자신이 없는 필드는 빈 값으로 두고, 프론트에서 사용자가 검토 후 저장하도록 함"""
+    import re as _re_kk
+    results = []
+    lines = [l.strip() for l in text.split('\n') if l.strip()]
+    cur_date = ''
+    for line in lines:
+        # 날짜 패턴: 7/20, 07/20, 2026-07-20, 2026.07.20, 2026년 7월 20일 등
+        date_m = _re_kk.search(r'(\d{4}[-./]\d{1,2}[-./]\d{1,2})|(\d{1,2}[/.]\d{1,2})(?!\d)', line)
+        if date_m:
+            raw_d = date_m.group(0)
+            if _re_kk.match(r'\d{4}', raw_d):
+                parts = _re_kk.split(r'[-./]', raw_d)
+                cur_date = f"{parts[0]}-{int(parts[1]):02d}-{int(parts[2]):02d}"
+            else:
+                parts = _re_kk.split(r'[/.]', raw_d)
+                cur_date = f"{datetime.now().year}-{int(parts[0]):02d}-{int(parts[1]):02d}"
+            line = line[:date_m.start()] + line[date_m.end():]
+
+        # 브랜드 탐지
+        brand = ''
+        for k in GIFT_BRAND_ALIAS:
+            if k in line.upper():
+                brand = GIFT_BRAND_ALIAS[k]
+                line = _re_kk.sub(k, '', line, flags=_re_kk.IGNORECASE)
+                break
+        if not brand:
+            for b in BRAND_ORDER:
+                if b in line:
+                    brand = b
+                    line = line.replace(b, '')
+                    break
+
+        # 수량 탐지: "2개", "3EA", "x2" 등
+        qty = 1
+        qty_m = _re_kk.search(r'(\d+)\s*(개|EA|ea)', line)
+        if qty_m:
+            qty = int(qty_m.group(1))
+            line = line[:qty_m.start()] + line[qty_m.end():]
+
+        # 구분자(/,-,·) 기준으로 분리해서 매장명/품목/사유 추정
+        tokens = [t.strip() for t in _re_kk.split(r'[/·]|(?<!\d)-(?!\d)', line) if t.strip()]
+        # 남은 첫 토큰 = 매장명, 두번째 = 품목, 나머지 = 사유
+        store_name = tokens[0] if tokens else ''
+        item_name = tokens[1] if len(tokens) > 1 else ''
+        reason = ' '.join(tokens[2:]) if len(tokens) > 2 else ''
+
+        if not store_name and not item_name:
+            continue  # 파싱 불가한 줄(공지/인사말 등)은 건너뜀
+
+        results.append({
+            'usage_date': cur_date,
+            'store_name': store_name,
+            'brand': brand,
+            'item_name': item_name,
+            'quantity': qty,
+            'reason': reason,
+            'kakao_raw_text': line,
+        })
+    return results
+
+
+@app.route("/api/gift/usage/parse-kakao", methods=["POST"])
+@login_required
+def api_gift_parse_kakao():
+    """카카오톡 텍스트 붙여넣기 → 구조화된 미리보기 항목 반환 (저장은 별도 확정 단계에서)"""
+    text = (request.json or {}).get('text', '')
+    if not text.strip():
+        return jsonify({'ok': False, 'msg': '텍스트를 입력해주세요'}), 400
+    items = _gift_parse_kakao_text(text)
+    return jsonify({'ok': True, 'items': items, 'count': len(items)})
+
+
+@app.route("/api/gift/usage/list")
+@login_required
+def api_gift_usage_list():
+    month = request.args.get('month', '').strip()
+    conn = get_db()
+    q = "SELECT * FROM gift_usage_record WHERE 1=1"
+    params = []
+    if month: q += " AND usage_month=?"; params.append(month)
+    q += " ORDER BY usage_date DESC, id DESC"
+    rows = [dict(r) for r in conn.execute(q, params).fetchall()]
+    conn.close()
+    return jsonify(rows)
+
+
+@app.route("/api/gift/usage/add", methods=["POST"])
+@login_required
+def api_gift_usage_add():
+    """사용내역(건별) 단건 또는 다건(일괄) 추가"""
+    d = request.json or {}
+    items = d.get('items') if 'items' in d else [d]
+    conn = get_db()
+    now = datetime.now().strftime('%Y-%m-%d %H:%M')
+    inserted = 0
+    for it in items:
+        usage_date = it.get('usage_date', '').strip()
+        store_name = it.get('store_name', '').strip()
+        if not usage_date or not store_name:
+            continue
+        brand = _gift_normalize_brand(it.get('brand', ''))
+        real_seller = resolve_seller(SELLER_ALIAS.get(store_name, store_name))
+        qty = int(it.get('quantity', 1) or 1)
+        unit_price = int(it.get('unit_price', 0) or 0)
+        consumer_amount = unit_price * qty
+        cost_amount = round(consumer_amount * 0.5)
+        conn.execute("""INSERT INTO gift_usage_record
+            (usage_date, store_name, brand, item_name, quantity, unit_price, consumer_amount, cost_amount,
+             reason, real_seller, manager, note, usage_month, source, kakao_raw_text, created_at)
+            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (usage_date, store_name, brand, it.get('item_name',''), qty, unit_price, consumer_amount, cost_amount,
+             it.get('reason',''), real_seller, it.get('manager',''), it.get('note',''),
+             usage_date[:7], it.get('source','수동입력'), it.get('kakao_raw_text',''), now))
+        inserted += 1
+    conn.commit(); conn.close()
+    return jsonify({'ok': True, 'inserted': inserted})
+
+
+@app.route("/api/gift/usage/<int:rid>", methods=["DELETE"])
+@login_required
+def api_gift_usage_delete(rid):
+    conn = get_db()
+    conn.execute("DELETE FROM gift_usage_record WHERE id=?", (rid,))
+    conn.commit(); conn.close()
+    return jsonify({'ok': True})
+
+
+@app.route("/api/gift/usage/<int:rid>", methods=["PUT"])
+@login_required
+def api_gift_usage_update(rid):
+    d = request.json or {}
+    conn = get_db()
+    qty = int(d.get('quantity', 1) or 1)
+    unit_price = int(d.get('unit_price', 0) or 0)
+    consumer_amount = unit_price * qty
+    cost_amount = round(consumer_amount * 0.5)
+    real_seller = resolve_seller(SELLER_ALIAS.get(d.get('store_name',''), d.get('store_name','')))
+    conn.execute("""UPDATE gift_usage_record SET
+        usage_date=?, store_name=?, brand=?, item_name=?, quantity=?, unit_price=?,
+        consumer_amount=?, cost_amount=?, reason=?, real_seller=?, manager=?, note=?, usage_month=?
+        WHERE id=?""",
+        (d.get('usage_date',''), d.get('store_name',''), _gift_normalize_brand(d.get('brand','')),
+         d.get('item_name',''), qty, unit_price, consumer_amount, cost_amount, d.get('reason',''),
+         real_seller, d.get('manager',''), d.get('note',''), d.get('usage_date','')[:7], rid))
+    conn.commit(); conn.close()
+    return jsonify({'ok': True})
+
+
+def _gift_parse_ecount_date(raw):
+    """이카운트 '일자'열의 '2026/08/03 -508' 형식에서 (날짜, 전표번호) 분리"""
+    import re as _re_ed
+    m = _re_ed.match(r'(\d{4})/(\d{1,2})/(\d{1,2})\s*-?\s*(\d+)?', str(raw).strip())
+    if not m:
+        return '', ''
+    y, mo, d, voucher = m.groups()
+    date_str = f"{y}-{int(mo):02d}-{int(d):02d}"
+    return date_str, (voucher or '')
+
+
+@app.route("/api/gift/ecount/upload", methods=["POST"])
+@login_required
+def api_gift_ecount_upload():
+    """이카운트 판매현황 엑셀 업로드 → '구분=증정' 건만 추출 저장 + 사용내역과 자동 매칭"""
+    if 'file' not in request.files:
+        return jsonify({'ok': False, 'msg': '파일이 없습니다'}), 400
+    f = request.files['file']
+    data = f.read()
+    wb = _load_workbook_resilient(data)
+    if wb is None:
+        return jsonify({'ok': False, 'msg': '엑셀 파일을 읽을 수 없습니다'}), 400
+    ws = wb[wb.sheetnames[0]]
+
+    # 헤더 행 탐색 (일자/판매처명/품명/수량/구분 컬럼 위치 파악)
+    header_row_idx = None
+    col_map = {}
+    for ri in range(1, min(6, ws.max_row+1)):
+        vals = {}
+        for ci in range(1, ws.max_column+1):
+            v = ws.cell(ri, ci).value
+            if v: vals[str(v).strip()] = ci
+        if '일자' in vals and ('판매처명' in vals or '거래처명' in vals):
+            header_row_idx = ri
+            col_map = {
+                'date': vals.get('일자'),
+                'seller': vals.get('판매처명') or vals.get('거래처명'),
+                'item': vals.get('품명 및 규격') or vals.get('품명'),
+                'qty': vals.get('수량'),
+                'gubun': vals.get('구분'),
+            }
+            break
+    if not header_row_idx or not col_map.get('gubun'):
+        return jsonify({'ok': False, 'msg': '"구분" 컬럼을 찾을 수 없습니다. 이카운트 판매현황 형식을 확인해주세요'}), 400
+
+    conn = get_db()
+    now = datetime.now().strftime('%Y-%m-%d %H:%M')
+    batch = now.replace(' ','').replace(':','').replace('-','')
+    inserted = 0
+    for ri in range(header_row_idx+1, ws.max_row+1):
+        gubun = ws.cell(ri, col_map['gubun']).value
+        if not gubun or '증정' not in str(gubun):
+            continue
+        date_raw = ws.cell(ri, col_map['date']).value
+        seller = ws.cell(ri, col_map['seller']).value
+        item = ws.cell(ri, col_map['item']).value
+        qty = ws.cell(ri, col_map['qty']).value
+        if not date_raw or not seller or not item:
+            continue
+        ecount_date, voucher = _gift_parse_ecount_date(date_raw)
+        real_seller = resolve_seller(SELLER_ALIAS.get(str(seller).strip(), str(seller).strip()))
+        brand = remap_group('', str(item)) if str(item).startswith('[') else ''
+        try:
+            conn.execute("""INSERT INTO gift_ecount_record
+                (upload_batch, ecount_date_raw, ecount_date, voucher_no, real_seller, brand, item_name, quantity, uploaded_at)
+                VALUES(?,?,?,?,?,?,?,?,?)""",
+                (batch, str(date_raw), ecount_date, voucher, real_seller, brand, str(item), int(qty or 0), now))
+            inserted += 1
+        except sqlite3.IntegrityError:
+            pass  # 이미 동일 건 존재 (중복 업로드 방지)
+
+    conn.commit()
+
+    # 자동 매칭: gift_usage_record와 real_seller + 날짜 + 브랜드 기준으로 대사
+    _gift_auto_match(conn)
+    conn.commit(); conn.close()
+
+    return jsonify({'ok': True, 'inserted': inserted})
+
+
+def _gift_auto_match(conn):
+    """이카운트 증정 건과 사용내역(건별)을 real_seller + 날짜 + 브랜드 기준으로 자동 대사"""
+    usage_rows = conn.execute("SELECT id, usage_date, real_seller, brand, quantity FROM gift_usage_record").fetchall()
+    ecount_rows = conn.execute("SELECT id, ecount_date, real_seller, brand, quantity FROM gift_ecount_record").fetchall()
+
+    # 이카운트 쪽 인덱스: (real_seller, date, brand) -> [ecount_id,...]
+    ecount_idx = {}
+    for eid, edate, eseller, ebrand, eqty in ecount_rows:
+        key = (eseller, edate, ebrand)
+        ecount_idx.setdefault(key, []).append(eid)
+
+    matched_ecount_ids = set()
+    for uid, udate, useller, ubrand, uqty in usage_rows:
+        key = (useller, udate, ubrand)
+        candidates = ecount_idx.get(key, [])
+        if candidates:
+            conn.execute("UPDATE gift_usage_record SET match_status='확인' WHERE id=?", (uid,))
+            for eid in candidates:
+                matched_ecount_ids.add(eid)
+                conn.execute("UPDATE gift_ecount_record SET matched_usage_id=? WHERE id=?", (uid, eid))
+        else:
+            conn.execute("UPDATE gift_usage_record SET match_status='누락' WHERE id=?", (uid,))
+
+
+@app.route("/api/gift/check/list")
+@login_required
+def api_gift_check_list():
+    """누락점검 — 이카운트 증정 건 기준으로 대장(사용내역) 등록 여부 표시"""
+    month = request.args.get('month', '').strip()
+    conn = get_db()
+    q = "SELECT * FROM gift_ecount_record WHERE 1=1"
+    params = []
+    if month: q += " AND ecount_date LIKE ?"; params.append(f"{month}%")
+    q += " ORDER BY ecount_date, real_seller"
+    rows = [dict(r) for r in conn.execute(q, params).fetchall()]
+    conn.close()
+    for r in rows:
+        r['status'] = '확인' if r.get('matched_usage_id') else '누락'
+    return jsonify(rows)
+
+
+@app.route("/api/gift/check/summary")
+@login_required
+def api_gift_check_summary():
+    """브랜드별 수량 대사 — 이카운트 수량 vs 대장 수량"""
+    month = request.args.get('month', '').strip()
+    conn = get_db()
+    eq = "SELECT brand, SUM(quantity) FROM gift_ecount_record WHERE 1=1"
+    uq = "SELECT brand, SUM(quantity) FROM gift_usage_record WHERE 1=1"
+    params = []
+    if month:
+        eq += " AND ecount_date LIKE ?"; uq += " AND usage_month=?"
+        params = [f"{month}%"]
+    e_totals = {r[0] or '(미분류)': r[1] or 0 for r in conn.execute(eq, params).fetchall()}
+    u_totals = {r[0] or '(미분류)': r[1] or 0 for r in conn.execute(uq, [month] if month else []).fetchall()}
+    conn.close()
+
+    all_brands = sorted(set(e_totals.keys()) | set(u_totals.keys()))
+    result = []
+    grand_e = grand_u = 0
+    for b in all_brands:
+        ev = e_totals.get(b, 0); uv = u_totals.get(b, 0)
+        grand_e += ev; grand_u += uv
+        diff = uv - ev
+        result.append({'brand': b, 'ecount_qty': ev, 'ledger_qty': uv, 'diff': diff,
+                        'verdict': '일치' if diff == 0 else '불일치'})
+    result.append({'brand': '총 합계', 'ecount_qty': grand_e, 'ledger_qty': grand_u,
+                    'diff': grand_u - grand_e, 'verdict': '일치' if grand_u==grand_e else '불일치'})
+    return jsonify(result)
+
+
+@app.route("/api/gift/monthly-summary")
+@login_required
+def api_gift_monthly_summary():
+    """월별집계 — 월별/브랜드별 사은품 사용 현황"""
+    conn = get_db()
+    rows = conn.execute("""
+        SELECT usage_month, brand, SUM(quantity) qty, SUM(consumer_amount) camt, SUM(cost_amount) coamt
+        FROM gift_usage_record GROUP BY usage_month, brand ORDER BY usage_month DESC""").fetchall()
+    conn.close()
+    result = {}
+    for mo, brand, qty, camt, coamt in rows:
+        result.setdefault(mo, []).append({'brand': brand, 'qty': qty, 'consumer_amount': camt, 'cost_amount': coamt})
+    return jsonify(result)
+
+
+@app.route("/api/export/xlsx/gift")
+@login_required
+def api_export_gift_xlsx():
+    """사은품 증정 관리대장 엑셀 다운로드 — 누적 또는 월별"""
+    from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
+    from openpyxl.utils import get_column_letter
+
+    month = request.args.get('month', '').strip()  # 비어있으면 누적 전체
+
+    FNAME = '맑은 고딕'
+    def mf(h): return PatternFill("solid", fgColor=h)
+    thin = Side(style='thin', color='D9D9D9')
+    bdr = Border(left=thin, right=thin, top=thin, bottom=thin)
+    ctr = Alignment(horizontal='center', vertical='center', wrap_text=True)
+    left_a = Alignment(horizontal='left', vertical='center', wrap_text=True)
+    right_a = Alignment(horizontal='right', vertical='center')
+
+    conn = get_db()
+    wb = openpyxl.Workbook(); wb.remove(wb.active)
+
+    # ── 시트1: 사용내역(건별) ──
+    ws1 = wb.create_sheet("사용내역(건별)")
+    ws1.column_dimensions['A'].width = 2
+    title1 = f"※ 사은품 사용내역 관리대장 (건별)" + (f" — {month}" if month else " — 누적 전체")
+    ws1.merge_cells('B2:N2')
+    c = ws1.cell(row=2, column=2, value=title1); c.font=Font(bold=True,size=13,name=FNAME); c.alignment=left_a
+    hdrs1 = ['No.','사용일자','매장명','브랜드','사은품 품목','수량(EA)','소비자가(단가)','소비자가 금액',
+             '원가 금액(50%)','사용 사유/행사내용','실적용거래처명','영업담당','비고']
+    for ci, h in enumerate(hdrs1, 2):
+        c = ws1.cell(row=4, column=ci, value=h)
+        c.font=Font(bold=True,size=9,name=FNAME); c.fill=mf("F2F2F2"); c.border=bdr; c.alignment=ctr
+    ws1.row_dimensions[4].height=22
+
+    q1 = "SELECT * FROM gift_usage_record WHERE 1=1"
+    p1 = []
+    if month: q1 += " AND usage_month=?"; p1.append(month)
+    q1 += " ORDER BY usage_date, id"
+    rows1 = conn.execute(q1, p1).fetchall()
+    ri = 5
+    for i, r in enumerate(rows1, 1):
+        vals = [i, r['usage_date'], r['store_name'], r['brand'], r['item_name'], r['quantity'],
+                r['unit_price'], r['consumer_amount'], r['cost_amount'], r['reason'],
+                r['real_seller'], r['manager'], r['note']]
+        for ci, v in enumerate(vals, 2):
+            c = ws1.cell(row=ri, column=ci, value=v); c.font=Font(size=9,name=FNAME); c.border=bdr
+            c.alignment = right_a if ci in (7,8,9) else (ctr if ci in (2,3,6) else left_a)
+            if ci in (8,9): c.number_format = '#,##0'
+        ri += 1
+    for ci, w in zip(range(2,15), [6,12,18,10,22,9,12,13,13,26,18,10,14]):
+        ws1.column_dimensions[get_column_letter(ci)].width = w
+
+    # ── 시트2: 누락점검 ──
+    ws2 = wb.create_sheet("누락점검")
+    ws2.column_dimensions['A'].width = 2
+    ws2.merge_cells('B2:F2')
+    c = ws2.cell(row=2, column=2, value="※ 누락 점검 (이카운트 ↔ 관리대장 대사)")
+    c.font=Font(bold=True,size=13,name=FNAME); c.alignment=left_a
+
+    hdrs2 = ['매장명','일자','브랜드','수량(EA)','대장 등록여부']
+    for ci, h in enumerate(hdrs2, 2):
+        c = ws2.cell(row=4, column=ci, value=h)
+        c.font=Font(bold=True,size=9,name=FNAME); c.fill=mf("F2F2F2"); c.border=bdr; c.alignment=ctr
+    q2 = "SELECT * FROM gift_ecount_record WHERE 1=1"
+    p2 = []
+    if month: q2 += " AND ecount_date LIKE ?"; p2.append(f"{month}%")
+    q2 += " ORDER BY ecount_date, real_seller"
+    rows2 = conn.execute(q2, p2).fetchall()
+    ri2 = 5
+    for r in rows2:
+        status = '확인' if r['matched_usage_id'] else '누락'
+        vals = [r['real_seller'], r['ecount_date_raw'], r['brand'], r['quantity'], status]
+        for ci, v in enumerate(vals, 2):
+            c = ws2.cell(row=ri2, column=ci, value=v); c.font=Font(size=9,name=FNAME); c.border=bdr
+            c.alignment = ctr
+            if ci==6:
+                c.font = Font(bold=True, size=9, name=FNAME, color='16A34A' if status=='확인' else 'DC2626')
+        ri2 += 1
+
+    # 브랜드별 수량 대사 (우측)
+    ws2.cell(row=4, column=8, value='브랜드').font=Font(bold=True,size=9,name=FNAME); ws2.cell(row=4,column=8).fill=mf("F2F2F2"); ws2.cell(row=4,column=8).border=bdr; ws2.cell(row=4,column=8).alignment=ctr
+    for ci, h in zip(range(9,13), ['이카운트 수량','대장 수량','차이','판정']):
+        c = ws2.cell(row=4, column=ci, value=h); c.font=Font(bold=True,size=9,name=FNAME); c.fill=mf("F2F2F2"); c.border=bdr; c.alignment=ctr
+
+    eq = "SELECT brand, SUM(quantity) FROM gift_ecount_record WHERE 1=1"
+    uq = "SELECT brand, SUM(quantity) FROM gift_usage_record WHERE 1=1"
+    ep, up = [], []
+    if month: eq += " AND ecount_date LIKE ?"; ep=[f"{month}%"]; uq += " AND usage_month=?"; up=[month]
+    e_totals = {r[0] or '(미분류)': r[1] or 0 for r in conn.execute(eq, ep).fetchall()}
+    u_totals = {r[0] or '(미분류)': r[1] or 0 for r in conn.execute(uq, up).fetchall()}
+    all_brands = sorted(set(e_totals) | set(u_totals))
+    ri3 = 5
+    grand_e = grand_u = 0
+    for b in all_brands:
+        ev, uv = e_totals.get(b,0), u_totals.get(b,0)
+        grand_e += ev; grand_u += uv
+        diff = uv - ev
+        verdict = '일치' if diff==0 else '불일치'
+        vals = [b, ev, uv, diff, verdict]
+        for ci, v in enumerate(vals, 8):
+            c = ws2.cell(row=ri3, column=ci, value=v); c.font=Font(size=9,name=FNAME); c.border=bdr; c.alignment=ctr
+            if ci==12: c.font=Font(bold=True,size=9,name=FNAME,color='16A34A' if verdict=='일치' else 'DC2626')
+        ri3 += 1
+    vals = ['총 합계', grand_e, grand_u, grand_u-grand_e, '일치' if grand_e==grand_u else '불일치']
+    for ci, v in enumerate(vals, 8):
+        c = ws2.cell(row=ri3, column=ci, value=v); c.font=Font(bold=True,size=9,name=FNAME); c.fill=mf("F9FAFB"); c.border=bdr; c.alignment=ctr
+
+    for ci, w in zip(range(2,13), [22,16,10,10,12,4,12,14,12,10,10]):
+        ws2.column_dimensions[get_column_letter(ci)].width = w
+
+    # ── 시트3: 월별집계 ──
+    ws3 = wb.create_sheet("월별집계")
+    ws3.column_dimensions['A'].width = 2
+    ws3.merge_cells('B2:F2')
+    c = ws3.cell(row=2, column=2, value="※ 사은품 월별 집계"); c.font=Font(bold=True,size=13,name=FNAME); c.alignment=left_a
+    hdrs3 = ['월','브랜드','수량(EA)','소비자가 금액','원가 금액(50%)']
+    for ci, h in enumerate(hdrs3, 2):
+        c = ws3.cell(row=4, column=ci, value=h)
+        c.font=Font(bold=True,size=9,name=FNAME); c.fill=mf("F2F2F2"); c.border=bdr; c.alignment=ctr
+    mrows = conn.execute("""SELECT usage_month, brand, SUM(quantity), SUM(consumer_amount), SUM(cost_amount)
+        FROM gift_usage_record GROUP BY usage_month, brand ORDER BY usage_month DESC""").fetchall()
+    ri4 = 5
+    for mo, brand, qty, camt, coamt in mrows:
+        vals = [mo, brand, qty, camt, coamt]
+        for ci, v in enumerate(vals, 2):
+            c = ws3.cell(row=ri4, column=ci, value=v); c.font=Font(size=9,name=FNAME); c.border=bdr
+            c.alignment = right_a if ci in (4,5) else ctr
+            if ci in (4,5): c.number_format='#,##0'
+        ri4 += 1
+    for ci, w in zip(range(2,7), [10,14,12,16,16]):
+        ws3.column_dimensions[get_column_letter(ci)].width = w
+
+    conn.close()
+    buf = io.BytesIO(); wb.save(buf); buf.seek(0)
+    fname = f"사은품_증정관리대장_{month or '누적'}.xlsx"
+    return send_file(buf, mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        as_attachment=True, download_name=fname)
+
 
 @app.route("/api/export/xlsx/work")
 @login_required

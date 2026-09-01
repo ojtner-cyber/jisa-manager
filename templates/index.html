@@ -363,6 +363,7 @@ td.center{text-align:center}
       <a onclick="showPage('products')" id="nav-products"><span class="ni">⊞</span>제품별 관리</a>
       <a onclick="showPage('script')" id="nav-script"><span class="ni">💬</span>매장 분석</a>
       <a onclick="showPage('work')" id="nav-work"><span class="ni">🎯</span>업무</a>
+      <a onclick="showPage('gift')" id="nav-gift"><span class="ni">🎁</span>사은품 증정 관리</a>
       <a onclick="showPage('visitreport')" id="nav-visitreport"><span class="ni">📋</span>매장 방문 보고서</a>
       <a onclick="showPage('sns')" id="nav-sns"><span class="ni">◆</span>SNS 활용 매장</a>
       <a onclick="showPage('ace')" id="nav-ace"><span class="ni">▶</span>영업 실행 포인트</a>
@@ -1028,6 +1029,142 @@ td.center{text-align:center}
       </div>
     </div>
 
+    <!-- ██ 사은품 증정 관리 ██ -->
+    <div class="page" id="page-gift">
+      <div class="ph">
+        <div><h2>사은품 증정 관리</h2><p>카카오톡 증정 내역 기록 · 이카운트 대사 · 누락 점검</p></div>
+        <div class="ph-r" style="gap:8px;flex-wrap:wrap">
+          <select class="ysel" id="gift-month">
+            <option value="">누적 전체</option>
+          </select>
+          <button class="btn btn-ghost btn-sm" onclick="downloadGiftXlsx()">📥 엑셀 다운로드</button>
+        </div>
+      </div>
+
+      <div style="display:flex;gap:0;border-bottom:1.5px solid var(--border);margin-bottom:18px">
+        <button id="gift-tab-usage" onclick="switchGiftTab('usage')"
+          style="padding:10px 20px;font-size:13px;font-weight:600;border:none;background:none;cursor:pointer;color:var(--p);border-bottom:2.5px solid var(--p);margin-bottom:-1.5px">
+          사용내역(건별)
+        </button>
+        <button id="gift-tab-check" onclick="switchGiftTab('check')"
+          style="padding:10px 20px;font-size:13px;font-weight:600;border:none;background:none;cursor:pointer;color:var(--t-300);border-bottom:2.5px solid transparent;margin-bottom:-1.5px">
+          누락점검
+        </button>
+        <button id="gift-tab-monthly" onclick="switchGiftTab('monthly')"
+          style="padding:10px 20px;font-size:13px;font-weight:600;border:none;background:none;cursor:pointer;color:var(--t-300);border-bottom:2.5px solid transparent;margin-bottom:-1.5px">
+          월별집계
+        </button>
+      </div>
+
+      <div id="gift-view-usage">
+        <div style="background:var(--paper);border:1px solid var(--border);border-radius:12px;padding:16px;margin-bottom:16px">
+          <div style="font-size:12.5px;font-weight:700;color:var(--t-700);margin-bottom:8px">📋 카카오톡 증정 안내 붙여넣기</div>
+          <div style="font-size:11px;color:var(--t-400);margin-bottom:8px">카톡 내용을 그대로 복사해서 붙여넣으면 자동으로 날짜·매장명·브랜드·품목·수량을 인식해요. 인식 결과는 저장 전에 검토·수정할 수 있어요.</div>
+          <textarea id="gift-kakao-input" rows="4" placeholder="예) 7/20 베이비하우스 송도 / RECARO / 백시트 프로텍터 2개 - 매장재고 판매로 행사 사은품 지원"
+            style="width:100%;border:1px solid var(--border-md);border-radius:8px;padding:10px 12px;font-size:12.5px;resize:vertical;font-family:inherit;box-sizing:border-box;margin-bottom:8px"></textarea>
+          <button class="btn btn-dark btn-sm" onclick="parseGiftKakao()">🔍 텍스트 분석하기</button>
+        </div>
+
+        <div id="gift-kakao-preview" style="display:none;margin-bottom:16px"></div>
+
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+          <div style="font-size:13px;font-weight:700;color:var(--t-700)">사용내역 목록</div>
+          <button class="btn btn-ghost btn-sm" onclick="openGiftManualAdd()">+ 직접 입력</button>
+        </div>
+        <div style="background:var(--paper);border:1px solid var(--border);border-radius:12px;overflow:hidden">
+          <table style="width:100%;border-collapse:collapse;font-size:12px">
+            <thead><tr style="background:var(--bg)">
+              <th style="padding:8px 10px;text-align:left;font-size:10.5px;font-weight:700;color:var(--t-500);border-bottom:1.5px solid var(--border)">일자</th>
+              <th style="padding:8px 10px;text-align:left;font-size:10.5px;font-weight:700;color:var(--t-500);border-bottom:1.5px solid var(--border)">매장명</th>
+              <th style="padding:8px 10px;text-align:center;font-size:10.5px;font-weight:700;color:var(--t-500);border-bottom:1.5px solid var(--border)">브랜드</th>
+              <th style="padding:8px 10px;text-align:left;font-size:10.5px;font-weight:700;color:var(--t-500);border-bottom:1.5px solid var(--border)">품목</th>
+              <th style="padding:8px 10px;text-align:center;font-size:10.5px;font-weight:700;color:var(--t-500);border-bottom:1.5px solid var(--border)">수량</th>
+              <th style="padding:8px 10px;text-align:center;font-size:10.5px;font-weight:700;color:var(--t-500);border-bottom:1.5px solid var(--border)">이카운트 대사</th>
+              <th style="padding:8px 10px;text-align:left;font-size:10.5px;font-weight:700;color:var(--t-500);border-bottom:1.5px solid var(--border)">사유</th>
+              <th style="padding:8px 10px;border-bottom:1.5px solid var(--border)"></th>
+            </tr></thead>
+            <tbody id="gift-usage-tbody"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <div id="gift-view-check" style="display:none">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+          <div style="font-size:13px;font-weight:700;color:var(--t-700)">① 이카운트 '증정' 건 ↔ 대장 등록여부</div>
+          <div>
+            <button class="btn btn-ghost btn-sm" onclick="document.getElementById('gift-ecount-file').click()">📤 이카운트 판매현황 업로드</button>
+            <input type="file" id="gift-ecount-file" accept=".xlsx,.xls" style="display:none" onchange="uploadGiftEcount(event)">
+          </div>
+        </div>
+        <div style="background:var(--paper);border:1px solid var(--border);border-radius:12px;overflow:hidden;margin-bottom:20px">
+          <table style="width:100%;border-collapse:collapse;font-size:12px">
+            <thead><tr style="background:var(--bg)">
+              <th style="padding:8px 10px;text-align:left;font-size:10.5px;font-weight:700;color:var(--t-500);border-bottom:1.5px solid var(--border)">매장명</th>
+              <th style="padding:8px 10px;text-align:left;font-size:10.5px;font-weight:700;color:var(--t-500);border-bottom:1.5px solid var(--border)">일자</th>
+              <th style="padding:8px 10px;text-align:center;font-size:10.5px;font-weight:700;color:var(--t-500);border-bottom:1.5px solid var(--border)">브랜드</th>
+              <th style="padding:8px 10px;text-align:center;font-size:10.5px;font-weight:700;color:var(--t-500);border-bottom:1.5px solid var(--border)">수량</th>
+              <th style="padding:8px 10px;text-align:center;font-size:10.5px;font-weight:700;color:var(--t-500);border-bottom:1.5px solid var(--border)">대장 등록여부</th>
+            </tr></thead>
+            <tbody id="gift-check-tbody"></tbody>
+          </table>
+        </div>
+
+        <div style="font-size:13px;font-weight:700;color:var(--t-700);margin-bottom:10px">② 브랜드별 수량 대사</div>
+        <div style="background:var(--paper);border:1px solid var(--border);border-radius:12px;overflow:hidden">
+          <table style="width:100%;border-collapse:collapse;font-size:12px">
+            <thead><tr style="background:var(--bg)">
+              <th style="padding:8px 10px;text-align:left;font-size:10.5px;font-weight:700;color:var(--t-500);border-bottom:1.5px solid var(--border)">브랜드</th>
+              <th style="padding:8px 10px;text-align:center;font-size:10.5px;font-weight:700;color:var(--t-500);border-bottom:1.5px solid var(--border)">이카운트 수량</th>
+              <th style="padding:8px 10px;text-align:center;font-size:10.5px;font-weight:700;color:var(--t-500);border-bottom:1.5px solid var(--border)">대장 수량</th>
+              <th style="padding:8px 10px;text-align:center;font-size:10.5px;font-weight:700;color:var(--t-500);border-bottom:1.5px solid var(--border)">차이</th>
+              <th style="padding:8px 10px;text-align:center;font-size:10.5px;font-weight:700;color:var(--t-500);border-bottom:1.5px solid var(--border)">판정</th>
+            </tr></thead>
+            <tbody id="gift-summary-tbody"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <div id="gift-view-monthly" style="display:none">
+        <div id="gift-monthly-content"></div>
+      </div>
+    </div>
+
+    <div id="gift-manual-modal" style="display:none;position:fixed;inset:0;background:rgba(15,23,42,.5);z-index:1000;align-items:center;justify-content:center;padding:20px">
+      <div style="background:var(--paper);border-radius:14px;width:480px;max-width:100%;max-height:85vh;overflow-y:auto;box-shadow:0 20px 50px rgba(0,0,0,.3)">
+        <div style="padding:16px 20px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center">
+          <div style="font-size:14px;font-weight:800">사은품 사용내역 직접 입력</div>
+          <button onclick="document.getElementById('gift-manual-modal').style.display='none'" style="background:none;border:none;font-size:16px;color:var(--t-400);cursor:pointer">✕</button>
+        </div>
+        <div style="padding:16px 20px">
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px">
+            <div><div class="flbl">사용일자</div><input class="fi" type="date" id="gm-date"></div>
+            <div><div class="flbl">브랜드</div>
+              <select class="fi" id="gm-brand">
+                <option value="">선택</option>
+                <option>줄즈</option><option>레카로</option><option>ABC디자인</option>
+                <option>원더폴드</option><option>카오스</option><option>엔픽스</option><option>타프토이즈</option>
+              </select>
+            </div>
+          </div>
+          <div class="flbl">매장명</div>
+          <input class="fi" id="gm-store" placeholder="예: 베이비하우스 송도" style="margin-bottom:10px">
+          <div style="display:grid;grid-template-columns:2fr 1fr;gap:10px;margin-bottom:10px">
+            <div><div class="flbl">사은품 품목</div><input class="fi" id="gm-item" placeholder="예: 백시트 프로텍터"></div>
+            <div><div class="flbl">수량</div><input class="fi" type="number" id="gm-qty" value="1" min="1"></div>
+          </div>
+          <div class="flbl">소비자가(단가)</div>
+          <input class="fi" type="number" id="gm-price" value="0" style="margin-bottom:10px">
+          <div class="flbl">사용 사유 / 행사내용</div>
+          <input class="fi" id="gm-reason" style="margin-bottom:10px">
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px">
+            <div><div class="flbl">영업담당</div><input class="fi" id="gm-manager"></div>
+            <div><div class="flbl">비고</div><input class="fi" id="gm-note"></div>
+          </div>
+          <button class="btn btn-dark" style="width:100%" onclick="saveGiftManual()">저장</button>
+        </div>
+      </div>
+    </div>
+
     <div class="page" id="page-visitreport">
       <div class="ph">
         <div><h2>매장 방문 보고서</h2><p>현장 방문 기록을 날짜별 · 매장별로 관리하고 누적 현황을 한눈에 확인합니다</p></div>
@@ -1646,7 +1783,7 @@ function showPage(n){
   ({dashboard:loadDash,branches:loadBranches,sales:loadSalesPage,
     users:loadUsers,salesdata:loadSalesData,products:loadProducts,
     script:initScriptPage,sns:loadSNS,stock:loadStock,display:loadDisplay,ace:loadAce,
-    visitreport:loadVisitReportPage,work:loadWorkPage}[n]||function(){})();
+    visitreport:loadVisitReportPage,work:loadWorkPage,gift:loadGiftPage}[n]||function(){})();
   if(n==='upload') cancelUpload();
 }
 
@@ -2199,6 +2336,256 @@ function downloadVisitReportXlsx(){
   toast('방문 보고서 엑셀 다운로드 중...');
 }
 
+
+
+// ── 사은품 증정 관리 ────────────────────────────────
+let giftCurrentTab = 'usage';
+let giftKakaoParsedItems = [];
+let giftEditingId = null;
+
+async function loadGiftPage(){
+  const monthSel = document.getElementById('gift-month');
+  if(monthSel.options.length <= 1){
+    const now = new Date();
+    for(let i=0;i<12;i++){
+      const d = new Date(now.getFullYear(), now.getMonth()-i, 1);
+      const ym = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`;
+      monthSel.innerHTML += `<option value="${ym}">${ym}</option>`;
+    }
+    monthSel.onchange = () => switchGiftTab(giftCurrentTab);
+  }
+  switchGiftTab('usage');
+}
+
+function switchGiftTab(tab){
+  giftCurrentTab = tab;
+  ['usage','check','monthly'].forEach(t=>{
+    const btn = document.getElementById(`gift-tab-${t}`);
+    btn.style.color = t===tab ? 'var(--p)' : 'var(--t-300)';
+    btn.style.borderBottomColor = t===tab ? 'var(--p)' : 'transparent';
+    document.getElementById(`gift-view-${t}`).style.display = t===tab ? 'block' : 'none';
+  });
+  if(tab==='usage') loadGiftUsageList();
+  else if(tab==='check') loadGiftCheckList();
+  else if(tab==='monthly') loadGiftMonthly();
+}
+
+async function parseGiftKakao(){
+  const text = document.getElementById('gift-kakao-input').value.trim();
+  if(!text){ toast('카톡 내용을 입력해주세요', false); return; }
+  const r = await api('/api/gift/usage/parse-kakao', {method:'POST', body:{text}});
+  if(!r?.ok){ toast(r?.msg || '분석에 실패했습니다', false); return; }
+  giftKakaoParsedItems = r.items;
+  renderGiftKakaoPreview();
+}
+
+function renderGiftKakaoPreview(){
+  const el = document.getElementById('gift-kakao-preview');
+  if(!giftKakaoParsedItems.length){
+    el.style.display = 'none';
+    return;
+  }
+  el.style.display = 'block';
+  el.innerHTML = `
+    <div style="background:var(--p-lt);border:1px solid var(--p);border-radius:10px;padding:14px">
+      <div style="font-size:12px;font-weight:700;color:var(--p);margin-bottom:10px">🔍 ${giftKakaoParsedItems.length}건 인식됨 — 검토 후 저장해주세요 (필드 클릭해서 수정 가능)</div>
+      <div style="display:flex;flex-direction:column;gap:8px">
+        ${giftKakaoParsedItems.map((it,i)=>`
+          <div style="display:grid;grid-template-columns:110px 130px 90px 1fr 70px 24px;gap:6px;align-items:center;background:var(--paper);border-radius:8px;padding:8px">
+            <input type="date" value="${it.usage_date||''}" onchange="giftKakaoParsedItems[${i}].usage_date=this.value" style="font-size:11px;border:1px solid var(--border);border-radius:5px;padding:4px">
+            <input type="text" value="${(it.store_name||'').replace(/"/g,'&quot;')}" onchange="giftKakaoParsedItems[${i}].store_name=this.value" placeholder="매장명" style="font-size:11px;border:1px solid var(--border);border-radius:5px;padding:4px">
+            <select onchange="giftKakaoParsedItems[${i}].brand=this.value" style="font-size:11px;border:1px solid var(--border);border-radius:5px;padding:4px">
+              ${['','줄즈','레카로','ABC디자인','원더폴드','카오스','엔픽스','타프토이즈'].map(b=>`<option ${it.brand===b?'selected':''}>${b}</option>`).join('')}
+            </select>
+            <input type="text" value="${(it.item_name||'').replace(/"/g,'&quot;')}" onchange="giftKakaoParsedItems[${i}].item_name=this.value" placeholder="품목" style="font-size:11px;border:1px solid var(--border);border-radius:5px;padding:4px">
+            <input type="number" value="${it.quantity||1}" onchange="giftKakaoParsedItems[${i}].quantity=this.value" style="font-size:11px;border:1px solid var(--border);border-radius:5px;padding:4px">
+            <button onclick="giftKakaoParsedItems.splice(${i},1);renderGiftKakaoPreview()" style="background:none;border:none;color:var(--red);cursor:pointer;font-size:13px">✕</button>
+          </div>
+        `).join('')}
+      </div>
+      <div style="display:flex;gap:8px;margin-top:12px">
+        <button class="btn btn-dark btn-sm" onclick="confirmGiftKakaoSave()">✓ 전체 저장</button>
+        <button class="btn btn-ghost btn-sm" onclick="giftKakaoParsedItems=[];renderGiftKakaoPreview();document.getElementById('gift-kakao-input').value=''">취소</button>
+      </div>
+    </div>`;
+}
+
+async function confirmGiftKakaoSave(){
+  const r = await api('/api/gift/usage/add', {method:'POST', body:{items: giftKakaoParsedItems}});
+  if(r?.ok){
+    toast(`${r.inserted}건 저장됐어요`);
+    giftKakaoParsedItems = [];
+    document.getElementById('gift-kakao-input').value = '';
+    renderGiftKakaoPreview();
+    loadGiftUsageList();
+  } else {
+    toast('저장에 실패했습니다', false);
+  }
+}
+
+async function loadGiftUsageList(){
+  const month = document.getElementById('gift-month').value;
+  const q = month ? `?month=${month}` : '';
+  const rows = await api(`/api/gift/usage/list${q}`) || [];
+  const tbody = document.getElementById('gift-usage-tbody');
+  if(!rows.length){
+    tbody.innerHTML = `<tr><td colspan="8" style="text-align:center;padding:30px;color:var(--t-300);font-size:12px">등록된 사용내역이 없습니다</td></tr>`;
+    return;
+  }
+  tbody.innerHTML = rows.map(r=>{
+    const statusColor = r.match_status==='확인' ? '#16A34A' : (r.match_status==='누락' ? '#DC2626' : '#9CA3AF');
+    return `<tr>
+      <td style="padding:8px 10px;font-size:11.5px;border-bottom:1px solid var(--border)">${r.usage_date}</td>
+      <td style="padding:8px 10px;font-size:11.5px;font-weight:600;border-bottom:1px solid var(--border)">${r.store_name}</td>
+      <td style="padding:8px 10px;text-align:center;font-size:11px;border-bottom:1px solid var(--border)">${r.brand||'—'}</td>
+      <td style="padding:8px 10px;font-size:11.5px;border-bottom:1px solid var(--border)">${r.item_name}</td>
+      <td style="padding:8px 10px;text-align:center;font-size:11.5px;font-weight:700;border-bottom:1px solid var(--border)">${r.quantity}</td>
+      <td style="padding:8px 10px;text-align:center;border-bottom:1px solid var(--border)">
+        <span style="font-size:10px;font-weight:700;color:${statusColor};background:${statusColor}15;padding:2px 8px;border-radius:5px">${r.match_status}</span>
+      </td>
+      <td style="padding:8px 10px;font-size:11px;color:var(--t-500);border-bottom:1px solid var(--border)">${r.reason||''}</td>
+      <td style="padding:8px 10px;text-align:center;border-bottom:1px solid var(--border)">
+        <button onclick="deleteGiftUsage(${r.id})" style="background:none;border:none;color:var(--red);cursor:pointer;font-size:11px">삭제</button>
+      </td>
+    </tr>`;
+  }).join('');
+}
+
+async function deleteGiftUsage(id){
+  if(!confirm('이 사용내역을 삭제하시겠습니까?')) return;
+  const r = await api(`/api/gift/usage/${id}`, {method:'DELETE'});
+  if(r?.ok){ toast('삭제됐어요'); loadGiftUsageList(); }
+}
+
+function openGiftManualAdd(){
+  document.getElementById('gm-date').value = new Date().toISOString().slice(0,10);
+  document.getElementById('gm-brand').value = '';
+  document.getElementById('gm-store').value = '';
+  document.getElementById('gm-item').value = '';
+  document.getElementById('gm-qty').value = 1;
+  document.getElementById('gm-price').value = 0;
+  document.getElementById('gm-reason').value = '';
+  document.getElementById('gm-manager').value = '';
+  document.getElementById('gm-note').value = '';
+  document.getElementById('gift-manual-modal').style.display = 'flex';
+}
+
+async function saveGiftManual(){
+  const body = {
+    usage_date: document.getElementById('gm-date').value,
+    store_name: document.getElementById('gm-store').value.trim(),
+    brand: document.getElementById('gm-brand').value,
+    item_name: document.getElementById('gm-item').value.trim(),
+    quantity: parseInt(document.getElementById('gm-qty').value) || 1,
+    unit_price: parseInt(document.getElementById('gm-price').value) || 0,
+    reason: document.getElementById('gm-reason').value.trim(),
+    manager: document.getElementById('gm-manager').value.trim(),
+    note: document.getElementById('gm-note').value.trim(),
+  };
+  if(!body.usage_date || !body.store_name){ toast('사용일자와 매장명은 필수예요', false); return; }
+  const r = await api('/api/gift/usage/add', {method:'POST', body});
+  if(r?.ok){
+    toast('저장됐어요');
+    document.getElementById('gift-manual-modal').style.display = 'none';
+    loadGiftUsageList();
+  }
+}
+
+async function uploadGiftEcount(e){
+  const file = e.target.files[0];
+  if(!file) return;
+  const formData = new FormData();
+  formData.append('file', file);
+  toast('이카운트 판매현황을 분석하고 있습니다...');
+  try{
+    const resp = await fetch('/api/gift/ecount/upload', {method:'POST', body:formData});
+    const r = await resp.json();
+    if(r.ok){
+      toast(`${r.inserted}건의 증정 기록을 반영하고 자동 대사했어요`);
+      loadGiftCheckList();
+      loadGiftUsageList();
+    } else {
+      toast(r.msg || '업로드에 실패했습니다', false);
+    }
+  } catch(err){
+    toast('업로드 중 오류가 발생했습니다', false);
+  }
+  e.target.value = '';
+}
+
+async function loadGiftCheckList(){
+  const month = document.getElementById('gift-month').value;
+  const q = month ? `?month=${month}` : '';
+  const rows = await api(`/api/gift/check/list${q}`) || [];
+  const tbody = document.getElementById('gift-check-tbody');
+  if(!rows.length){
+    tbody.innerHTML = `<tr><td colspan="5" style="text-align:center;padding:30px;color:var(--t-300);font-size:12px">이카운트 판매현황을 업로드하면 증정 건이 여기 표시돼요</td></tr>`;
+  } else {
+    tbody.innerHTML = rows.map(r=>{
+      const color = r.status==='확인' ? '#16A34A' : '#DC2626';
+      return `<tr>
+        <td style="padding:8px 10px;font-size:11.5px;font-weight:600;border-bottom:1px solid var(--border)">${r.real_seller}</td>
+        <td style="padding:8px 10px;font-size:11px;color:var(--t-500);border-bottom:1px solid var(--border)">${r.ecount_date_raw}</td>
+        <td style="padding:8px 10px;text-align:center;font-size:11px;border-bottom:1px solid var(--border)">${r.brand||'—'}</td>
+        <td style="padding:8px 10px;text-align:center;font-size:11.5px;font-weight:700;border-bottom:1px solid var(--border)">${r.quantity}</td>
+        <td style="padding:8px 10px;text-align:center;border-bottom:1px solid var(--border)">
+          <span style="font-size:10.5px;font-weight:700;color:${color};background:${color}15;padding:2px 8px;border-radius:5px">${r.status}</span>
+        </td>
+      </tr>`;
+    }).join('');
+  }
+
+  const summary = await api(`/api/gift/check/summary${q}`) || [];
+  const stbody = document.getElementById('gift-summary-tbody');
+  stbody.innerHTML = summary.map(s=>{
+    const isTotal = s.brand === '총 합계';
+    const color = s.verdict==='일치' ? '#16A34A' : '#DC2626';
+    return `<tr style="${isTotal?'background:var(--bg)':''}">
+      <td style="padding:8px 10px;font-size:11.5px;font-weight:${isTotal?800:600};border-bottom:1px solid var(--border)">${s.brand}</td>
+      <td style="padding:8px 10px;text-align:center;font-size:11.5px;border-bottom:1px solid var(--border)">${s.ecount_qty}</td>
+      <td style="padding:8px 10px;text-align:center;font-size:11.5px;border-bottom:1px solid var(--border)">${s.ledger_qty}</td>
+      <td style="padding:8px 10px;text-align:center;font-size:11.5px;font-weight:700;border-bottom:1px solid var(--border)">${s.diff}</td>
+      <td style="padding:8px 10px;text-align:center;border-bottom:1px solid var(--border)">
+        <span style="font-size:10.5px;font-weight:700;color:${color}">${s.verdict}</span>
+      </td>
+    </tr>`;
+  }).join('');
+}
+
+async function loadGiftMonthly(){
+  const data = await api('/api/gift/monthly-summary') || {};
+  const el = document.getElementById('gift-monthly-content');
+  const months = Object.keys(data).sort().reverse();
+  if(!months.length){
+    el.innerHTML = `<div style="text-align:center;padding:40px;color:var(--t-300);font-size:12px">데이터가 없습니다</div>`;
+    return;
+  }
+  el.innerHTML = months.map(mo=>{
+    const items = data[mo];
+    const totalQty = items.reduce((s,i)=>s+(i.qty||0),0);
+    const totalAmt = items.reduce((s,i)=>s+(i.consumer_amount||0),0);
+    return `<div style="background:var(--paper);border:1px solid var(--border);border-radius:12px;padding:16px;margin-bottom:12px">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+        <div style="font-size:13.5px;font-weight:800;color:var(--t-900)">${mo}</div>
+        <div style="font-size:11.5px;color:var(--t-400)">총 ${totalQty}개 · ${totalAmt.toLocaleString()}원</div>
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:8px">
+        ${items.map(it=>`<div style="background:var(--bg);border-radius:8px;padding:10px">
+          <div style="font-size:10.5px;color:var(--t-400);font-weight:600">${it.brand||'(미분류)'}</div>
+          <div style="font-size:15px;font-weight:800;color:var(--t-900)">${it.qty}개</div>
+          <div style="font-size:10px;color:var(--t-400)">${(it.consumer_amount||0).toLocaleString()}원</div>
+        </div>`).join('')}
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function downloadGiftXlsx(){
+  const month = document.getElementById('gift-month').value;
+  const q = month ? `?month=${month}` : '';
+  window.location.href = `/api/export/xlsx/gift${q}`;
+  toast('사은품 관리대장 엑셀 다운로드 중...');
+}
 
 // ── 업무 ────────────────────────────────
 let workManagersLoaded = false;
