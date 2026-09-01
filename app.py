@@ -472,6 +472,20 @@ def init_db():
         uploaded_at TEXT DEFAULT '',
         UNIQUE(ecount_date_raw, real_seller, item_name)
     )""")
+    conn.execute("""CREATE TABLE IF NOT EXISTS gift_brand_quota (
+        brand TEXT PRIMARY KEY,
+        approved_qty INTEGER DEFAULT 0,
+        updated_at TEXT DEFAULT ''
+    )""")
+    try:
+        gu_cols = [r[1] for r in conn.execute("PRAGMA table_info(gift_usage_record)").fetchall()]
+        if 'store_key' not in gu_cols:
+            conn.execute("ALTER TABLE gift_usage_record ADD COLUMN store_key TEXT DEFAULT ''")
+        ge_cols = [r[1] for r in conn.execute("PRAGMA table_info(gift_ecount_record)").fetchall()]
+        if 'store_key' not in ge_cols:
+            conn.execute("ALTER TABLE gift_ecount_record ADD COLUMN store_key TEXT DEFAULT ''")
+    except Exception:
+        pass
     conn.execute("""CREATE TABLE IF NOT EXISTS work_retro (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         year INTEGER NOT NULL,
@@ -8797,6 +8811,22 @@ GIFT_BRAND_ALIAS = {
     'TAFTOYS': '타프토이즈', 'TAFT': '타프토이즈',
 }
 
+# 매장명 표기가 서로 크게 다른 경우(어순 도치, "점" 유무 등)까지 매칭하기 위한 정규화 키
+GIFT_STORE_PREFIX_WORDS = ['베이비하우스','링크맘','베이비파크','베이비스토리','베이비스토어',
+                           '베네피아','베이비플러스','베이비세븐','베이비 투 키즈','베투키']
+
+def _gift_normalize_store_key(name):
+    """매장명 비교용 정규화 키 — 공백/점 제거 후 브랜드 프리픽스를 걷어내고 지역명만 남긴다.
+    '베이비하우스 향남' / '베이비하우스 향남점' / '향남베이비하우스' 모두 동일 키로 수렴"""
+    import re as _re_sk
+    if not name: return ''
+    cleaned = _re_sk.sub(r'점\s*$', '', str(name).strip())
+    cleaned = _re_sk.sub(r'[^\w가-힣]', '', cleaned)
+    for p in GIFT_STORE_PREFIX_WORDS:
+        p_clean = _re_sk.sub(r'[^\w가-힣]', '', p)
+        cleaned = cleaned.replace(p_clean, '')
+    return cleaned or _re_sk.sub(r'[^\w가-힣]', '', str(name).strip())
+
 def _gift_normalize_brand(raw):
     """브랜드 표기(영문 등)를 표준 브랜드명으로 정규화"""
     if not raw: return ''
@@ -8886,6 +8916,101 @@ def api_gift_parse_kakao():
     if not text.strip():
         return jsonify({'ok': False, 'msg': '텍스트를 입력해주세요'}), 400
     items = _gift_parse_kakao_text(text)
+    return jsonify({'ok': True, 'items': items, 'count': len(items)})
+
+
+@app.route("/api/gift/usage/upload-excel", methods=["POST"])
+@login_required
+def api_gift_usage_upload_excel():
+    """사은품 사용내역(건별) 관리대장 엑셀 업로드 — 구조화된 컬럼을 직접 읽어 미리보기로 반환
+    (수정1+4: 카톡 텍스트 파서로 엑셀을 억지로 분석하면서 매장명 등이 깨지던 근본 문제 해결.
+    구조화된 엑셀 컬럼을 헤더명 기반으로 정확히 인식해서 읽는다)"""
+    if 'file' not in request.files:
+        return jsonify({'ok': False, 'msg': '파일이 없습니다'}), 400
+    f = request.files['file']
+    data = f.read()
+    wb = _load_workbook_resilient(data)
+    if wb is None:
+        return jsonify({'ok': False, 'msg': '엑셀 파일을 읽을 수 없습니다'}), 400
+
+    # '사용내역' 관련 시트 우선 탐색, 없으면 첫 시트
+    ws = None
+    for sn in wb.sheetnames:
+        if '사용내역' in sn:
+            ws = wb[sn]; break
+    if ws is None:
+        ws = wb[wb.sheetnames[0]]
+
+    # 헤더 행 탐색 (사용일자/매장명 컬럼 위치 파악)
+    header_row_idx = None
+    col_map = {}
+    HDR_ALIASES = {
+        'usage_date': ['사용일자', '일자'],
+        'store_name': ['매장명'],
+        'brand': ['브랜드'],
+        'item_name': ['사은품 품목', '품목', '사은품품목'],
+        'quantity': ['수량(EA)', '수량'],
+        'unit_price': ['소비자가(단가)', '단가', '소비자가'],
+        'reason': ['사용 사유 / 행사내용', '사용사유', '사유', '행사내용'],
+        'real_seller': ['실적용 거래처명', '실적용거래처명'],
+        'manager': ['영업담당', '담당'],
+        'note': ['비고'],
+    }
+    for ri in range(1, min(10, ws.max_row+1)):
+        vals = {}
+        for ci in range(1, ws.max_column+1):
+            v = ws.cell(ri, ci).value
+            if v: vals[str(v).strip()] = ci
+        if any(h in vals for h in HDR_ALIASES['usage_date']) and any(h in vals for h in HDR_ALIASES['store_name']):
+            header_row_idx = ri
+            for field, aliases in HDR_ALIASES.items():
+                for a in aliases:
+                    if a in vals:
+                        col_map[field] = vals[a]; break
+            break
+
+    if not header_row_idx:
+        return jsonify({'ok': False, 'msg': '"사용일자"·"매장명" 컬럼을 찾을 수 없습니다. 관리대장 형식을 확인해주세요'}), 400
+
+    items = []
+    for ri in range(header_row_idx+1, ws.max_row+1):
+        store_name = ws.cell(ri, col_map['store_name']).value if 'store_name' in col_map else None
+        usage_date_raw = ws.cell(ri, col_map['usage_date']).value if 'usage_date' in col_map else None
+        if not store_name or not usage_date_raw:
+            continue
+        # 날짜 정규화 (datetime 객체 또는 문자열 모두 대응)
+        if hasattr(usage_date_raw, 'strftime'):
+            usage_date = usage_date_raw.strftime('%Y-%m-%d')
+        else:
+            usage_date = str(usage_date_raw).strip().replace('.', '-').replace('/', '-')[:10]
+
+        def _cell(field):
+            ci = col_map.get(field)
+            return ws.cell(ri, ci).value if ci else None
+
+        qty_raw = _cell('quantity')
+        try: qty = int(qty_raw) if qty_raw is not None else 1
+        except Exception: qty = 1
+        price_raw = _cell('unit_price')
+        try: unit_price = int(price_raw) if price_raw is not None else 0
+        except Exception: unit_price = 0
+
+        items.append({
+            'usage_date': usage_date,
+            'store_name': str(store_name).strip(),
+            'brand': _gift_normalize_brand(str(_cell('brand') or '')),
+            'item_name': str(_cell('item_name') or '').strip(),
+            'quantity': qty,
+            'unit_price': unit_price,
+            'reason': str(_cell('reason') or '').strip(),
+            'manager': str(_cell('manager') or '').strip(),
+            'note': str(_cell('note') or '').strip(),
+            'source': '엑셀업로드',
+        })
+
+    if not items:
+        return jsonify({'ok': False, 'msg': '읽을 수 있는 데이터 행이 없습니다'}), 400
+
     return jsonify({'ok': True, 'items': items, 'count': len(items)})
 
 
@@ -9046,27 +9171,50 @@ def api_gift_ecount_upload():
 
 
 def _gift_auto_match(conn):
-    """이카운트 증정 건과 사용내역(건별)을 real_seller + 날짜 + 브랜드 기준으로 자동 대사"""
-    usage_rows = conn.execute("SELECT id, usage_date, real_seller, brand, quantity FROM gift_usage_record").fetchall()
-    ecount_rows = conn.execute("SELECT id, ecount_date, real_seller, brand, quantity FROM gift_ecount_record").fetchall()
+    """이카운트 증정 건과 사용내역(건별)을 자동 대사 — 4단계 판정으로 불일치 원인 진단을 돕는다
+    매장 비교는 real_seller 완전일치가 아닌 store_key(어순·"점"유무 무관 정규화 키) 기준으로 관대하게 매칭
+    ① 일치: 매장+날짜+브랜드+품목 모두 부합
+    ② 품목상이: 매장+날짜+브랜드는 맞는데 품목명이 다름 (수량 오기재 등 의심)
+    ③ 브랜드상이: 매장+날짜는 맞는데 브랜드가 다름 (브랜드 오기재 의심)
+    ④ 누락: 매장+날짜 자체가 이카운트에 없음 (매장명·날짜 오기재 또는 실제 미등록 의심)"""
+    # store_key 갱신 (신규/수정된 레코드 대비)
+    for uid, useller, ustore in conn.execute("SELECT id, real_seller, store_name FROM gift_usage_record").fetchall():
+        key = _gift_normalize_store_key(useller or ustore)
+        conn.execute("UPDATE gift_usage_record SET store_key=? WHERE id=?", (key, uid))
+    for eid, eseller in conn.execute("SELECT id, real_seller FROM gift_ecount_record").fetchall():
+        key = _gift_normalize_store_key(eseller)
+        conn.execute("UPDATE gift_ecount_record SET store_key=? WHERE id=?", (key, eid))
 
-    # 이카운트 쪽 인덱스: (real_seller, date, brand) -> [ecount_id,...]
-    ecount_idx = {}
-    for eid, edate, eseller, ebrand, eqty in ecount_rows:
-        key = (eseller, edate, ebrand)
-        ecount_idx.setdefault(key, []).append(eid)
+    usage_rows = conn.execute("SELECT id, usage_date, store_key, brand, item_name, quantity FROM gift_usage_record").fetchall()
+    ecount_rows = conn.execute("SELECT id, ecount_date, store_key, brand, item_name, quantity FROM gift_ecount_record").fetchall()
 
-    matched_ecount_ids = set()
-    for uid, udate, useller, ubrand, uqty in usage_rows:
-        key = (useller, udate, ubrand)
-        candidates = ecount_idx.get(key, [])
-        if candidates:
-            conn.execute("UPDATE gift_usage_record SET match_status='확인' WHERE id=?", (uid,))
-            for eid in candidates:
-                matched_ecount_ids.add(eid)
-                conn.execute("UPDATE gift_ecount_record SET matched_usage_id=? WHERE id=?", (uid, eid))
-        else:
+    # 이카운트 쪽 인덱스: (store_key, date) -> [(eid, brand, item_name, qty), ...]
+    ecount_by_store_date = {}
+    for eid, edate, ekey, ebrand, eitem, eqty in ecount_rows:
+        ecount_by_store_date.setdefault((ekey, edate), []).append((eid, ebrand, eitem, eqty))
+
+    for uid, udate, ukey, ubrand, uitem, uqty in usage_rows:
+        candidates = ecount_by_store_date.get((ukey, udate), [])
+        if not candidates:
             conn.execute("UPDATE gift_usage_record SET match_status='누락' WHERE id=?", (uid,))
+            continue
+
+        # 브랜드까지 일치하는 후보
+        brand_matches = [c for c in candidates if c[1] == ubrand]
+        if not brand_matches:
+            conn.execute("UPDATE gift_usage_record SET match_status='브랜드상이' WHERE id=?", (uid,))
+            continue
+
+        # 품목명 부분일치(핵심 키워드 포함) 확인
+        uitem_clean = (uitem or '').replace(' ', '')
+        item_matches = [c for c in brand_matches
+                         if uitem_clean and (uitem_clean in c[2].replace(' ', '') or c[2].replace(' ', '') in uitem_clean)]
+        final_matches = item_matches if item_matches else brand_matches
+        status = '일치' if item_matches else '품목상이'
+
+        conn.execute("UPDATE gift_usage_record SET match_status=? WHERE id=?", (status, uid))
+        for eid, _, _, _ in final_matches:
+            conn.execute("UPDATE gift_ecount_record SET matched_usage_id=? WHERE id=?", (uid, eid))
 
 
 @app.route("/api/gift/check/list")
