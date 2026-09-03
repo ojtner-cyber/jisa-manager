@@ -1082,7 +1082,8 @@ td.center{text-align:center}
             <thead><tr style="background:var(--bg)">
               <th style="padding:8px 10px;text-align:center;width:28px;border-bottom:1.5px solid var(--border)"><input type="checkbox" id="gift-usage-select-all" onchange="toggleAllGiftUsage(this)"></th>
               <th style="padding:8px 10px;text-align:center;font-size:10.5px;font-weight:700;color:var(--t-500);border-bottom:1.5px solid var(--border)">No</th>
-              <th style="padding:8px 10px;text-align:left;font-size:10.5px;font-weight:700;color:var(--t-500);border-bottom:1.5px solid var(--border)">사용일자</th>
+              <th style="padding:8px 10px;text-align:left;font-size:10.5px;font-weight:700;color:var(--t-500);border-bottom:1.5px solid var(--border)">요청일자</th>
+              <th style="padding:8px 10px;text-align:left;font-size:10.5px;font-weight:700;color:var(--t-500);border-bottom:1.5px solid var(--border)">발송일자</th>
               <th style="padding:8px 10px;text-align:left;font-size:10.5px;font-weight:700;color:var(--t-500);border-bottom:1.5px solid var(--border)">매장명</th>
               <th style="padding:8px 10px;text-align:center;font-size:10.5px;font-weight:700;color:var(--t-500);border-bottom:1.5px solid var(--border)">브랜드</th>
               <th style="padding:8px 10px;text-align:left;font-size:10.5px;font-weight:700;color:var(--t-500);border-bottom:1.5px solid var(--border)">사은품품목</th>
@@ -1157,8 +1158,9 @@ td.center{text-align:center}
           <button onclick="document.getElementById('gift-manual-modal').style.display='none'" style="background:none;border:none;font-size:16px;color:var(--t-400);cursor:pointer">✕</button>
         </div>
         <div style="padding:16px 20px">
-          <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px">
-            <div><div class="flbl">사용일자</div><input class="fi" type="date" id="gm-date"></div>
+          <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin-bottom:10px">
+            <div><div class="flbl">요청일자 <span style="font-weight:400;color:var(--t-400)">(카톡 등록일)</span></div><input class="fi" type="date" id="gm-date"></div>
+            <div><div class="flbl">발송일자 <span style="font-weight:400;color:var(--t-400)">(이카운트 발송일)</span></div><input class="fi" type="date" id="gm-ship-date"></div>
             <div><div class="flbl">브랜드</div>
               <select class="fi" id="gm-brand">
                 <option value="">선택</option>
@@ -2413,9 +2415,13 @@ function renderGiftKakaoPreview(){
     <div style="background:var(--p-lt);border:1px solid var(--p);border-radius:10px;padding:14px">
       <div style="font-size:12px;font-weight:700;color:var(--p);margin-bottom:10px">🔍 ${giftKakaoParsedItems.length}건 인식됨 — 검토 후 저장해주세요 (필드 클릭해서 수정 가능)</div>
       <div style="display:flex;flex-direction:column;gap:8px">
+        <div style="display:grid;grid-template-columns:100px 100px 130px 90px 1fr 60px 24px;gap:6px;font-size:9.5px;font-weight:700;color:var(--t-400);padding:0 8px">
+          <span>요청일자</span><span>발송일자</span><span>매장명</span><span>브랜드</span><span>품목</span><span>수량</span><span></span>
+        </div>
         ${giftKakaoParsedItems.map((it,i)=>`
-          <div style="display:grid;grid-template-columns:110px 130px 90px 1fr 70px 24px;gap:6px;align-items:center;background:var(--paper);border-radius:8px;padding:8px">
+          <div style="display:grid;grid-template-columns:100px 100px 130px 90px 1fr 60px 24px;gap:6px;align-items:center;background:var(--paper);border-radius:8px;padding:8px">
             <input type="date" value="${it.usage_date||''}" onchange="giftKakaoParsedItems[${i}].usage_date=this.value" style="font-size:11px;border:1px solid var(--border);border-radius:5px;padding:4px">
+            <input type="date" value="${it.ship_date||''}" onchange="giftKakaoParsedItems[${i}].ship_date=this.value" style="font-size:11px;border:1px solid var(--border);border-radius:5px;padding:4px">
             <input type="text" value="${(it.store_name||'').replace(/"/g,'&quot;')}" onchange="giftKakaoParsedItems[${i}].store_name=this.value" placeholder="매장명" style="font-size:11px;border:1px solid var(--border);border-radius:5px;padding:4px">
             <select onchange="giftKakaoParsedItems[${i}].brand=this.value" style="font-size:11px;border:1px solid var(--border);border-radius:5px;padding:4px">
               ${['','줄즈','레카로','ABC디자인','원더폴드','카오스','엔픽스','타프토이즈'].map(b=>`<option ${it.brand===b?'selected':''}>${b}</option>`).join('')}
@@ -2448,7 +2454,7 @@ async function confirmGiftKakaoSave(){
 }
 
 const GIFT_MATCH_STATUS_COLOR = {
-  '일치': '#16A34A', '품목상이': '#D97706', '브랜드상이': '#DC2626', '누락': '#DC2626', '미확인': '#9CA3AF',
+  '일치': '#16A34A', '수량상이': '#D97706', '누락': '#DC2626', '미확인': '#9CA3AF',
 };
 
 async function loadGiftUsageList(){
@@ -2459,7 +2465,7 @@ async function loadGiftUsageList(){
   document.getElementById('gift-usage-select-all').checked = false;
   updateGiftUsageSelection();
   if(!rows.length){
-    tbody.innerHTML = `<tr><td colspan="16" style="text-align:center;padding:30px;color:var(--t-300);font-size:12px">등록된 사용내역이 없습니다</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="17" style="text-align:center;padding:30px;color:var(--t-300);font-size:12px">등록된 사용내역이 없습니다</td></tr>`;
     return;
   }
   tbody.innerHTML = rows.map((r,i)=>{
@@ -2468,6 +2474,7 @@ async function loadGiftUsageList(){
       <td style="padding:8px 10px;text-align:center;border-bottom:1px solid var(--border)"><input type="checkbox" class="gift-usage-check" value="${r.id}" onchange="updateGiftUsageSelection()"></td>
       <td style="padding:8px 10px;text-align:center;font-size:11px;color:var(--t-400);border-bottom:1px solid var(--border)">${rows.length-i}</td>
       <td style="padding:8px 10px;font-size:11.5px;border-bottom:1px solid var(--border)">${r.usage_date}</td>
+      <td style="padding:8px 10px;font-size:11.5px;color:var(--t-500);border-bottom:1px solid var(--border)">${r.ship_date||'—'}</td>
       <td style="padding:8px 10px;font-size:11.5px;font-weight:600;border-bottom:1px solid var(--border)">${r.store_name}</td>
       <td style="padding:8px 10px;text-align:center;font-size:11px;border-bottom:1px solid var(--border)">${r.brand||'—'}</td>
       <td style="padding:8px 10px;font-size:11.5px;border-bottom:1px solid var(--border)">${r.item_name||''}</td>
@@ -2553,6 +2560,7 @@ async function deleteGiftUsage(id){
 
 function openGiftManualAdd(){
   document.getElementById('gm-date').value = new Date().toISOString().slice(0,10);
+  document.getElementById('gm-ship-date').value = '';
   document.getElementById('gm-brand').value = '';
   document.getElementById('gm-store').value = '';
   document.getElementById('gm-item').value = '';
@@ -2567,6 +2575,7 @@ function openGiftManualAdd(){
 async function saveGiftManual(){
   const body = {
     usage_date: document.getElementById('gm-date').value,
+    ship_date: document.getElementById('gm-ship-date').value,
     store_name: document.getElementById('gm-store').value.trim(),
     brand: document.getElementById('gm-brand').value,
     item_name: document.getElementById('gm-item').value.trim(),
@@ -2576,7 +2585,7 @@ async function saveGiftManual(){
     manager: document.getElementById('gm-manager').value.trim(),
     note: document.getElementById('gm-note').value.trim(),
   };
-  if(!body.usage_date || !body.store_name){ toast('사용일자와 매장명은 필수예요', false); return; }
+  if(!body.usage_date || !body.store_name){ toast('요청일자와 매장명은 필수예요', false); return; }
   const r = await api('/api/gift/usage/add', {method:'POST', body});
   if(r?.ok){
     toast('저장됐어요');
@@ -2684,60 +2693,65 @@ async function loadGiftCheckList(){
 }
 
 async function loadGiftMonthly(){
-  const data = await api('/api/gift/monthly-summary') || {};
+  const data = await api('/api/gift/monthly-summary') || {months:[],brands:[],total:{}};
   const el = document.getElementById('gift-monthly-content');
-  const brands = Object.keys(data).sort();
+  const months = data.months || [];
+  const brands = data.brands || [];
   if(!brands.length){
     el.innerHTML = `<div style="text-align:center;padding:40px;color:var(--t-300);font-size:12px">데이터가 없습니다. 승인수량(품의)을 먼저 등록해주세요.</div>`;
   } else {
-    el.innerHTML = brands.map(brand=>{
-      const info = data[brand];
-      const remainNow = info.approved_qty - info.total_qty;
-      const remainColor = remainNow < 0 ? 'var(--red)' : 'var(--t-900)';
-      const rowsHtml = info.rows.length ? info.rows.map(r=>{
-        const rc = r.remaining_qty < 0 ? 'var(--red)' : 'var(--t-700)';
-        return `<tr>
-          <td style="padding:7px 10px;font-size:11.5px;font-weight:600;border-bottom:1px solid var(--border)">${r.month}</td>
-          <td style="padding:7px 10px;text-align:right;font-size:11px;color:var(--t-400);border-bottom:1px solid var(--border)">${r.approved_qty.toLocaleString()}</td>
-          <td style="padding:7px 10px;text-align:right;font-size:11.5px;font-weight:700;border-bottom:1px solid var(--border)">${r.monthly_qty.toLocaleString()}</td>
-          <td style="padding:7px 10px;text-align:right;font-size:11px;border-bottom:1px solid var(--border)">${r.cum_qty.toLocaleString()}</td>
-          <td style="padding:7px 10px;text-align:right;font-size:11px;font-weight:700;color:${rc};border-bottom:1px solid var(--border)">${r.remaining_qty.toLocaleString()}</td>
-          <td style="padding:7px 10px;text-align:right;font-size:11px;color:var(--t-500);border-bottom:1px solid var(--border)">${r.cum_consumer_amount.toLocaleString()}</td>
-          <td style="padding:7px 10px;text-align:right;font-size:11px;color:var(--t-500);border-bottom:1px solid var(--border)">${r.cum_cost_amount.toLocaleString()}</td>
-        </tr>`;
-      }).join('') : `<tr><td colspan="7" style="text-align:center;padding:16px;color:var(--t-300);font-size:11.5px">사용 내역 없음</td></tr>`;
-      return `<div style="background:var(--paper);border:1px solid var(--border);border-radius:12px;padding:16px;margin-bottom:14px">
-        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;flex-wrap:wrap;gap:8px">
-          <div style="font-size:14px;font-weight:800;color:var(--t-900)">${brand}</div>
-          <div style="display:flex;align-items:center;gap:10px;font-size:11.5px;color:var(--t-500)">
-            <span>승인수량(품의): <input type="number" value="${info.approved_qty}" onchange="setGiftQuota('${brand.replace(/'/g,"\\'")}', this.value)"
-              style="width:80px;font-size:11.5px;font-weight:700;border:1px solid var(--border-md);border-radius:5px;padding:3px 6px;text-align:right"> 개</span>
-            <span>누적사용: <b style="color:var(--t-900)">${info.total_qty.toLocaleString()}</b>개</span>
-            <span>현재 잔여: <b style="color:${remainColor}">${remainNow.toLocaleString()}</b>개</span>
-          </div>
-        </div>
-        <div style="overflow-x:auto">
-          <table style="width:100%;border-collapse:collapse;font-size:12px;white-space:nowrap">
-            <thead><tr style="background:var(--bg)">
-              <th style="padding:7px 10px;text-align:left;font-size:10px;font-weight:700;color:var(--t-500);border-bottom:1.5px solid var(--border)">월</th>
-              <th style="padding:7px 10px;text-align:right;font-size:10px;font-weight:700;color:var(--t-500);border-bottom:1.5px solid var(--border)">승인수량(품의)</th>
-              <th style="padding:7px 10px;text-align:right;font-size:10px;font-weight:700;color:var(--t-500);border-bottom:1.5px solid var(--border)">월별사용</th>
-              <th style="padding:7px 10px;text-align:right;font-size:10px;font-weight:700;color:var(--t-500);border-bottom:1.5px solid var(--border)">사용누계</th>
-              <th style="padding:7px 10px;text-align:right;font-size:10px;font-weight:700;color:var(--t-500);border-bottom:1.5px solid var(--border)">잔여수량</th>
-              <th style="padding:7px 10px;text-align:right;font-size:10px;font-weight:700;color:var(--t-500);border-bottom:1.5px solid var(--border)">소비자가금액누계</th>
-              <th style="padding:7px 10px;text-align:right;font-size:10px;font-weight:700;color:var(--t-500);border-bottom:1.5px solid var(--border)">원가금액누계</th>
-            </tr></thead>
-            <tbody>${rowsHtml}</tbody>
-          </table>
-        </div>
-      </div>`;
+    const monthHdrs = months.map(mo=>`<th style="padding:7px 8px;text-align:right;font-size:10px;font-weight:700;color:var(--t-500);border-bottom:1.5px solid var(--border);white-space:nowrap">${mo}<br><span style="font-weight:400;color:var(--t-400)">사용</span></th>`).join('');
+    const rowsHtml = brands.map(b=>{
+      const rc = b.remaining_qty < 0 ? 'var(--red)' : 'var(--t-900)';
+      const monthCells = b.monthly.map(v=>`<td style="padding:7px 8px;text-align:right;font-size:11px;border-bottom:1px solid var(--border)">${v.toLocaleString()}</td>`).join('');
+      return `<tr>
+        <td style="padding:7px 10px;font-size:11.5px;font-weight:700;border-bottom:1px solid var(--border)">${b.brand}</td>
+        <td style="padding:7px 10px;text-align:right;border-bottom:1px solid var(--border)">
+          <input type="number" value="${b.approved_qty}" onchange="setGiftQuota('${b.brand.replace(/'/g,"\\'")}', this.value)"
+            style="width:64px;font-size:11px;font-weight:700;border:1px solid var(--border-md);border-radius:5px;padding:2px 5px;text-align:right">
+        </td>
+        ${monthCells}
+        <td style="padding:7px 10px;text-align:right;font-size:11.5px;font-weight:700;border-bottom:1px solid var(--border)">${b.cum_qty.toLocaleString()}</td>
+        <td style="padding:7px 10px;text-align:right;font-size:11.5px;font-weight:700;color:${rc};border-bottom:1px solid var(--border)">${b.remaining_qty.toLocaleString()}</td>
+        <td style="padding:7px 10px;text-align:right;font-size:11px;color:var(--t-500);border-bottom:1px solid var(--border)">${b.cum_consumer_amount.toLocaleString()}</td>
+        <td style="padding:7px 10px;text-align:right;font-size:11px;color:var(--t-500);border-bottom:1px solid var(--border)">${b.cum_cost_amount.toLocaleString()}</td>
+      </tr>`;
     }).join('');
+    const t = data.total || {};
+    const totalMonthCells = (t.monthly||[]).map(v=>`<td style="padding:7px 8px;text-align:right;font-size:11px;font-weight:700;border-bottom:1px solid var(--border)">${(v||0).toLocaleString()}</td>`).join('');
+    el.innerHTML = `<div style="background:var(--paper);border:1px solid var(--border);border-radius:12px;padding:16px;overflow-x:auto">
+      <div style="font-size:13px;font-weight:800;color:var(--t-900);margin-bottom:10px">브랜드별 · 월별 사은품 사용 집계</div>
+      <table style="width:100%;border-collapse:collapse;font-size:12px;white-space:nowrap">
+        <thead><tr style="background:var(--bg)">
+          <th style="padding:7px 10px;text-align:left;font-size:10px;font-weight:700;color:var(--t-500);border-bottom:1.5px solid var(--border)">브랜드</th>
+          <th style="padding:7px 10px;text-align:right;font-size:10px;font-weight:700;color:var(--t-500);border-bottom:1.5px solid var(--border)">승인수량<br>(품의)</th>
+          ${monthHdrs}
+          <th style="padding:7px 10px;text-align:right;font-size:10px;font-weight:700;color:var(--t-500);border-bottom:1.5px solid var(--border)">사용<br>누계</th>
+          <th style="padding:7px 10px;text-align:right;font-size:10px;font-weight:700;color:var(--t-500);border-bottom:1.5px solid var(--border)">잔여<br>수량</th>
+          <th style="padding:7px 10px;text-align:right;font-size:10px;font-weight:700;color:var(--t-500);border-bottom:1.5px solid var(--border)">소비자가금액<br>누계</th>
+          <th style="padding:7px 10px;text-align:right;font-size:10px;font-weight:700;color:var(--t-500);border-bottom:1.5px solid var(--border)">원가금액<br>누계</th>
+        </tr></thead>
+        <tbody>${rowsHtml}
+          <tr style="background:var(--bg)">
+            <td style="padding:7px 10px;font-size:11.5px;font-weight:800;border-bottom:1px solid var(--border)">총 합계</td>
+            <td style="padding:7px 10px;text-align:right;font-size:11.5px;font-weight:800;border-bottom:1px solid var(--border)">${(t.approved_qty||0).toLocaleString()}</td>
+            ${totalMonthCells}
+            <td style="padding:7px 10px;text-align:right;font-size:11.5px;font-weight:800;border-bottom:1px solid var(--border)">${(t.cum_qty||0).toLocaleString()}</td>
+            <td style="padding:7px 10px;text-align:right;font-size:11.5px;font-weight:800;border-bottom:1px solid var(--border)">${(t.remaining_qty||0).toLocaleString()}</td>
+            <td style="padding:7px 10px;text-align:right;font-size:11.5px;font-weight:800;border-bottom:1px solid var(--border)">${(t.cum_consumer||0).toLocaleString()}</td>
+            <td style="padding:7px 10px;text-align:right;font-size:11.5px;font-weight:800;border-bottom:1px solid var(--border)">${(t.cum_cost||0).toLocaleString()}</td>
+          </tr>
+        </tbody>
+      </table>
+      <div style="font-size:10.5px;color:var(--t-400);margin-top:10px">※ 잔여수량 = 승인수량 − 사용 누계 · 원가금액 = 소비자가 금액 × 50%</div>
+    </div>`;
   }
   // 승인수량이 아직 없는 브랜드도 등록할 수 있게 안내
   const allBrandNames = ['줄즈','레카로','ABC디자인','원더폴드','카오스','엔픽스','타프토이즈'];
-  const missing = allBrandNames.filter(b=>!brands.includes(b));
+  const existingBrands = brands.map(b=>b.brand);
+  const missing = allBrandNames.filter(b=>!existingBrands.includes(b));
   if(missing.length){
-    el.innerHTML += `<div style="background:var(--bg);border:1px dashed var(--border-md);border-radius:12px;padding:14px;display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+    el.innerHTML += `<div style="background:var(--bg);border:1px dashed var(--border-md);border-radius:12px;padding:14px;display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:12px">
       <span style="font-size:11.5px;color:var(--t-400)">승인수량 미등록 브랜드:</span>
       ${missing.map(b=>`<button class="btn btn-ghost btn-sm" onclick="promptGiftQuota('${b}')">${b} 등록</button>`).join('')}
     </div>`;

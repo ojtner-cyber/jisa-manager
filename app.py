@@ -498,6 +498,9 @@ def init_db():
         gu_cols = [r[1] for r in conn.execute("PRAGMA table_info(gift_usage_record)").fetchall()]
         if 'store_key' not in gu_cols:
             conn.execute("ALTER TABLE gift_usage_record ADD COLUMN store_key TEXT DEFAULT ''")
+        if 'ship_date' not in gu_cols:
+            # 발송일자(이카운트 실제 발송일, 대사 매칭 기준) — 요청일자(usage_date, 카톡 등록일)와 별도 관리
+            conn.execute("ALTER TABLE gift_usage_record ADD COLUMN ship_date TEXT DEFAULT ''")
         ge_cols = [r[1] for r in conn.execute("PRAGMA table_info(gift_ecount_record)").fetchall()]
         if 'store_key' not in ge_cols:
             conn.execute("ALTER TABLE gift_ecount_record ADD COLUMN store_key TEXT DEFAULT ''")
@@ -505,6 +508,10 @@ def init_db():
             conn.execute("ALTER TABLE gift_ecount_record ADD COLUMN raw_seller TEXT DEFAULT ''")
         if 'trade_code' not in ge_cols:
             conn.execute("ALTER TABLE gift_ecount_record ADD COLUMN trade_code TEXT DEFAULT ''")
+        if 'match_status' not in ge_cols:
+            conn.execute("ALTER TABLE gift_ecount_record ADD COLUMN match_status TEXT DEFAULT ''")
+        if 'match_note' not in ge_cols:
+            conn.execute("ALTER TABLE gift_ecount_record ADD COLUMN match_note TEXT DEFAULT ''")
     except Exception:
         pass
     conn.execute("""CREATE TABLE IF NOT EXISTS work_retro (
@@ -1251,6 +1258,12 @@ SELLER_ALIAS = {
     '베네피아구로 (발육기)':    '링크맘 구로점',
     '베네피아구로(발육기)':     '링크맘 구로점',
     '청라베이비하우스':         '베이비하우스 청라점',
+    # 수정(신규): 주식회사 티에스엘컴퍼니 → 베이비하우스 청라점 (실적용거래처명으로 확인됨)
+    '주식회사 티에스엘컴퍼니':  '베이비하우스 청라점',
+    # 수정(신규): 주식회사 더케이앤피 = 베이비하우스 동래점
+    '주식회사 더케이앤피':      '베이비하우스 동래점',
+    # 수정(신규 안전장치): 베이비하우스 광주가 다른 매장으로 잘못 해석되는 문제 방지 — 명시적으로 고정
+    '베이비하우스 광주':        '베이비하우스 광주점',
     # 파주점 고객 데이터 → 삭제
     '베이비하우스 파주점/신성준고객': '',
 }
@@ -1302,6 +1315,8 @@ DISPLAY_NAME = {
     '베이비플러스 화곡점':              '링크맘 마곡점',
     '베네피아구로 (발육기)':            '링크맘 구로점',
     '청라베이비하우스':                 '베이비하우스 청라점',
+    '주식회사 티에스엘컴퍼니':          '베이비하우스 청라점',
+    '주식회사 더케이앤피':              '베이비하우스 동래점',
 }
 
 def display_seller(name):
@@ -8954,7 +8969,8 @@ def api_gift_usage_upload_excel():
     header_row_idx = None
     col_map = {}
     HDR_ALIASES = {
-        'usage_date': ['사용일자', '일자'],
+        'usage_date': ['요청일자', '사용일자', '일자'],
+        'ship_date': ['발송일자'],
         'store_name': ['매장명'],
         'brand': ['브랜드'],
         'item_name': ['사은품 품목', '품목', '사은품품목'],
@@ -9004,8 +9020,17 @@ def api_gift_usage_upload_excel():
         try: unit_price = int(price_raw) if price_raw is not None else 0
         except Exception: unit_price = 0
 
+        ship_date_raw = _cell('ship_date')
+        if ship_date_raw and hasattr(ship_date_raw, 'strftime'):
+            ship_date = ship_date_raw.strftime('%Y-%m-%d')
+        elif ship_date_raw:
+            ship_date = str(ship_date_raw).strip().replace('.', '-').replace('/', '-')[:10]
+        else:
+            ship_date = ''
+
         items.append({
             'usage_date': usage_date,
+            'ship_date': ship_date,
             'store_name': str(store_name).strip(),
             'brand': _gift_normalize_brand(str(_cell('brand') or '')),
             'item_name': str(_cell('item_name') or '').strip(),
@@ -9095,6 +9120,7 @@ def api_gift_usage_add():
         qty = int(it.get('quantity', 1) or 1)
         unit_price = int(it.get('unit_price', 0) or 0)
         item_name = it.get('item_name', '')
+        ship_date = (it.get('ship_date') or '').strip()
         dup_key = (usage_date, real_seller, brand, item_name.replace(' ', ''), qty, unit_price)
         if dup_key in existing_keys or dup_key in seen_in_batch:
             skipped_dup += 1
@@ -9104,11 +9130,11 @@ def api_gift_usage_add():
         cost_amount = round(consumer_amount * 0.5)
         conn.execute("""INSERT INTO gift_usage_record
             (usage_date, store_name, brand, item_name, quantity, unit_price, consumer_amount, cost_amount,
-             reason, real_seller, manager, note, usage_month, source, kakao_raw_text, created_at)
-            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+             reason, real_seller, manager, note, usage_month, source, kakao_raw_text, created_at, ship_date)
+            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (usage_date, store_name, brand, item_name, qty, unit_price, consumer_amount, cost_amount,
              it.get('reason',''), real_seller, it.get('manager',''), it.get('note',''),
-             usage_date[:7], it.get('source','수동입력'), it.get('kakao_raw_text',''), now))
+             usage_date[:7], it.get('source','수동입력'), it.get('kakao_raw_text',''), now, ship_date))
         inserted += 1
         touched_months.add(usage_date[:7])
     conn.commit()
@@ -9159,11 +9185,12 @@ def api_gift_usage_update(rid):
     real_seller = _gift_resolve_store_name(conn, raw_seller=d.get('store_name',''), canonical_index=canonical_index, trade_code_map=trade_code_map)
     conn.execute("""UPDATE gift_usage_record SET
         usage_date=?, store_name=?, brand=?, item_name=?, quantity=?, unit_price=?,
-        consumer_amount=?, cost_amount=?, reason=?, real_seller=?, manager=?, note=?, usage_month=?
+        consumer_amount=?, cost_amount=?, reason=?, real_seller=?, manager=?, note=?, usage_month=?, ship_date=?
         WHERE id=?""",
         (d.get('usage_date',''), d.get('store_name',''), _gift_normalize_brand(d.get('brand','')),
          d.get('item_name',''), qty, unit_price, consumer_amount, cost_amount, d.get('reason',''),
-         real_seller, d.get('manager',''), d.get('note',''), d.get('usage_date','')[:7], rid))
+         real_seller, d.get('manager',''), d.get('note',''), d.get('usage_date','')[:7],
+         (d.get('ship_date') or '').strip(), rid))
     conn.commit(); conn.close()
     return jsonify({'ok': True})
 
@@ -9370,12 +9397,14 @@ def _gift_dedupe_existing_records(conn, months=None):
 
 
 def _gift_auto_match(conn):
-    """이카운트 증정 건과 사용내역(건별)을 자동 대사 — 4단계 판정으로 불일치 원인 진단을 돕는다
-    매장 비교는 real_seller 완전일치가 아닌 store_key(어순·"점"유무 무관 정규화 키) 기준으로 관대하게 매칭
-    ① 일치: 매장+날짜+브랜드+품목 모두 부합
-    ② 품목상이: 매장+날짜+브랜드는 맞는데 품목명이 다름 (수량 오기재 등 의심)
-    ③ 브랜드상이: 매장+날짜는 맞는데 브랜드가 다름 (브랜드 오기재 의심)
-    ④ 누락: 매장+날짜 자체가 이카운트에 없음 (매장명·날짜 오기재 또는 실제 미등록 의심)"""
+    """이카운트 증정 건과 사용내역(건별)을 자동 대사.
+    실제 관리대장에서 검증된 방식(매장×브랜드 단위 수량 합계 대조)을 그대로 반영 —
+    발송일자·품목명 색상 변형까지 정확히 맞추려 하지 않고, 같은 매장·같은 브랜드의
+    수량 합계가 맞는지로 판단한다. 이렇게 하면 같은 매장·브랜드 안에서 색상별로
+    여러 줄로 나뉜 품목들도 자동으로 하나로 묶여서 비교된다.
+    ① 일치: 매장(실적용거래처명)+브랜드 단위로 이카운트 수량 합계 = 대장 수량 합계
+    ② 수량상이: 매장+브랜드는 맞는데 합계 수량이 다름
+    ③ 누락: 해당 매장+브랜드 조합이 상대편에 아예 없음"""
     # store_key 갱신 (신규/수정된 레코드 대비)
     for uid, useller, ustore in conn.execute("SELECT id, real_seller, store_name FROM gift_usage_record").fetchall():
         key = _gift_normalize_store_key(useller or ustore)
@@ -9384,36 +9413,43 @@ def _gift_auto_match(conn):
         key = _gift_normalize_store_key(eseller)
         conn.execute("UPDATE gift_ecount_record SET store_key=? WHERE id=?", (key, eid))
 
-    usage_rows = conn.execute("SELECT id, usage_date, store_key, brand, item_name, quantity FROM gift_usage_record").fetchall()
-    ecount_rows = conn.execute("SELECT id, ecount_date, store_key, brand, item_name, quantity FROM gift_ecount_record").fetchall()
+    usage_rows = conn.execute("SELECT id, store_key, brand, quantity, usage_date, item_name FROM gift_usage_record").fetchall()
+    ecount_rows = conn.execute("SELECT id, store_key, brand, quantity, ecount_date, item_name FROM gift_ecount_record").fetchall()
 
-    # 이카운트 쪽 인덱스: (store_key, date) -> [(eid, brand, item_name, qty), ...]
-    ecount_by_store_date = {}
-    for eid, edate, ekey, ebrand, eitem, eqty in ecount_rows:
-        ecount_by_store_date.setdefault((ekey, edate), []).append((eid, ebrand, eitem, eqty))
+    # (store_key, brand) 단위로 그룹핑 — 색상별로 나뉜 여러 줄도 같은 그룹에서 합산됨
+    u_groups = {}  # key -> {'ids':[...], 'qty':int, 'latest':(date,item)}
+    for uid, ukey, ubrand, uqty, udate, uitem in usage_rows:
+        g = u_groups.setdefault((ukey, ubrand), {'ids': [], 'qty': 0, 'latest': (udate, uitem)})
+        g['ids'].append(uid); g['qty'] += (uqty or 0)
+        if (udate or '') >= (g['latest'][0] or ''): g['latest'] = (udate, uitem)
 
-    for uid, udate, ukey, ubrand, uitem, uqty in usage_rows:
-        candidates = ecount_by_store_date.get((ukey, udate), [])
-        if not candidates:
-            conn.execute("UPDATE gift_usage_record SET match_status='누락' WHERE id=?", (uid,))
-            continue
+    e_groups = {}
+    for eid, ekey, ebrand, eqty, edate, eitem in ecount_rows:
+        g = e_groups.setdefault((ekey, ebrand), {'ids': [], 'qty': 0})
+        g['ids'].append(eid); g['qty'] += (eqty or 0)
 
-        # 브랜드까지 일치하는 후보
-        brand_matches = [c for c in candidates if c[1] == ubrand]
-        if not brand_matches:
-            conn.execute("UPDATE gift_usage_record SET match_status='브랜드상이' WHERE id=?", (uid,))
-            continue
-
-        # 품목명 부분일치(핵심 키워드 포함) 확인
-        uitem_clean = (uitem or '').replace(' ', '')
-        item_matches = [c for c in brand_matches
-                         if uitem_clean and (uitem_clean in c[2].replace(' ', '') or c[2].replace(' ', '') in uitem_clean)]
-        final_matches = item_matches if item_matches else brand_matches
-        status = '일치' if item_matches else '품목상이'
-
-        conn.execute("UPDATE gift_usage_record SET match_status=? WHERE id=?", (status, uid))
-        for eid, _, _, _ in final_matches:
-            conn.execute("UPDATE gift_ecount_record SET matched_usage_id=? WHERE id=?", (uid, eid))
+    all_keys = set(u_groups.keys()) | set(e_groups.keys())
+    for key in all_keys:
+        ug = u_groups.get(key)
+        eg = e_groups.get(key)
+        if ug and eg:
+            if ug['qty'] == eg['qty']:
+                status, note = '일치', ''
+            else:
+                status = '수량상이'
+                note = f"수량 상이 — 이카운트 {eg['qty']}개 vs 대장 {ug['qty']}개"
+            for uid in ug['ids']:
+                conn.execute("UPDATE gift_usage_record SET match_status=? WHERE id=?", (status, uid))
+            rep_uid = ug['ids'][0]
+            for eid in eg['ids']:
+                conn.execute("UPDATE gift_ecount_record SET match_status=?, match_note=?, matched_usage_id=? WHERE id=?",
+                             (status, note, rep_uid, eid))
+        elif ug and not eg:
+            for uid in ug['ids']:
+                conn.execute("UPDATE gift_usage_record SET match_status='누락' WHERE id=?", (uid,))
+        elif eg and not ug:
+            for eid in eg['ids']:
+                conn.execute("UPDATE gift_ecount_record SET match_status='누락', match_note='', matched_usage_id=NULL WHERE id=?", (eid,))
 
 
 @app.route("/api/gift/reconcile", methods=["POST"])
@@ -9446,8 +9482,9 @@ def api_gift_reconcile():
 @login_required
 def api_gift_check_list():
     """누락점검 — 이카운트 증정 건 기준으로 대장(사용내역) 등록 여부 표시.
-    수정4: 매칭된 경우 어떤 사용내역과 연결됐는지, 누락인 경우 같은 매장의 비슷한 날짜에
-    등록된 사용내역이 있는지(날짜 오기재 등 진단)까지 함께 내려줘서 원인 파악이 쉽도록 한다."""
+    매장(실적용거래처명)×브랜드 단위로 수량 합계를 대조한 결과(_gift_auto_match)를 그대로 보여준다.
+    색상 등으로 여러 줄에 나뉜 품목도 같은 매장·브랜드면 자동으로 합쳐져서 비교되므로
+    실제로 대사가 안 맞는 건만 정확히 걸러진다."""
     month = request.args.get('month', '').strip()
     conn = get_db()
     q = "SELECT * FROM gift_ecount_record WHERE 1=1"
@@ -9456,7 +9493,7 @@ def api_gift_check_list():
     q += " ORDER BY ecount_date, real_seller"
     rows = [dict(r) for r in conn.execute(q, params).fetchall()]
 
-    # 매칭된 건: 연결된 사용내역 요약 정보 (수정5: 수량까지 비교해서 상이하면 비고에 표시)
+    # 확인/수량상이 건: 같이 묶인 사용내역 대표 항목 요약(화면에 "→ 사용내역 ..." 표시용)
     matched_ids = [r['matched_usage_id'] for r in rows if r.get('matched_usage_id')]
     usage_map = {}
     if matched_ids:
@@ -9464,29 +9501,25 @@ def api_gift_check_list():
         for u in conn.execute(f"SELECT id, usage_date, item_name, manager, quantity FROM gift_usage_record WHERE id IN ({placeholders})", matched_ids).fetchall():
             usage_map[u[0]] = {'usage_date': u[1], 'item_name': u[2], 'manager': u[3], 'quantity': u[4]}
 
-    # 누락 건: 같은 매장(store_key)의 근처 사용내역이 있는지 진단(날짜 오기재 의심 등)
+    # 누락 건: 같은 매장(store_key)에 등록된 사용내역이 있는지(브랜드가 다르게 적혔을 가능성 등) 참고 정보 제공
     usage_by_store = {}
-    for u in conn.execute("SELECT store_key, usage_date, item_name FROM gift_usage_record").fetchall():
-        usage_by_store.setdefault(u[0], []).append({'usage_date': u[1], 'item_name': u[2]})
+    for u in conn.execute("SELECT store_key, usage_date, item_name, brand FROM gift_usage_record").fetchall():
+        usage_by_store.setdefault(u[0], []).append({'usage_date': u[1], 'item_name': u[2], 'brand': u[3]})
     conn.close()
 
     for r in rows:
-        r['status'] = '확인' if r.get('matched_usage_id') else '누락'
-        r['note'] = ''
-        if r.get('matched_usage_id') and r['matched_usage_id'] in usage_map:
-            mu = usage_map[r['matched_usage_id']]
-            r['matched_usage'] = mu
-            # 수정5: 매칭은 됐지만 수량이 서로 다르면 비고에 표시
-            if (mu.get('quantity') or 0) != (r.get('quantity') or 0):
-                r['status'] = '수량상이'
-                r['note'] = f"수량 상이 — 이카운트 {r.get('quantity') or 0}개 vs 대장 {mu.get('quantity') or 0}개"
-        elif not r.get('matched_usage_id'):
+        status = r.get('match_status') or '누락'
+        r['status'] = status
+        r['note'] = r.get('match_note') or ''
+        if status in ('일치', '수량상이') and r.get('matched_usage_id') in usage_map:
+            r['matched_usage'] = usage_map[r['matched_usage_id']]
+        if status == '누락':
             candidates = usage_by_store.get(r.get('store_key'), [])
-            near = [c for c in candidates if c['usage_date'] != r.get('ecount_date')]
-            r['diagnosis'] = ('같은 매장의 다른 날짜 사용내역 있음 (날짜 확인 필요)' if near
-                               else '해당 매장 사용내역 자체가 없음 (사용내역 미등록 의심)')
+            near = [c for c in candidates if c['brand'] != r.get('brand')]
+            r['diagnosis'] = ('같은 매장에 다른 브랜드로 등록된 사용내역 있음 (브랜드 확인 필요)' if near
+                               else '해당 매장·브랜드 사용내역 자체가 없음 (사용내역 미등록 의심)')
             r['nearby_usage'] = near[:3]
-            r['note'] = r['diagnosis']
+            if not r['note']: r['note'] = r['diagnosis']
     return jsonify(rows)
 
 
@@ -9521,42 +9554,45 @@ def api_gift_check_summary():
 
 
 def _gift_build_monthly_pivot(conn):
-    """브랜드별 월별 피벗 집계 — 승인수량(품의)/월별사용/사용누계/잔여수량/소비자가금액누계/원가금액누계
-    원본 관리대장 '월별집계' 시트 양식과 동일한 구조로 브랜드별 섹션 + 월별 행을 구성한다."""
+    """브랜드별 월별 집계 — 원본 관리대장 '월별집계' 시트와 동일한 매트릭스 구조.
+    행=브랜드, 열=승인수량(품의) + 월별 사용량(월마다 1열) + 사용누계 + 잔여수량 + 소비자가금액누계 + 원가금액누계"""
     quotas = {r[0]: r[1] for r in conn.execute("SELECT brand, approved_qty FROM gift_brand_quota").fetchall()}
     rows = conn.execute("""SELECT usage_month, brand, SUM(quantity) qty, SUM(consumer_amount) camt, SUM(cost_amount) coamt
         FROM gift_usage_record GROUP BY usage_month, brand ORDER BY usage_month ASC""").fetchall()
-    by_brand = {}
+
+    months = sorted(set(r[0] for r in rows if r[0]))
+    by_brand_month = {}  # (brand, month) -> {'qty':..,'camt':..,'coamt':..}
     for mo, brand, qty, camt, coamt in rows:
         b = brand or '(미분류)'
-        by_brand.setdefault(b, []).append({'month': mo, 'qty': qty or 0, 'camt': camt or 0, 'coamt': coamt or 0})
+        by_brand_month[(b, mo)] = {'qty': qty or 0, 'camt': camt or 0, 'coamt': coamt or 0}
 
-    all_brands = sorted(set(by_brand.keys()) | set(quotas.keys()))
-    result = {}
+    all_brands = sorted(set(b for b, mo in by_brand_month.keys()) | set(quotas.keys()))
+    brand_rows = []
+    grand = {'approved_qty': 0, 'monthly': [0]*len(months), 'cum_qty': 0, 'cum_consumer': 0, 'cum_cost': 0}
     for b in all_brands:
-        items = sorted(by_brand.get(b, []), key=lambda x: x['month'])
         approved = quotas.get(b, 0)
+        monthly = []
         cum_qty = cum_camt = cum_coamt = 0
-        out_rows = []
-        for it in items:
-            cum_qty += it['qty']; cum_camt += it['camt']; cum_coamt += it['coamt']
-            out_rows.append({
-                'month': it['month'],
-                'approved_qty': approved,
-                'monthly_qty': it['qty'],
-                'cum_qty': cum_qty,
-                'remaining_qty': approved - cum_qty,
-                'cum_consumer_amount': cum_camt,
-                'cum_cost_amount': cum_coamt,
-            })
-        result[b] = {'approved_qty': approved, 'total_qty': cum_qty, 'rows': out_rows}
-    return result
+        for i, mo in enumerate(months):
+            cell = by_brand_month.get((b, mo), {'qty': 0, 'camt': 0, 'coamt': 0})
+            monthly.append(cell['qty'])
+            cum_qty += cell['qty']; cum_camt += cell['camt']; cum_coamt += cell['coamt']
+            grand['monthly'][i] += cell['qty']
+        brand_rows.append({
+            'brand': b, 'approved_qty': approved, 'monthly': monthly,
+            'cum_qty': cum_qty, 'remaining_qty': approved - cum_qty,
+            'cum_consumer_amount': cum_camt, 'cum_cost_amount': cum_coamt,
+        })
+        grand['approved_qty'] += approved
+        grand['cum_qty'] += cum_qty; grand['cum_consumer'] += cum_camt; grand['cum_cost'] += cum_coamt
+    grand['remaining_qty'] = grand['approved_qty'] - grand['cum_qty']
+    return {'months': months, 'brands': brand_rows, 'total': grand}
 
 
 @app.route("/api/gift/monthly-summary")
 @login_required
 def api_gift_monthly_summary():
-    """월별집계 — 브랜드×월 피벗(승인수량/월별사용/사용누계/잔여수량/소비자가금액누계/원가금액누계)"""
+    """월별집계 — 브랜드×월 매트릭스(승인수량/월별사용/사용누계/잔여수량/소비자가금액누계/원가금액누계)"""
     conn = get_db()
     result = _gift_build_monthly_pivot(conn)
     conn.close()
@@ -9707,45 +9743,56 @@ def api_export_gift_xlsx():
     for ci, w in zip(range(2,14), [22,16,10,20,10,12,4,12,14,12,10,10]):
         ws2.column_dimensions[get_column_letter(ci)].width = w
 
-    # ── 시트3: 월별집계 (브랜드별 섹션 × 월별 행 피벗) ──
+    # ── 시트3: 월별집계 (원본 관리대장과 동일한 매트릭스: 브랜드 행 × 월 열) ──
     ws3 = wb.create_sheet("월별집계")
     ws3.column_dimensions['A'].width = 2
-    ws3.merge_cells('B2:H2')
-    c = ws3.cell(row=2, column=2, value="※ 사은품 월별 집계 (브랜드별 승인수량 대비 사용 현황)")
+    pivot = _gift_build_monthly_pivot(conn)
+    months = pivot['months']
+    last_col = 3 + len(months) + 4  # B=브랜드,C=승인수량, 월들, 사용누계/잔여수량/소비자가금액누계/원가금액누계
+    ws3.merge_cells(start_row=2, start_column=2, end_row=2, end_column=last_col)
+    c = ws3.cell(row=2, column=2, value="※ 브랜드별 · 월별 사은품 사용 집계")
     c.font=Font(bold=True,size=13,name=FNAME); c.alignment=left_a
 
-    pivot = _gift_build_monthly_pivot(conn)
-    hdrs3 = ['월','승인수량(품의)','월별사용','사용누계','잔여수량','소비자가금액누계','원가금액누계']
-    ri3 = 4
-    for brand in sorted(pivot.keys()):
-        info = pivot[brand]
-        ws3.merge_cells(start_row=ri3, start_column=2, end_row=ri3, end_column=8)
-        c = ws3.cell(row=ri3, column=2, value=f"■ {brand}  (승인수량(품의): {info['approved_qty']:,}개 · 누적사용: {info['total_qty']:,}개)")
-        c.font=Font(bold=True,size=10.5,name=FNAME,color='1E3A8A'); c.fill=mf("EFF6FF"); c.alignment=left_a
-        ri3 += 1
-        for ci, h in enumerate(hdrs3, 2):
-            c = ws3.cell(row=ri3, column=ci, value=h)
-            c.font=Font(bold=True,size=9,name=FNAME); c.fill=mf("F2F2F2"); c.border=bdr; c.alignment=ctr
-        ri3 += 1
-        if not info['rows']:
-            ws3.merge_cells(start_row=ri3, start_column=2, end_row=ri3, end_column=8)
-            c = ws3.cell(row=ri3, column=2, value="사용 내역 없음")
-            c.font=Font(size=9,name=FNAME,color='9CA3AF'); c.alignment=ctr; c.border=bdr
-            ri3 += 1
-        for r in info['rows']:
-            remaining_color = 'DC2626' if r['remaining_qty'] < 0 else '111827'
-            vals = [r['month'], r['approved_qty'], r['monthly_qty'], r['cum_qty'], r['remaining_qty'],
-                     r['cum_consumer_amount'], r['cum_cost_amount']]
-            for ci, v in enumerate(vals, 2):
-                c = ws3.cell(row=ri3, column=ci, value=v); c.font=Font(size=9,name=FNAME); c.border=bdr
-                c.alignment = right_a if ci in (3,4,5,6,7,8) else ctr
-                if ci in (6,7,8): c.number_format='#,##0'
-                if ci==6: c.font=Font(size=9,name=FNAME,color=remaining_color,bold=(r['remaining_qty']<0))
-            ri3 += 1
-        ri3 += 1  # 브랜드 사이 여백
+    hdrs3 = ['브랜드', '승인수량(품의)'] + [f"{mo} 사용" for mo in months] + ['사용 누계', '잔여수량', '소비자가금액 누계', '원가금액 누계']
+    for ci, h in enumerate(hdrs3, 2):
+        c = ws3.cell(row=4, column=ci, value=h)
+        c.font=Font(bold=True,size=9,name=FNAME); c.fill=mf("F2F2F2"); c.border=bdr; c.alignment=ctr
+    ws3.row_dimensions[4].height = 22
 
-    for ci, w in zip(range(2,9), [10,15,11,11,11,16,16]):
+    ri3 = 5
+    remaining_col = 4 + len(months) + 1
+    for b in pivot['brands']:
+        vals = [b['brand'], b['approved_qty']] + b['monthly'] + [b['cum_qty'], b['remaining_qty'], b['cum_consumer_amount'], b['cum_cost_amount']]
+        remaining_color = 'DC2626' if b['remaining_qty'] < 0 else '111827'
+        for ci, v in enumerate(vals, 2):
+            c = ws3.cell(row=ri3, column=ci, value=v); c.font=Font(size=9,name=FNAME); c.border=bdr
+            c.alignment = left_a if ci==2 else right_a
+            if ci >= 3: c.number_format = '#,##0'
+            if ci == remaining_col:
+                c.font = Font(size=9, name=FNAME, color=remaining_color, bold=(b['remaining_qty']<0))
+        ri3 += 1
+
+    # 총 합계 행
+    t = pivot['total']
+    vals = ['총 합계', t['approved_qty']] + t['monthly'] + [t['cum_qty'], t['remaining_qty'], t['cum_consumer'], t['cum_cost']]
+    for ci, v in enumerate(vals, 2):
+        c = ws3.cell(row=ri3, column=ci, value=v); c.font=Font(bold=True,size=9,name=FNAME); c.fill=mf("F9FAFB"); c.border=bdr
+        c.alignment = left_a if ci==2 else right_a
+        if ci >= 3: c.number_format = '#,##0'
+    ri3 += 2
+
+    ws3.cell(row=ri3, column=2, value="※ 잔여수량 = 승인수량 − 사용 누계  /  원가금액 = 소비자가 금액 × 50%").font = Font(size=8.5,name=FNAME,color='9CA3AF')
+    ri3 += 1
+    ws3.cell(row=ri3, column=2, value="※ 소비자가 7만원 초과 사은품 및 승인수량 초과 사용 시 별도 품의 필요").font = Font(size=8.5,name=FNAME,color='9CA3AF')
+
+    ws3.column_dimensions['B'].width = 14
+    ws3.column_dimensions['C'].width = 14
+    for i in range(len(months)):
+        ws3.column_dimensions[get_column_letter(4+i)].width = 11
+    tail_start = 4 + len(months)
+    for ci, w in zip(range(tail_start, tail_start+4), [11,11,16,16]):
         ws3.column_dimensions[get_column_letter(ci)].width = w
+    ws3.freeze_panes = 'C5'
 
     conn.close()
     buf = io.BytesIO(); wb.save(buf); buf.seek(0)
