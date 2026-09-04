@@ -498,6 +498,10 @@ td.center{text-align:center}
           style="padding:10px 22px;font-size:13px;font-weight:600;border:none;background:none;cursor:pointer;color:var(--ink-300);border-bottom:2.5px solid transparent;margin-bottom:-1.5px;font-family:var(--fb)">
           최근 흐름
         </button>
+        <button id="tab-event" onclick="switchSalesTab('event')"
+          style="padding:10px 22px;font-size:13px;font-weight:600;border:none;background:none;cursor:pointer;color:var(--ink-300);border-bottom:2.5px solid transparent;margin-bottom:-1.5px;font-family:var(--fb)">
+          행사별 실적
+        </button>
       </div>
 
       <!-- 매장 필터 -->
@@ -602,6 +606,24 @@ td.center{text-align:center}
           <span style="font-size:12px;color:var(--t-300)">월별 매출 추이 기반 · 최근 데이터 순 정렬</span>
         </div>
         <div id="trend-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(340px,1fr));gap:14px"></div>
+      </div>
+
+      <!-- 행사별 실적 탭 -->
+      <div id="sales-event-view" style="display:none">
+        <div style="background:var(--paper);border:1px solid var(--border);border-radius:12px;padding:16px;margin-bottom:16px">
+          <div style="font-size:12.5px;font-weight:700;color:var(--t-700);margin-bottom:8px">🔍 특이사항(비고) 키워드로 행사 실적 검색</div>
+          <div style="font-size:11px;color:var(--t-400);margin-bottom:10px">기초 판매현황의 특이사항(비고)란에 적힌 내용으로 검색해요. 예: "브랜드위크", "레드닷" — 해당 키워드가 들어간 판매 건만 모아 브랜드별·매장별로 정리해드려요.</div>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+            <input class="fi" type="text" id="event-keyword" placeholder="예: 브랜드위크" style="width:200px" onkeydown="if(event.key==='Enter')loadEventSales()">
+            <span style="font-size:11px;color:var(--t-400)">기간</span>
+            <input class="fi" type="date" id="event-date-from">
+            <span style="color:var(--t-300)">~</span>
+            <input class="fi" type="date" id="event-date-to">
+            <button class="btn btn-dark btn-sm" onclick="loadEventSales()">검색</button>
+            <button class="btn btn-ghost btn-sm" onclick="downloadEventReport()">📊 보고서 다운로드</button>
+          </div>
+        </div>
+        <div id="event-sales-result"></div>
       </div>
     </div>
 
@@ -1184,6 +1206,44 @@ td.center{text-align:center}
             <div><div class="flbl">비고</div><input class="fi" id="gm-note"></div>
           </div>
           <button class="btn btn-dark" style="width:100%" onclick="saveGiftManual()">저장</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="gift-edit-modal" style="display:none;position:fixed;inset:0;background:rgba(15,23,42,.5);z-index:1000;align-items:center;justify-content:center;padding:20px">
+      <div style="background:var(--paper);border-radius:14px;width:480px;max-width:100%;max-height:85vh;overflow-y:auto;box-shadow:0 20px 50px rgba(0,0,0,.3)">
+        <div style="padding:16px 20px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center">
+          <div style="font-size:14px;font-weight:800">사은품 사용내역 수정</div>
+          <button onclick="document.getElementById('gift-edit-modal').style.display='none'" style="background:none;border:none;font-size:16px;color:var(--t-400);cursor:pointer">✕</button>
+        </div>
+        <div style="padding:16px 20px">
+          <input type="hidden" id="ge-id">
+          <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin-bottom:10px">
+            <div><div class="flbl">요청일자</div><input class="fi" type="date" id="ge-date"></div>
+            <div><div class="flbl">발송일자</div><input class="fi" type="date" id="ge-ship-date"></div>
+            <div><div class="flbl">브랜드</div>
+              <select class="fi" id="ge-brand">
+                <option value="">선택</option>
+                <option>줄즈</option><option>레카로</option><option>ABC디자인</option>
+                <option>원더폴드</option><option>카오스</option><option>엔픽스</option><option>타프토이즈</option>
+              </select>
+            </div>
+          </div>
+          <div class="flbl">매장명</div>
+          <input class="fi" id="ge-store" style="margin-bottom:10px">
+          <div style="display:grid;grid-template-columns:2fr 1fr;gap:10px;margin-bottom:10px">
+            <div><div class="flbl">사은품 품목</div><input class="fi" id="ge-item"></div>
+            <div><div class="flbl">수량</div><input class="fi" type="number" id="ge-qty" min="1"></div>
+          </div>
+          <div class="flbl">소비자가(단가)</div>
+          <input class="fi" type="number" id="ge-price" style="margin-bottom:10px">
+          <div class="flbl">사용 사유 / 행사내용</div>
+          <input class="fi" id="ge-reason" style="margin-bottom:10px">
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px">
+            <div><div class="flbl">영업담당</div><input class="fi" id="ge-manager"></div>
+            <div><div class="flbl">비고</div><input class="fi" id="ge-note"></div>
+          </div>
+          <button class="btn btn-dark" style="width:100%" onclick="saveGiftEdit()">수정 저장</button>
         </div>
       </div>
     </div>
@@ -2457,10 +2517,13 @@ const GIFT_MATCH_STATUS_COLOR = {
   '일치': '#16A34A', '수량상이': '#D97706', '누락': '#DC2626', '미확인': '#9CA3AF',
 };
 
+let giftUsageRowsCache = {};
 async function loadGiftUsageList(){
   const month = document.getElementById('gift-month').value;
   const q = month ? `?month=${month}` : '';
   const rows = await api(`/api/gift/usage/list${q}`) || [];
+  giftUsageRowsCache = {};
+  rows.forEach(r => giftUsageRowsCache[r.id] = r);
   const tbody = document.getElementById('gift-usage-tbody');
   document.getElementById('gift-usage-select-all').checked = false;
   updateGiftUsageSelection();
@@ -2490,6 +2553,7 @@ async function loadGiftUsageList(){
         <span style="font-size:10px;font-weight:700;color:${statusColor};background:${statusColor}15;padding:2px 8px;border-radius:5px">${r.match_status}</span>
       </td>
       <td style="padding:8px 10px;text-align:center;border-bottom:1px solid var(--border)">
+        <button onclick="openGiftEditModal(${r.id})" style="background:none;border:none;color:var(--blue,#2563EB);cursor:pointer;font-size:11px;margin-right:6px">수정</button>
         <button onclick="deleteGiftUsage(${r.id})" style="background:none;border:none;color:var(--red);cursor:pointer;font-size:11px">삭제</button>
       </td>
     </tr>`;
@@ -2591,6 +2655,48 @@ async function saveGiftManual(){
     toast('저장됐어요');
     document.getElementById('gift-manual-modal').style.display = 'none';
     loadGiftUsageList();
+  }
+}
+
+function openGiftEditModal(id){
+  const r = giftUsageRowsCache[id];
+  if(!r){ toast('데이터를 찾을 수 없어요', false); return; }
+  document.getElementById('ge-id').value = r.id;
+  document.getElementById('ge-date').value = r.usage_date || '';
+  document.getElementById('ge-ship-date').value = r.ship_date || '';
+  document.getElementById('ge-brand').value = r.brand || '';
+  document.getElementById('ge-store').value = r.store_name || '';
+  document.getElementById('ge-item').value = r.item_name || '';
+  document.getElementById('ge-qty').value = r.quantity || 1;
+  document.getElementById('ge-price').value = r.unit_price || 0;
+  document.getElementById('ge-reason').value = r.reason || '';
+  document.getElementById('ge-manager').value = r.manager || '';
+  document.getElementById('ge-note').value = r.note || '';
+  document.getElementById('gift-edit-modal').style.display = 'flex';
+}
+
+async function saveGiftEdit(){
+  const id = document.getElementById('ge-id').value;
+  const body = {
+    usage_date: document.getElementById('ge-date').value,
+    ship_date: document.getElementById('ge-ship-date').value,
+    store_name: document.getElementById('ge-store').value.trim(),
+    brand: document.getElementById('ge-brand').value,
+    item_name: document.getElementById('ge-item').value.trim(),
+    quantity: parseInt(document.getElementById('ge-qty').value) || 1,
+    unit_price: parseInt(document.getElementById('ge-price').value) || 0,
+    reason: document.getElementById('ge-reason').value.trim(),
+    manager: document.getElementById('ge-manager').value.trim(),
+    note: document.getElementById('ge-note').value.trim(),
+  };
+  if(!body.usage_date || !body.store_name){ toast('요청일자와 매장명은 필수예요', false); return; }
+  const r = await api(`/api/gift/usage/${id}`, {method:'PUT', body});
+  if(r?.ok){
+    toast('수정됐어요');
+    document.getElementById('gift-edit-modal').style.display = 'none';
+    loadGiftUsageList();
+  } else {
+    toast('수정에 실패했습니다', false);
   }
 }
 
@@ -4789,7 +4895,7 @@ let salesTab = 'monthly';
 
 function switchSalesTab(tab){
   salesTab = tab;
-  ['monthly','weekly','ranking','trend'].forEach(t=>{
+  ['monthly','weekly','ranking','trend','event'].forEach(t=>{
     const btn=document.getElementById(`tab-${t}`);
     if(!btn) return;
     btn.style.color = t===tab?'var(--p)':'var(--t-300)';
@@ -4799,11 +4905,69 @@ function switchSalesTab(tab){
   document.getElementById('sales-weekly-view').style.display =tab==='weekly' ?'block':'none';
   document.getElementById('sales-ranking-view').style.display=tab==='ranking'?'block':'none';
   document.getElementById('sales-trend-view').style.display=tab==='trend'?'block':'none';
+  document.getElementById('sales-event-view').style.display=tab==='event'?'block':'none';
   const drBar = document.getElementById('weekly-daterange-bar');
   if(drBar) drBar.style.display = tab==='weekly' ? 'flex' : 'none';
   if(tab==='trend') loadTrendData();
   else if(tab==='ranking') renderRanking();
+  else if(tab==='event') { /* 사용자가 검색을 눌러야 조회됨 */ }
   else loadSalesPage();
+}
+
+async function loadEventSales(){
+  const keyword = document.getElementById('event-keyword').value.trim();
+  const dateFrom = document.getElementById('event-date-from').value;
+  const dateTo = document.getElementById('event-date-to').value;
+  const el = document.getElementById('event-sales-result');
+  if(!keyword){ toast('검색할 키워드를 입력해주세요', false); return; }
+  el.innerHTML = `<div style="text-align:center;padding:30px;color:var(--t-300);font-size:12px">검색 중...</div>`;
+  const params = new URLSearchParams({keyword});
+  if(dateFrom) params.set('date_from', dateFrom);
+  if(dateTo) params.set('date_to', dateTo);
+  const r = await api(`/api/sales/event-search?${params}`);
+  if(!r?.ok){
+    el.innerHTML = `<div style="text-align:center;padding:30px;color:var(--t-300);font-size:12px">${r?.msg||'검색에 실패했습니다'}</div>`;
+    return;
+  }
+  const s = r.summary;
+  if(!s.row_count){
+    el.innerHTML = `<div style="text-align:center;padding:40px;color:var(--t-300);font-size:12px">"${keyword}"가 포함된 특이사항(비고)의 판매 건이 없어요</div>`;
+    return;
+  }
+  el.innerHTML = `
+    <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:18px">
+      <div style="background:var(--paper);border:1px solid var(--border);border-radius:12px;padding:14px"><div style="font-size:10.5px;color:var(--t-400);margin-bottom:4px">총 매출액</div><div style="font-size:18px;font-weight:800;color:var(--t-900)">${s.total_amount.toLocaleString()}원</div></div>
+      <div style="background:var(--paper);border:1px solid var(--border);border-radius:12px;padding:14px"><div style="font-size:10.5px;color:var(--t-400);margin-bottom:4px">총 판매수량</div><div style="font-size:18px;font-weight:800;color:var(--t-900)">${s.total_qty.toLocaleString()}개</div></div>
+      <div style="background:var(--paper);border:1px solid var(--border);border-radius:12px;padding:14px"><div style="font-size:10.5px;color:var(--t-400);margin-bottom:4px">참여 매장</div><div style="font-size:18px;font-weight:800;color:var(--t-900)">${s.store_count}개</div></div>
+      <div style="background:var(--paper);border:1px solid var(--border);border-radius:12px;padding:14px"><div style="font-size:10.5px;color:var(--t-400);margin-bottom:4px">판매 건수</div><div style="font-size:18px;font-weight:800;color:var(--t-900)">${s.row_count}건</div></div>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
+      <div style="background:var(--paper);border:1px solid var(--border);border-radius:12px;padding:16px">
+        <div style="font-size:12.5px;font-weight:700;color:var(--t-700);margin-bottom:10px">브랜드별 실적</div>
+        <table style="width:100%;border-collapse:collapse;font-size:11.5px">
+          <thead><tr style="background:var(--bg)"><th style="padding:6px 8px;text-align:left;font-size:10px;color:var(--t-500)">브랜드</th><th style="padding:6px 8px;text-align:right;font-size:10px;color:var(--t-500)">수량</th><th style="padding:6px 8px;text-align:right;font-size:10px;color:var(--t-500)">금액</th></tr></thead>
+          <tbody>${r.brand_breakdown.map(b=>`<tr><td style="padding:6px 8px;border-bottom:1px solid var(--border);font-weight:600">${b.brand}</td><td style="padding:6px 8px;text-align:right;border-bottom:1px solid var(--border)">${b.qty.toLocaleString()}</td><td style="padding:6px 8px;text-align:right;border-bottom:1px solid var(--border)">${b.amount.toLocaleString()}</td></tr>`).join('')}</tbody>
+        </table>
+      </div>
+      <div style="background:var(--paper);border:1px solid var(--border);border-radius:12px;padding:16px">
+        <div style="font-size:12.5px;font-weight:700;color:var(--t-700);margin-bottom:10px">매장별 실적 (상위 10개)</div>
+        <table style="width:100%;border-collapse:collapse;font-size:11.5px">
+          <thead><tr style="background:var(--bg)"><th style="padding:6px 8px;text-align:left;font-size:10px;color:var(--t-500)">매장명</th><th style="padding:6px 8px;text-align:right;font-size:10px;color:var(--t-500)">수량</th><th style="padding:6px 8px;text-align:right;font-size:10px;color:var(--t-500)">금액</th></tr></thead>
+          <tbody>${r.store_breakdown.slice(0,10).map(st=>`<tr><td style="padding:6px 8px;border-bottom:1px solid var(--border);font-weight:600">${st.store}</td><td style="padding:6px 8px;text-align:right;border-bottom:1px solid var(--border)">${st.qty.toLocaleString()}</td><td style="padding:6px 8px;text-align:right;border-bottom:1px solid var(--border)">${st.amount.toLocaleString()}</td></tr>`).join('')}</tbody>
+        </table>
+      </div>
+    </div>`;
+}
+
+function downloadEventReport(){
+  const keyword = document.getElementById('event-keyword').value.trim();
+  const dateFrom = document.getElementById('event-date-from').value;
+  const dateTo = document.getElementById('event-date-to').value;
+  if(!keyword){ toast('검색할 키워드를 먼저 입력해주세요', false); return; }
+  const params = new URLSearchParams({keyword});
+  if(dateFrom) params.set('date_from', dateFrom);
+  if(dateTo) params.set('date_to', dateTo);
+  window.open(`/api/export/xlsx/event-report?${params}`, '_blank');
 }
 
 // ── 매장명 표시명 변환 ─────────────────────────────

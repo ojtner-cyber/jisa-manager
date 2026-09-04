@@ -3357,6 +3357,183 @@ def export_xlsx_monthly():
     fname=f"오프라인_브랜드별정리_{year}{'_'+month+'월' if month else ''}.xlsx"
     return send_file(buf,mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
                      as_attachment=True,download_name=fname)
+
+
+@app.route("/api/sales/event-search")
+@login_required
+def api_sales_event_search():
+    """행사별 판매실적 — 기초데이터의 특이사항(비고)란에 특정 키워드가 포함된 건만 모아서 집계.
+    예: '브랜드위크'로 검색하면 비고에 '브랜드위크'가 들어간 판매건만 모아 브랜드별/매장별로 정리."""
+    keyword = request.args.get('keyword', '').strip()
+    date_from = request.args.get('date_from', '').strip()
+    date_to = request.args.get('date_to', '').strip()
+    if not keyword:
+        return jsonify({'ok': False, 'msg': '검색할 키워드(비고 내용)를 입력해주세요'}), 400
+
+    conn = get_db()
+    q = "SELECT sale_date, real_seller, item_name, item_group, quantity, total, note, channel FROM sales_data WHERE note LIKE ?"
+    params = [f"%{keyword}%"]
+    if date_from: q += " AND sale_date >= ?"; params.append(date_from)
+    if date_to: q += " AND sale_date <= ?"; params.append(date_to)
+    q += " ORDER BY sale_date"
+    rows = [dict(r) for r in conn.execute(q, params).fetchall()]
+    conn.close()
+
+    total_qty = sum(r['quantity'] or 0 for r in rows)
+    total_amt = sum(r['total'] or 0 for r in rows)
+    stores = set(r['real_seller'] for r in rows)
+
+    brand_map = {}
+    for r in rows:
+        b = remap_group(r.get('item_group') or '', r.get('item_name') or '') or '(미분류)'
+        g = brand_map.setdefault(b, {'brand': b, 'qty': 0, 'amount': 0})
+        g['qty'] += r['quantity'] or 0
+        g['amount'] += r['total'] or 0
+    brand_breakdown = sorted(brand_map.values(), key=lambda x: -x['amount'])
+
+    store_map = {}
+    for r in rows:
+        s = r['real_seller'] or '(미상)'
+        g = store_map.setdefault(s, {'store': s, 'qty': 0, 'amount': 0})
+        g['qty'] += r['quantity'] or 0
+        g['amount'] += r['total'] or 0
+    store_breakdown = sorted(store_map.values(), key=lambda x: -x['amount'])
+
+    return jsonify({
+        'ok': True, 'keyword': keyword, 'date_from': date_from, 'date_to': date_to,
+        'summary': {'total_qty': total_qty, 'total_amount': total_amt, 'store_count': len(stores), 'row_count': len(rows)},
+        'brand_breakdown': brand_breakdown, 'store_breakdown': store_breakdown, 'rows': rows,
+    })
+
+
+@app.route("/api/export/xlsx/event-report")
+@login_required
+def export_xlsx_event_report():
+    """행사별 판매실적 보고서 — 대표님 보고용으로 바로 쓸 수 있는 요약 리포트 엑셀"""
+    from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
+    from openpyxl.utils import get_column_letter
+    keyword = request.args.get('keyword', '').strip()
+    date_from = request.args.get('date_from', '').strip()
+    date_to = request.args.get('date_to', '').strip()
+    if not keyword:
+        return jsonify({'ok': False, 'msg': '검색할 키워드를 입력해주세요'}), 400
+
+    conn = get_db()
+    q = "SELECT sale_date, real_seller, item_name, item_group, quantity, unit_price, total, note, channel FROM sales_data WHERE note LIKE ?"
+    params = [f"%{keyword}%"]
+    if date_from: q += " AND sale_date >= ?"; params.append(date_from)
+    if date_to: q += " AND sale_date <= ?"; params.append(date_to)
+    q += " ORDER BY sale_date, real_seller"
+    rows = [dict(r) for r in conn.execute(q, params).fetchall()]
+    conn.close()
+
+    total_qty = sum(r['quantity'] or 0 for r in rows)
+    total_amt = sum(r['total'] or 0 for r in rows)
+    stores = sorted(set(r['real_seller'] for r in rows))
+
+    brand_map = {}
+    for r in rows:
+        b = remap_group(r.get('item_group') or '', r.get('item_name') or '') or '(미분류)'
+        g = brand_map.setdefault(b, {'brand': b, 'qty': 0, 'amount': 0})
+        g['qty'] += r['quantity'] or 0; g['amount'] += r['total'] or 0
+    brand_rows = sorted(brand_map.values(), key=lambda x: -x['amount'])
+
+    store_map = {}
+    for r in rows:
+        s = r['real_seller'] or '(미상)'
+        g = store_map.setdefault(s, {'store': s, 'qty': 0, 'amount': 0})
+        g['qty'] += r['quantity'] or 0; g['amount'] += r['total'] or 0
+    store_rows = sorted(store_map.values(), key=lambda x: -x['amount'])
+
+    FNAME='맑은 고딕'
+    def mf(hexv): return PatternFill('solid', fgColor=hexv)
+    NAVY='1F2937'; LGRAY='F3F4F6'; HGRAY='E5E7EB'; BORDERC='D1D5DB'
+    thin=Side(style='thin',color=BORDERC); bdr=Border(left=thin,right=thin,top=thin,bottom=thin)
+    ctr=Alignment(horizontal='center',vertical='center'); left_a=Alignment(horizontal='left',vertical='center')
+    right_a=Alignment(horizontal='right',vertical='center')
+
+    wb = openpyxl.Workbook()
+    ws = wb.active; ws.title = '보고서'
+    ws.column_dimensions['A'].width = 2
+
+    period_label = f"{date_from or '전체'} ~ {date_to or '전체'}"
+    ws.merge_cells('B2:H2')
+    c = ws.cell(row=2, column=2, value=f"『 {keyword} 』 행사 판매실적 보고서")
+    c.font = Font(bold=True, size=16, name=FNAME, color='FFFFFF'); c.fill = mf(NAVY); c.alignment = ctr
+    ws.row_dimensions[2].height = 32
+    ws.merge_cells('B3:H3')
+    c = ws.cell(row=3, column=2, value=f"기간: {period_label}   ·   작성일: {datetime.now().strftime('%Y-%m-%d')}")
+    c.font = Font(size=10, name=FNAME, color='6B7280'); c.alignment = ctr
+    ws.row_dimensions[3].height = 20
+
+    # KPI 카드 (4개)
+    kpis = [('총 매출액', f"{total_amt:,}원"), ('총 판매수량', f"{total_qty:,}개"),
+            ('참여 매장', f"{len(stores)}개"), ('판매 건수', f"{len(rows)}건")]
+    for i, (label, val) in enumerate(kpis):
+        col = 2 + i*2
+        ws.merge_cells(start_row=5, start_column=col, end_row=5, end_column=col+1)
+        c = ws.cell(row=5, column=col, value=label); c.font=Font(size=9,name=FNAME,color='6B7280'); c.fill=mf(LGRAY); c.alignment=ctr
+        ws.merge_cells(start_row=6, start_column=col, end_row=6, end_column=col+1)
+        c = ws.cell(row=6, column=col, value=val); c.font=Font(bold=True,size=13,name=FNAME,color=NAVY); c.fill=mf(LGRAY); c.alignment=ctr
+    ws.row_dimensions[5].height=18; ws.row_dimensions[6].height=26
+
+    ri = 9
+    ws.cell(row=ri, column=2, value="브랜드별 실적").font = Font(bold=True, size=12, name=FNAME, color=NAVY)
+    ri += 1
+    for ci, h in enumerate(['브랜드','판매수량','판매금액','비중'], 2):
+        c = ws.cell(row=ri, column=ci, value=h); c.font=Font(bold=True,size=9,name=FNAME); c.fill=mf(HGRAY); c.border=bdr; c.alignment=ctr
+    ri += 1
+    for b in brand_rows:
+        pct = round(b['amount']/total_amt*100, 1) if total_amt else 0
+        vals = [b['brand'], b['qty'], b['amount'], f"{pct}%"]
+        for ci, v in enumerate(vals, 2):
+            c = ws.cell(row=ri, column=ci, value=v); c.font=Font(size=9,name=FNAME); c.border=bdr
+            c.alignment = left_a if ci==2 else right_a if ci<=4 else ctr
+            if ci in (3,4): c.number_format='#,##0'
+        ri += 1
+    ri += 1
+
+    ws.cell(row=ri, column=2, value="매장별 실적").font = Font(bold=True, size=12, name=FNAME, color=NAVY)
+    ri += 1
+    for ci, h in enumerate(['매장명','판매수량','판매금액','비중'], 2):
+        c = ws.cell(row=ri, column=ci, value=h); c.font=Font(bold=True,size=9,name=FNAME); c.fill=mf(HGRAY); c.border=bdr; c.alignment=ctr
+    ri += 1
+    for s in store_rows:
+        pct = round(s['amount']/total_amt*100, 1) if total_amt else 0
+        vals = [s['store'], s['qty'], s['amount'], f"{pct}%"]
+        for ci, v in enumerate(vals, 2):
+            c = ws.cell(row=ri, column=ci, value=v); c.font=Font(size=9,name=FNAME); c.border=bdr
+            c.alignment = left_a if ci==2 else right_a if ci<=4 else ctr
+            if ci in (3,4): c.number_format='#,##0'
+        ri += 1
+
+    for ci, w in zip(range(2,6), [24,13,15,10]):
+        ws.column_dimensions[get_column_letter(ci)].width = w
+
+    # 기초데이터(원본 목록) 시트
+    ws2 = wb.create_sheet('기초데이터')
+    ws2.column_dimensions['A'].width = 2
+    hdrs2 = ['일자','매장명','품명','품목그룹','수량','단가','합계','특이사항(비고)','채널']
+    for ci, h in enumerate(hdrs2, 2):
+        c = ws2.cell(row=2, column=ci, value=h); c.font=Font(bold=True,size=9,name=FNAME); c.fill=mf(HGRAY); c.border=bdr; c.alignment=ctr
+    ri2 = 3
+    for r in rows:
+        vals = [r['sale_date'], r['real_seller'], r['item_name'], r['item_group'], r['quantity'], r['unit_price'], r['total'], r['note'], r['channel']]
+        for ci, v in enumerate(vals, 2):
+            c = ws2.cell(row=ri2, column=ci, value=v); c.font=Font(size=9,name=FNAME); c.border=bdr
+            c.alignment = right_a if ci in (6,7,8) else left_a if ci in (3,4,9,10) else ctr
+            if ci in (7,8): c.number_format='#,##0'
+        ri2 += 1
+    for ci, w in zip(range(2,11), [11,20,22,14,8,10,12,18,9]):
+        ws2.column_dimensions[get_column_letter(ci)].width = w
+
+    wb._sheets = [wb['보고서'], wb['기초데이터']]
+    buf = io.BytesIO(); wb.save(buf); buf.seek(0)
+    fname = f"{keyword}_행사실적보고서_{datetime.now().strftime('%Y%m%d')}.xlsx"
+    return send_file(buf, mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        as_attachment=True, download_name=fname)
+
+
 @app.route("/api/export/xlsx/weekly")
 @login_required
 def export_xlsx_weekly():
@@ -9191,6 +9368,9 @@ def api_gift_usage_update(rid):
          d.get('item_name',''), qty, unit_price, consumer_amount, cost_amount, d.get('reason',''),
          real_seller, d.get('manager',''), d.get('note',''), d.get('usage_date','')[:7],
          (d.get('ship_date') or '').strip(), rid))
+    conn.commit()
+    # 매장/브랜드/수량이 바뀌었을 수 있으므로 대사 상태 재계산
+    _gift_auto_match(conn)
     conn.commit(); conn.close()
     return jsonify({'ok': True})
 
@@ -9526,17 +9706,21 @@ def api_gift_check_list():
 @app.route("/api/gift/check/summary")
 @login_required
 def api_gift_check_summary():
-    """브랜드별 수량 대사 — 이카운트 수량 vs 대장 수량"""
+    """브랜드별 수량 대사 — 이카운트 수량(이카운트 업로드분) vs 대장 수량(사용내역 건별 등록분)"""
     month = request.args.get('month', '').strip()
     conn = get_db()
     eq = "SELECT brand, SUM(quantity) FROM gift_ecount_record WHERE 1=1"
     uq = "SELECT brand, SUM(quantity) FROM gift_usage_record WHERE 1=1"
-    params = []
+    e_params = []
     if month:
-        eq += " AND ecount_date LIKE ?"; uq += " AND usage_month=?"
-        params = [f"{month}%"]
-    e_totals = {r[0] or '(미분류)': r[1] or 0 for r in conn.execute(eq, params).fetchall()}
-    u_totals = {r[0] or '(미분류)': r[1] or 0 for r in conn.execute(uq, [month] if month else []).fetchall()}
+        eq += " AND ecount_date LIKE ?"; e_params.append(f"{month}%")
+    eq += " GROUP BY brand"
+    u_params = []
+    if month:
+        uq += " AND usage_month=?"; u_params.append(month)
+    uq += " GROUP BY brand"
+    e_totals = {r[0] or '(미분류)': r[1] or 0 for r in conn.execute(eq, e_params).fetchall()}
+    u_totals = {r[0] or '(미분류)': r[1] or 0 for r in conn.execute(uq, u_params).fetchall()}
     conn.close()
 
     all_brands = sorted(set(e_totals.keys()) | set(u_totals.keys()))
@@ -9718,6 +9902,7 @@ def api_export_gift_xlsx():
     uq = "SELECT brand, SUM(quantity) FROM gift_usage_record WHERE 1=1"
     ep, up = [], []
     if month: eq += " AND ecount_date LIKE ?"; ep=[f"{month}%"]; uq += " AND usage_month=?"; up=[month]
+    eq += " GROUP BY brand"; uq += " GROUP BY brand"
     e_totals = {r[0] or '(미분류)': r[1] or 0 for r in conn.execute(eq, ep).fetchall()}
     u_totals = {r[0] or '(미분류)': r[1] or 0 for r in conn.execute(uq, up).fetchall()}
     all_brands = sorted(set(e_totals) | set(u_totals))
