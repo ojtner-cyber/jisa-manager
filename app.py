@@ -2762,6 +2762,33 @@ def make_xlsx(headers, rows_data, sheet_name="데이터"):
     buf = io.BytesIO(); wb.save(buf); buf.seek(0)
     return buf
 
+@app.route("/api/sales/raw-file-status")
+@login_required
+def api_sales_raw_file_status():
+    """월별/주별 실적 엑셀 다운로드 시 '기초데이터'가 원본 그대로 나오는지 확인 —
+    실제 거래가 있는 월인데 원본 파일(sales_upload_file)이 없으면 요약본으로 대체되므로,
+    어느 달을 판매현황 탭에서 다시 업로드해야 하는지 안내한다."""
+    year = request.args.get('year', str(datetime.now().year))
+    conn = get_db()
+    data_months = sorted(set(r[0][:7] for r in conn.execute(
+        "SELECT sale_date FROM sales_data WHERE sale_date LIKE ?", (f"{year}%",)).fetchall() if r[0]))
+    file_rows = conn.execute("SELECT months FROM sales_upload_file WHERE year=?", (int(year),)).fetchall()
+    conn.close()
+
+    covered = set()
+    for (months_str,) in file_rows:
+        for m in (months_str or '').split(','):
+            m = m.strip()
+            if m: covered.add(m)
+
+    result = []
+    for mo in data_months:
+        result.append({'month': mo, 'has_raw_file': mo in covered})
+    missing = [r['month'] for r in result if not r['has_raw_file']]
+    return jsonify({'ok': True, 'year': year, 'months': result, 'missing_months': missing,
+                     'all_covered': len(missing) == 0})
+
+
 @app.route("/api/export/xlsx/monthly")
 @login_required
 def export_xlsx_monthly():
@@ -3409,7 +3436,9 @@ def api_sales_event_search():
 @app.route("/api/export/xlsx/event-report")
 @login_required
 def export_xlsx_event_report():
-    """행사별 판매실적 보고서 — 대표님 보고용으로 바로 쓸 수 있는 요약 리포트 엑셀"""
+    """행사별 판매실적 보고서 — 대표님 보고용으로 바로 쓸 수 있는 요약 리포트 엑셀.
+    수정1: 기초데이터도 판매실적처럼 실제 업로드했던 원본 엑셀 파일을 그대로 복원해서 함께 담는다
+    (검색된 건이 걸치는 월의 원본 파일을 찾아 복원 — 파일이 없는 달은 요약 목록으로 대체)"""
     from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
     from openpyxl.utils import get_column_letter
     keyword = request.args.get('keyword', '').strip()
@@ -3425,7 +3454,6 @@ def export_xlsx_event_report():
     if date_to: q += " AND sale_date <= ?"; params.append(date_to)
     q += " ORDER BY sale_date, real_seller"
     rows = [dict(r) for r in conn.execute(q, params).fetchall()]
-    conn.close()
 
     total_qty = sum(r['quantity'] or 0 for r in rows)
     total_amt = sum(r['total'] or 0 for r in rows)
@@ -3510,8 +3538,8 @@ def export_xlsx_event_report():
     for ci, w in zip(range(2,6), [24,13,15,10]):
         ws.column_dimensions[get_column_letter(ci)].width = w
 
-    # 기초데이터(원본 목록) 시트
-    ws2 = wb.create_sheet('기초데이터')
+    # 검색결과(필터링) 시트 — "키워드"가 포함된 건만 추린 목록
+    ws2 = wb.create_sheet('검색결과(필터링)')
     ws2.column_dimensions['A'].width = 2
     hdrs2 = ['일자','매장명','품명','품목그룹','수량','단가','합계','특이사항(비고)','채널']
     for ci, h in enumerate(hdrs2, 2):
@@ -3527,7 +3555,36 @@ def export_xlsx_event_report():
     for ci, w in zip(range(2,11), [11,20,22,14,8,10,12,18,9]):
         ws2.column_dimensions[get_column_letter(ci)].width = w
 
-    wb._sheets = [wb['보고서'], wb['기초데이터']]
+    # 수정1: 판매실적처럼 실제 업로드했던 원본 엑셀 파일을 그대로 복원해서 "기초데이터" 시트로 추가
+    # (검색된 건들이 걸치는 연-월의 원본 파일을 찾아 복원 — 최대 3개까지)
+    covered_ym = sorted(set(r['sale_date'][:7] for r in rows if r.get('sale_date')))
+    raw_sheet_names = []
+    if covered_ym:
+        placeholders = ' OR '.join(['months LIKE ?'] * len(covered_ym))
+        raw_files = conn.execute(
+            f"SELECT filename, file_b64, months FROM sales_upload_file WHERE {placeholders}",
+            [f"%{ym}%" for ym in covered_ym]).fetchall()
+        if len(raw_files) <= 3:
+            import base64 as _b64_ev
+            for fname_orig, fb64, months_str in raw_files:
+                try:
+                    src_bytes = _b64_ev.b64decode(fb64)
+                    src_wb = _load_workbook_resilient(src_bytes)
+                    if src_wb is None: continue
+                    for src_sheet_name in src_wb.sheetnames:
+                        src_ws = src_wb[src_sheet_name]
+                        tab_name = f"기초_{months_str.split(',')[0][5:]}월_{src_sheet_name}"[:31]
+                        base_tab = tab_name; suf = 1
+                        while tab_name in raw_sheet_names:
+                            tab_name = f"{base_tab[:28]}_{suf}"; suf += 1
+                        ws_raw = wb.create_sheet(tab_name)
+                        _copy_sheet_with_style(src_ws, ws_raw)
+                        raw_sheet_names.append(tab_name)
+                except Exception:
+                    continue
+    conn.close()
+
+    wb._sheets = [wb['보고서'], wb['검색결과(필터링)']] + [wb[n] for n in raw_sheet_names if n in wb.sheetnames]
     buf = io.BytesIO(); wb.save(buf); buf.seek(0)
     fname = f"{keyword}_행사실적보고서_{datetime.now().strftime('%Y%m%d')}.xlsx"
     return send_file(buf, mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
