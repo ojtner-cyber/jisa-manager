@@ -3450,8 +3450,8 @@ def api_sales_event_search():
 @login_required
 def export_xlsx_event_report():
     """행사별 판매실적 보고서 — 대표님 보고용으로 바로 쓸 수 있는 요약 리포트 엑셀.
-    수정1: 기초데이터도 판매실적처럼 실제 업로드했던 원본 엑셀 파일을 그대로 복원해서 함께 담는다
-    (검색된 건이 걸치는 월의 원본 파일을 찾아 복원 — 파일이 없는 달은 요약 목록으로 대체)"""
+    참고 양식과 동일한 절제된 스타일(옅은 회색 헤더 + 전체 테두리, 강한 색상 없음)로 구성하고,
+    매장별 실적 옆에는 브랜드별로 실제 팔린 제품들을 서브컬럼으로 나눠 매장별 판매수량까지 보여준다."""
     from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
     from openpyxl.utils import get_column_letter
     keyword = request.args.get('keyword', '').strip()
@@ -3472,9 +3472,14 @@ def export_xlsx_event_report():
     total_amt = sum(r['total'] or 0 for r in rows)
     stores = sorted(set(r['real_seller'] for r in rows))
 
+    def _brand_of(r):
+        return remap_group(r.get('item_group') or '', r.get('item_name') or '') or '(미분류)'
+    def _prod_of(r):
+        return normalize_item_name(r.get('item_name') or '') or r.get('item_name') or '(품목미상)'
+
     brand_map = {}
     for r in rows:
-        b = remap_group(r.get('item_group') or '', r.get('item_name') or '') or '(미분류)'
+        b = _brand_of(r)
         g = brand_map.setdefault(b, {'brand': b, 'qty': 0, 'amount': 0})
         g['qty'] += r['quantity'] or 0; g['amount'] += r['total'] or 0
     brand_rows = sorted(brand_map.values(), key=lambda x: -x['amount'])
@@ -3488,16 +3493,28 @@ def export_xlsx_event_report():
 
     product_map = {}
     for r in rows:
-        b = remap_group(r.get('item_group') or '', r.get('item_name') or '') or '(미분류)'
-        pname = normalize_item_name(r.get('item_name') or '') or r.get('item_name') or '(품목미상)'
-        key = (b, pname)
-        g = product_map.setdefault(key, {'brand': b, 'item_name': pname, 'qty': 0, 'amount': 0, 'cnt': 0})
+        key = (_brand_of(r), _prod_of(r))
+        g = product_map.setdefault(key, {'brand': key[0], 'item_name': key[1], 'qty': 0, 'amount': 0, 'cnt': 0})
         g['qty'] += r['quantity'] or 0; g['amount'] += r['total'] or 0; g['cnt'] += 1
-    product_rows = sorted(product_map.values(), key=lambda x: (x['brand'], -x['amount']))
+    # 브랜드는 BRAND_ORDER 순, 브랜드 내 제품은 매출 많은 순
+    def _brand_sort_key(b):
+        return BRAND_ORDER.index(b) if b in BRAND_ORDER else 99
+    product_rows = sorted(product_map.values(), key=lambda x: (_brand_sort_key(x['brand']), -x['amount']))
+
+    # 매장 × 브랜드 × 제품 수량 매트릭스 (매장별 실적 옆에 붙일 표)
+    store_product_qty = {}
+    for r in rows:
+        key = (r['real_seller'] or '(미상)', _brand_of(r), _prod_of(r))
+        store_product_qty[key] = store_product_qty.get(key, 0) + (r['quantity'] or 0)
+    # 브랜드별로 실제 팔린 제품 목록(매출 많은 순) — 헤더 구성용
+    brand_products = {}
+    for p in product_rows:
+        brand_products.setdefault(p['brand'], []).append(p['item_name'])
+    ordered_brands = sorted(brand_products.keys(), key=_brand_sort_key)
 
     FNAME='맑은 고딕'
     def mf(hexv): return PatternFill('solid', fgColor=hexv)
-    NAVY='1F2937'; LGRAY='F3F4F6'; HGRAY='E5E7EB'; BORDERC='D1D5DB'
+    LGRAY='F2F2F2'; BORDERC='BFBFBF'
     thin=Side(style='thin',color=BORDERC); bdr=Border(left=thin,right=thin,top=thin,bottom=thin)
     ctr=Alignment(horizontal='center',vertical='center'); left_a=Alignment(horizontal='left',vertical='center')
     right_a=Alignment(horizontal='right',vertical='center')
@@ -3506,48 +3523,83 @@ def export_xlsx_event_report():
     ws = wb.active; ws.title = '보고서'
     ws.column_dimensions['A'].width = 2
 
+    last_col_main = 5  # B~E
+    last_col_matrix = 5 + sum(len(v) for v in brand_products.values())
+
     period_label = f"{date_from or '전체'} ~ {date_to or '전체'}"
-    ws.merge_cells('B2:H2')
-    c = ws.cell(row=2, column=2, value=f"『 {keyword} 』 행사 판매실적 보고서")
-    c.font = Font(bold=True, size=16, name=FNAME, color='FFFFFF'); c.fill = mf(NAVY); c.alignment = ctr
-    ws.row_dimensions[2].height = 32
-    ws.merge_cells('B3:H3')
-    c = ws.cell(row=3, column=2, value=f"기간: {period_label}   ·   작성일: {datetime.now().strftime('%Y-%m-%d')}")
-    c.font = Font(size=10, name=FNAME, color='6B7280'); c.alignment = ctr
-    ws.row_dimensions[3].height = 20
+    ws.merge_cells(start_row=2, start_column=2, end_row=2, end_column=last_col_main)
+    c = ws.cell(row=2, column=2, value=f" {keyword} 행사 판매실적 보고")
+    c.font = Font(bold=True, size=16, name=FNAME); c.alignment = ctr
+    for ci in range(2, last_col_main+1): ws.cell(row=2, column=ci).border = bdr
+    ws.row_dimensions[2].height = 26.25
 
-    # KPI 카드 (4개)
-    kpis = [('총 매출액', f"{total_amt:,}원"), ('총 판매수량', f"{total_qty:,}개"),
-            ('참여 매장', f"{len(stores)}개"), ('판매 건수', f"{len(rows)}건")]
+    ws.merge_cells(start_row=3, start_column=2, end_row=3, end_column=last_col_main)
+    c = ws.cell(row=3, column=2, value=f"기간: {period_label}")
+    c.font = Font(size=10, name=FNAME); c.alignment = left_a
+    for ci in range(2, last_col_main+1): ws.cell(row=3, column=ci).border = bdr
+
+    # KPI (라벨행 4, 값행 5 — 참고 양식과 동일하게 단일 컬럼씩 배치)
+    kpis = [('총 매출액', f"{total_amt:,}원"), ('참여 매장', f"{len(stores)}개"),
+            ('총 판매수량', f"{total_qty:,}개"), ('판매 건수', f"{len(rows)}건")]
     for i, (label, val) in enumerate(kpis):
-        col = 2 + i*2
-        ws.merge_cells(start_row=5, start_column=col, end_row=5, end_column=col+1)
-        c = ws.cell(row=5, column=col, value=label); c.font=Font(size=9,name=FNAME,color='6B7280'); c.fill=mf(LGRAY); c.alignment=ctr
-        ws.merge_cells(start_row=6, start_column=col, end_row=6, end_column=col+1)
-        c = ws.cell(row=6, column=col, value=val); c.font=Font(bold=True,size=13,name=FNAME,color=NAVY); c.fill=mf(LGRAY); c.alignment=ctr
-    ws.row_dimensions[5].height=18; ws.row_dimensions[6].height=26
+        ci = 2 + i
+        c = ws.cell(row=4, column=ci, value=label); c.font=Font(size=9,name=FNAME); c.fill=mf(LGRAY); c.border=bdr; c.alignment=left_a
+        c = ws.cell(row=5, column=ci, value=val); c.font=Font(size=11,name=FNAME); c.border=bdr; c.alignment=left_a
+    ws.row_dimensions[4].height=18
 
-    ri = 9
-    ws.cell(row=ri, column=2, value="브랜드별 실적").font = Font(bold=True, size=12, name=FNAME, color=NAVY)
+    ri = 7
+    ws.merge_cells(start_row=ri, start_column=2, end_row=ri, end_column=last_col_main)
+    c = ws.cell(row=ri, column=2, value="브랜드별 실적"); c.font = Font(bold=True, size=12, name=FNAME, color='1F2937'); c.alignment=left_a
+    for ci in range(2, last_col_main+1): ws.cell(row=ri, column=ci).border = bdr
+    ws.row_dimensions[ri].height = 17.25
     ri += 1
-    for ci, h in enumerate(['브랜드','판매수량','판매금액','비중'], 2):
-        c = ws.cell(row=ri, column=ci, value=h); c.font=Font(bold=True,size=9,name=FNAME); c.fill=mf(HGRAY); c.border=bdr; c.alignment=ctr
+    for ci, h in enumerate(['브랜드','제품명','판매수량','판매금액'], 2):
+        c = ws.cell(row=ri, column=ci, value=h); c.font=Font(bold=True,size=9,name=FNAME); c.fill=mf(LGRAY); c.border=bdr; c.alignment=ctr
     ri += 1
-    for b in brand_rows:
-        pct = round(b['amount']/total_amt*100, 1) if total_amt else 0
-        vals = [b['brand'], b['qty'], b['amount'], f"{pct}%"]
+    prev_b = None
+    for p in product_rows:
+        first = p['brand'] != prev_b; prev_b = p['brand']
+        vals = [p['brand'] if first else '', p['item_name'], p['qty'], p['amount']]
         for ci, v in enumerate(vals, 2):
-            c = ws.cell(row=ri, column=ci, value=v); c.font=Font(size=9,name=FNAME); c.border=bdr
-            c.alignment = left_a if ci==2 else right_a if ci<=4 else ctr
-            if ci in (3,4): c.number_format='#,##0'
+            c = ws.cell(row=ri, column=ci, value=v); c.font=Font(bold=(ci==2 and first),size=9,name=FNAME); c.border=bdr
+            c.alignment = left_a if ci<=3 else right_a
+            if ci in (4,5): c.number_format='#,##0'
         ri += 1
+    vals = ['합계', '', total_qty, total_amt]
+    for ci, v in enumerate(vals, 2):
+        c = ws.cell(row=ri, column=ci, value=v); c.font=Font(bold=True,size=9,name=FNAME); c.border=bdr
+        c.alignment = left_a if ci<=3 else right_a
+        if ci in (4,5): c.number_format='#,##0'
+    ri += 2
+
+    # 매장별 실적 (+ 옆으로 브랜드별 제품 판매수량 매트릭스)
+    store_start_row = ri
+    ws.merge_cells(start_row=ri, start_column=2, end_row=ri, end_column=5)
+    c = ws.cell(row=ri, column=2, value="매장별 실적"); c.font = Font(bold=True, size=12, name=FNAME, color='1F2937'); c.alignment=left_a
+    for ci in range(2, 6): ws.cell(row=ri, column=ci).border = bdr
+    # 브랜드 그룹 헤더 (제품 서브컬럼들을 병합해서 브랜드명 표시)
+    mci = 6
+    brand_col_start = {}
+    for b in ordered_brands:
+        prods = brand_products[b]
+        brand_col_start[b] = mci
+        end_ci = mci + len(prods) - 1
+        if end_ci > mci:
+            ws.merge_cells(start_row=ri, start_column=mci, end_row=ri, end_column=end_ci)
+        c = ws.cell(row=ri, column=mci, value=b); c.font=Font(bold=True,size=9,name=FNAME); c.alignment=ctr
+        for ci in range(mci, end_ci+1): ws.cell(row=ri, column=ci).border = bdr
+        mci = end_ci + 1
+    ws.row_dimensions[ri].height = 17.25
     ri += 1
 
-    ws.cell(row=ri, column=2, value="매장별 실적").font = Font(bold=True, size=12, name=FNAME, color=NAVY)
-    ri += 1
     for ci, h in enumerate(['매장명','판매수량','판매금액','비중'], 2):
-        c = ws.cell(row=ri, column=ci, value=h); c.font=Font(bold=True,size=9,name=FNAME); c.fill=mf(HGRAY); c.border=bdr; c.alignment=ctr
+        c = ws.cell(row=ri, column=ci, value=h); c.font=Font(bold=True,size=9,name=FNAME); c.fill=mf(LGRAY); c.border=bdr; c.alignment=ctr
+    for b in ordered_brands:
+        for j, prod in enumerate(brand_products[b]):
+            c = ws.cell(row=ri, column=brand_col_start[b]+j, value=prod)
+            c.font=Font(size=9,name=FNAME); c.border=bdr; c.alignment=left_a
     ri += 1
+
     for s in store_rows:
         pct = round(s['amount']/total_amt*100, 1) if total_amt else 0
         vals = [s['store'], s['qty'], s['amount'], f"{pct}%"]
@@ -3555,10 +3607,22 @@ def export_xlsx_event_report():
             c = ws.cell(row=ri, column=ci, value=v); c.font=Font(size=9,name=FNAME); c.border=bdr
             c.alignment = left_a if ci==2 else right_a if ci<=4 else ctr
             if ci in (3,4): c.number_format='#,##0'
+        for b in ordered_brands:
+            for j, prod in enumerate(brand_products[b]):
+                qty = store_product_qty.get((s['store'], b, prod), 0)
+                c = ws.cell(row=ri, column=brand_col_start[b]+j, value=(qty if qty else None))
+                c.font=Font(size=9,name=FNAME); c.border=bdr; c.alignment=ctr
         ri += 1
 
-    for ci, w in zip(range(2,6), [24,13,15,10]):
-        ws.column_dimensions[get_column_letter(ci)].width = w
+    ws.column_dimensions['B'].width = 24
+    ws.column_dimensions['C'].width = 23.75
+    ws.column_dimensions['D'].width = 15
+    ws.column_dimensions['E'].width = 10
+    for ci in range(6, last_col_matrix+1):
+        ws.column_dimensions[get_column_letter(ci)].width = 11
+    ws.freeze_panes = f'B{store_start_row+2}'
+
+    ws.freeze_panes = f'B{store_start_row+2}'
 
     # 브랜드별 제품상세 시트 — 브랜드 아래 어떤 제품이 얼마나 나갔는지 (월별/주별 실적의 '제품별 상세'와 동일 방식)
     ws_prod = wb.create_sheet('브랜드별 제품상세')
@@ -3568,7 +3632,7 @@ def export_xlsx_event_report():
     c.font = Font(bold=True, size=13, name=FNAME); c.alignment = left_a
     hdrs_p = ['브랜드','제품명','판매건수','판매수량','판매금액']
     for ci, h in enumerate(hdrs_p, 2):
-        c = ws_prod.cell(row=4, column=ci, value=h); c.font=Font(bold=True,size=9,name=FNAME); c.fill=mf(HGRAY); c.border=bdr; c.alignment=ctr
+        c = ws_prod.cell(row=4, column=ci, value=h); c.font=Font(bold=True,size=9,name=FNAME); c.fill=mf(LGRAY); c.border=bdr; c.alignment=ctr
     ri_p = 5
     prev_brand = None
     for p in product_rows:
@@ -3588,7 +3652,7 @@ def export_xlsx_event_report():
     ws2.column_dimensions['A'].width = 2
     hdrs2 = ['일자','매장명','품명','품목그룹','수량','단가','합계','특이사항(비고)','채널']
     for ci, h in enumerate(hdrs2, 2):
-        c = ws2.cell(row=2, column=ci, value=h); c.font=Font(bold=True,size=9,name=FNAME); c.fill=mf(HGRAY); c.border=bdr; c.alignment=ctr
+        c = ws2.cell(row=2, column=ci, value=h); c.font=Font(bold=True,size=9,name=FNAME); c.fill=mf(LGRAY); c.border=bdr; c.alignment=ctr
     ri2 = 3
     for r in rows:
         vals = [r['sale_date'], r['real_seller'], r['item_name'], r['item_group'], r['quantity'], r['unit_price'], r['total'], r['note'], r['channel']]
