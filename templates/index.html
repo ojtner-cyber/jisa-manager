@@ -4959,6 +4959,28 @@ async function loadEventSales(){
           <tbody>${r.store_breakdown.slice(0,10).map(st=>`<tr><td style="padding:6px 8px;border-bottom:1px solid var(--border);font-weight:600">${st.store}</td><td style="padding:6px 8px;text-align:right;border-bottom:1px solid var(--border)">${st.qty.toLocaleString()}</td><td style="padding:6px 8px;text-align:right;border-bottom:1px solid var(--border)">${st.amount.toLocaleString()}</td></tr>`).join('')}</tbody>
         </table>
       </div>
+    </div>
+    <div style="background:var(--paper);border:1px solid var(--border);border-radius:12px;padding:16px;margin-top:16px">
+      <div style="font-size:12.5px;font-weight:700;color:var(--t-700);margin-bottom:10px">브랜드별 제품상세 — 어떤 제품이 얼마나 나갔는지</div>
+      <table style="width:100%;border-collapse:collapse;font-size:11.5px">
+        <thead><tr style="background:var(--bg)">
+          <th style="padding:6px 8px;text-align:left;font-size:10px;color:var(--t-500)">브랜드</th>
+          <th style="padding:6px 8px;text-align:left;font-size:10px;color:var(--t-500)">제품명</th>
+          <th style="padding:6px 8px;text-align:right;font-size:10px;color:var(--t-500)">판매건수</th>
+          <th style="padding:6px 8px;text-align:right;font-size:10px;color:var(--t-500)">판매수량</th>
+          <th style="padding:6px 8px;text-align:right;font-size:10px;color:var(--t-500)">판매금액</th>
+        </tr></thead>
+        <tbody>${(()=>{ let prevBrand=null; return (r.product_breakdown||[]).map(p=>{
+          const firstInBrand = p.brand !== prevBrand; prevBrand = p.brand;
+          return `<tr style="${firstInBrand?'border-top:2px solid var(--border)':''}">
+            <td style="padding:6px 8px;border-bottom:1px solid var(--border);font-weight:${firstInBrand?800:400};color:${firstInBrand?'var(--t-900)':'transparent'}">${firstInBrand?p.brand:''}</td>
+            <td style="padding:6px 8px;border-bottom:1px solid var(--border)">${p.item_name}</td>
+            <td style="padding:6px 8px;text-align:right;border-bottom:1px solid var(--border);color:var(--t-500)">${p.cnt.toLocaleString()}</td>
+            <td style="padding:6px 8px;text-align:right;border-bottom:1px solid var(--border);font-weight:600">${p.qty.toLocaleString()}</td>
+            <td style="padding:6px 8px;text-align:right;border-bottom:1px solid var(--border)">${p.amount.toLocaleString()}</td>
+          </tr>`;
+        }).join(''); })()}</tbody>
+      </table>
     </div>`;
 }
 

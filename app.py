@@ -3426,10 +3426,23 @@ def api_sales_event_search():
         g['amount'] += r['total'] or 0
     store_breakdown = sorted(store_map.values(), key=lambda x: -x['amount'])
 
+    # 브랜드별 제품 상세 — 월별/주별 실적의 '제품별 상세'와 동일한 방식으로 브랜드 아래 제품별 집계
+    product_map = {}
+    for r in rows:
+        b = remap_group(r.get('item_group') or '', r.get('item_name') or '') or '(미분류)'
+        pname = normalize_item_name(r.get('item_name') or '') or r.get('item_name') or '(품목미상)'
+        key = (b, pname)
+        g = product_map.setdefault(key, {'brand': b, 'item_name': pname, 'qty': 0, 'amount': 0, 'cnt': 0})
+        g['qty'] += r['quantity'] or 0
+        g['amount'] += r['total'] or 0
+        g['cnt'] += 1
+    product_breakdown = sorted(product_map.values(), key=lambda x: (x['brand'], -x['amount']))
+
     return jsonify({
         'ok': True, 'keyword': keyword, 'date_from': date_from, 'date_to': date_to,
         'summary': {'total_qty': total_qty, 'total_amount': total_amt, 'store_count': len(stores), 'row_count': len(rows)},
-        'brand_breakdown': brand_breakdown, 'store_breakdown': store_breakdown, 'rows': rows,
+        'brand_breakdown': brand_breakdown, 'store_breakdown': store_breakdown,
+        'product_breakdown': product_breakdown, 'rows': rows,
     })
 
 
@@ -3472,6 +3485,15 @@ def export_xlsx_event_report():
         g = store_map.setdefault(s, {'store': s, 'qty': 0, 'amount': 0})
         g['qty'] += r['quantity'] or 0; g['amount'] += r['total'] or 0
     store_rows = sorted(store_map.values(), key=lambda x: -x['amount'])
+
+    product_map = {}
+    for r in rows:
+        b = remap_group(r.get('item_group') or '', r.get('item_name') or '') or '(미분류)'
+        pname = normalize_item_name(r.get('item_name') or '') or r.get('item_name') or '(품목미상)'
+        key = (b, pname)
+        g = product_map.setdefault(key, {'brand': b, 'item_name': pname, 'qty': 0, 'amount': 0, 'cnt': 0})
+        g['qty'] += r['quantity'] or 0; g['amount'] += r['total'] or 0; g['cnt'] += 1
+    product_rows = sorted(product_map.values(), key=lambda x: (x['brand'], -x['amount']))
 
     FNAME='맑은 고딕'
     def mf(hexv): return PatternFill('solid', fgColor=hexv)
@@ -3538,6 +3560,29 @@ def export_xlsx_event_report():
     for ci, w in zip(range(2,6), [24,13,15,10]):
         ws.column_dimensions[get_column_letter(ci)].width = w
 
+    # 브랜드별 제품상세 시트 — 브랜드 아래 어떤 제품이 얼마나 나갔는지 (월별/주별 실적의 '제품별 상세'와 동일 방식)
+    ws_prod = wb.create_sheet('브랜드별 제품상세')
+    ws_prod.column_dimensions['A'].width = 2
+    ws_prod.merge_cells('B2:F2')
+    c = ws_prod.cell(row=2, column=2, value=f"※ 『 {keyword} 』 브랜드별 제품 판매 상세")
+    c.font = Font(bold=True, size=13, name=FNAME); c.alignment = left_a
+    hdrs_p = ['브랜드','제품명','판매건수','판매수량','판매금액']
+    for ci, h in enumerate(hdrs_p, 2):
+        c = ws_prod.cell(row=4, column=ci, value=h); c.font=Font(bold=True,size=9,name=FNAME); c.fill=mf(HGRAY); c.border=bdr; c.alignment=ctr
+    ri_p = 5
+    prev_brand = None
+    for p in product_rows:
+        first_in_brand = (p['brand'] != prev_brand)
+        prev_brand = p['brand']
+        vals = [p['brand'] if first_in_brand else '', p['item_name'], p['cnt'], p['qty'], p['amount']]
+        for ci, v in enumerate(vals, 2):
+            c = ws_prod.cell(row=ri_p, column=ci, value=v); c.font=Font(bold=(ci==2 and first_in_brand),size=9,name=FNAME); c.border=bdr
+            c.alignment = left_a if ci in (2,3) else right_a
+            if ci in (4,5,6): c.number_format='#,##0'
+        ri_p += 1
+    for ci, w in zip(range(2,7), [14,26,11,11,14]):
+        ws_prod.column_dimensions[get_column_letter(ci)].width = w
+
     # 검색결과(필터링) 시트 — "키워드"가 포함된 건만 추린 목록
     ws2 = wb.create_sheet('검색결과(필터링)')
     ws2.column_dimensions['A'].width = 2
@@ -3584,7 +3629,7 @@ def export_xlsx_event_report():
                     continue
     conn.close()
 
-    wb._sheets = [wb['보고서'], wb['검색결과(필터링)']] + [wb[n] for n in raw_sheet_names if n in wb.sheetnames]
+    wb._sheets = [wb['보고서'], wb['브랜드별 제품상세'], wb['검색결과(필터링)']] + [wb[n] for n in raw_sheet_names if n in wb.sheetnames]
     buf = io.BytesIO(); wb.save(buf); buf.seek(0)
     fname = f"{keyword}_행사실적보고서_{datetime.now().strftime('%Y%m%d')}.xlsx"
     return send_file(buf, mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
