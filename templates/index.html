@@ -2749,7 +2749,7 @@ async function loadGiftCheckList(){
   const missingCnt = rows.filter(r=>r.status==='누락').length;
   if(giftCheckShowMissingOnly) rows = rows.filter(r=>r.status==='누락'||r.status==='수량상이');
   if(!totalCnt){
-    tbody.innerHTML = `<tr><td colspan="7" style="text-align:center;padding:30px;color:var(--t-300);font-size:12px">이카운트 판매현황을 업로드하면 증정 건이 여기 표시돼요</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="7" style="text-align:center;padding:30px;color:var(--t-300);font-size:12px">이카운트 판매현황을 업로드하거나 사용내역을 등록하면 대사 결과가 여기 표시돼요</td></tr>`;
     badge.textContent = '';
   } else if(!rows.length){
     tbody.innerHTML = `<tr><td colspan="7" style="text-align:center;padding:30px;color:var(--t-300);font-size:12px">누락/수량상이 건이 없어요 🎉</td></tr>`;
@@ -2770,8 +2770,11 @@ async function loadGiftCheckList(){
           diagCell += `<div style="font-size:10px;color:var(--t-400);margin-top:2px">해당 매장 사용내역: ${r.nearby_usage.map(n=>`${n.usage_date}(${n.item_name||'-'})`).join(', ')}</div>`;
         }
       }
+      const sourceTag = r.source==='usage_only'
+        ? `<span style="font-size:9.5px;font-weight:700;color:#7C3AED;background:#EDE9FE;padding:1px 6px;border-radius:4px;margin-right:5px">사용내역만</span>`
+        : '';
       return `<tr>
-        <td style="padding:8px 10px;font-size:11.5px;font-weight:600;border-bottom:1px solid var(--border)">${r.real_seller}</td>
+        <td style="padding:8px 10px;font-size:11.5px;font-weight:600;border-bottom:1px solid var(--border)">${sourceTag}${r.real_seller}</td>
         <td style="padding:8px 10px;font-size:11px;color:var(--t-500);border-bottom:1px solid var(--border)">${r.ecount_date_raw}</td>
         <td style="padding:8px 10px;text-align:center;font-size:11px;border-bottom:1px solid var(--border)">${r.brand||'—'}</td>
         <td style="padding:8px 10px;font-size:11px;color:var(--t-500);border-bottom:1px solid var(--border)">${r.item_name||''}</td>

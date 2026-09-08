@@ -9771,13 +9771,14 @@ def _gift_dedupe_existing_records(conn, months=None):
 
 def _gift_auto_match(conn):
     """이카운트 증정 건과 사용내역(건별)을 자동 대사.
-    실제 관리대장에서 검증된 방식(매장×브랜드 단위 수량 합계 대조)을 그대로 반영 —
-    발송일자·품목명 색상 변형까지 정확히 맞추려 하지 않고, 같은 매장·같은 브랜드의
-    수량 합계가 맞는지로 판단한다. 이렇게 하면 같은 매장·브랜드 안에서 색상별로
-    여러 줄로 나뉜 품목들도 자동으로 하나로 묶여서 비교된다.
-    ① 일치: 매장(실적용거래처명)+브랜드 단위로 이카운트 수량 합계 = 대장 수량 합계
-    ② 수량상이: 매장+브랜드는 맞는데 합계 수량이 다름
-    ③ 누락: 해당 매장+브랜드 조합이 상대편에 아예 없음"""
+    ① 1차 조건: 매장(실적용거래처명) + 날짜 가 같아야 같은 건으로 본다
+    ② 2차 조건: 그 안에서 브랜드별 수량 합계를 비교 — 같은 매장·같은 날짜 안에서
+       색상 등으로 여러 줄에 나뉜 품목은 자동으로 하나로 묶여서 비교되지만,
+       날짜가 다르면 절대 합쳐지지 않는다 (매장은 같아도 날짜가 다르면 별개 건).
+    날짜는 이카운트 발송일(ecount_date) ↔ 사용내역의 발송일자(ship_date, 없으면 요청일자)를 기준으로 맞춘다.
+    ① 일치: 매장+날짜+브랜드 단위로 이카운트 수량 합계 = 대장 수량 합계
+    ② 수량상이: 매장+날짜+브랜드는 맞는데 합계 수량이 다름
+    ③ 누락: 해당 매장+날짜+브랜드 조합이 상대편에 아예 없음"""
     # store_key 갱신 (신규/수정된 레코드 대비)
     for uid, useller, ustore in conn.execute("SELECT id, real_seller, store_name FROM gift_usage_record").fetchall():
         key = _gift_normalize_store_key(useller or ustore)
@@ -9786,19 +9787,20 @@ def _gift_auto_match(conn):
         key = _gift_normalize_store_key(eseller)
         conn.execute("UPDATE gift_ecount_record SET store_key=? WHERE id=?", (key, eid))
 
-    usage_rows = conn.execute("SELECT id, store_key, brand, quantity, usage_date, item_name FROM gift_usage_record").fetchall()
+    usage_rows = conn.execute("SELECT id, store_key, brand, quantity, usage_date, ship_date, item_name FROM gift_usage_record").fetchall()
     ecount_rows = conn.execute("SELECT id, store_key, brand, quantity, ecount_date, item_name FROM gift_ecount_record").fetchall()
 
-    # (store_key, brand) 단위로 그룹핑 — 색상별로 나뉜 여러 줄도 같은 그룹에서 합산됨
+    # (store_key, 날짜, brand) 단위로 그룹핑 — 같은 매장·같은 날짜 안에서 색상별로 나뉜 여러 줄만 합산됨
     u_groups = {}  # key -> {'ids':[...], 'qty':int, 'latest':(date,item)}
-    for uid, ukey, ubrand, uqty, udate, uitem in usage_rows:
-        g = u_groups.setdefault((ukey, ubrand), {'ids': [], 'qty': 0, 'latest': (udate, uitem)})
+    for uid, ukey, ubrand, uqty, udate, uship, uitem in usage_rows:
+        match_date = uship or udate  # 발송일자가 있으면 그 날짜로, 없으면 요청일자로 매칭
+        g = u_groups.setdefault((ukey, match_date, ubrand), {'ids': [], 'qty': 0, 'latest': (udate, uitem)})
         g['ids'].append(uid); g['qty'] += (uqty or 0)
         if (udate or '') >= (g['latest'][0] or ''): g['latest'] = (udate, uitem)
 
     e_groups = {}
     for eid, ekey, ebrand, eqty, edate, eitem in ecount_rows:
-        g = e_groups.setdefault((ekey, ebrand), {'ids': [], 'qty': 0})
+        g = e_groups.setdefault((ekey, edate, ebrand), {'ids': [], 'qty': 0})
         g['ids'].append(eid); g['qty'] += (eqty or 0)
 
     all_keys = set(u_groups.keys()) | set(e_groups.keys())
@@ -9884,6 +9886,7 @@ def api_gift_check_list():
         status = r.get('match_status') or '누락'
         r['status'] = status
         r['note'] = r.get('match_note') or ''
+        r['source'] = 'ecount'
         if status in ('일치', '수량상이') and r.get('matched_usage_id') in usage_map:
             r['matched_usage'] = usage_map[r['matched_usage_id']]
         if status == '누락':
@@ -9893,6 +9896,27 @@ def api_gift_check_list():
                                else '해당 매장·브랜드 사용내역 자체가 없음 (사용내역 미등록 의심)')
             r['nearby_usage'] = near[:3]
             if not r['note']: r['note'] = r['diagnosis']
+
+    # 수정: 사용내역(건별)에는 적어뒀지만 이카운트 쪽에는 대응하는 건이 없는 경우도 누락점검에 표시
+    conn2 = get_db()
+    uq = "SELECT id, usage_date, ship_date, store_name, real_seller, brand, item_name, quantity, store_key FROM gift_usage_record WHERE match_status='누락'"
+    uparams = []
+    if month:
+        uq += " AND (ship_date LIKE ? OR (ship_date='' AND usage_date LIKE ?))"
+        uparams += [f"{month}%", f"{month}%"]
+    for u in conn2.execute(uq, uparams).fetchall():
+        uid, udate, uship, ustore, ureal, ubrand, uitem, uqty, ukey = u
+        rows.append({
+            'id': f"u{uid}", 'real_seller': ureal or ustore, 'ecount_date_raw': f"(사용내역) {uship or udate}",
+            'ecount_date': uship or udate, 'brand': ubrand, 'item_name': uitem, 'quantity': uqty,
+            'store_key': ukey, 'matched_usage_id': None, 'status': '누락',
+            'note': '이카운트에 대응하는 건이 없음 (사용내역에만 등록됨)',
+            'diagnosis': '이카운트 업로드에 이 건이 없습니다 — 발송이 아직 안 됐거나 이카운트 업로드 파일에 누락된 건일 수 있어요.',
+            'nearby_usage': [], 'source': 'usage_only',
+        })
+    conn2.close()
+
+    rows.sort(key=lambda r: (r.get('ecount_date') or '', r.get('real_seller') or ''))
     return jsonify(rows)
 
 
