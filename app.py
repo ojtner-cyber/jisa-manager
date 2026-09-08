@@ -9709,10 +9709,18 @@ def api_gift_ecount_upload():
         now = datetime.now().strftime('%Y-%m-%d %H:%M')
         batch = now.replace(' ','').replace(':','').replace('-','')
         inserted = 0
+        skipped_dup = 0
         touched_dates = set()
-        # 행 단위 내용 비교로 중복을 판단하지 않는다 — 파일에 있는 '구분=증정' 행은 전부 그대로 반영한다.
-        # (같은 날짜·매장·품목·수량이어도 서로 다른 진짜 거래일 수 있어서, 내용이 비슷하다고
-        # 건너뛰면 실제 수량이 유실되는 심각한 문제가 생긴다. 재업로드 중복은 파일 해시로 위에서 이미 걸렀다)
+        # 전표번호(voucher_no)가 파싱된 경우에 한해서만 중복(재업로드 등)을 안전하게 걸러낸다.
+        # (일자+매장+품목명+수량+전표번호)가 모두 같으면 재업로드로 겹친 것으로 보고 건너뛴다.
+        # 단, 전표번호를 못 뽑은 경우(엑셀 날짜 셀이 순수 datetime이라 표시서식의 전표번호가 값에 없는 경우)는
+        # 서로 다른 진짜 거래를 구분할 방법이 없으므로 절대 건너뛰지 않고 전부 반영한다 —
+        # 이 경우의 재업로드 중복은 파일 해시 기반 업로드 이력관리로 막는다.
+        existing_keys = set()
+        for r in conn.execute(
+                "SELECT ecount_date_raw, real_seller, item_name, quantity, voucher_no FROM gift_ecount_record WHERE voucher_no!=''").fetchall():
+            existing_keys.add((r[0], r[1], (r[2] or '').replace(' ', ''), r[3], r[4]))
+
         for ri in range(header_row_idx+1, ws.max_row+1):
             gubun = ws.cell(ri, col_map['gubun']).value
             if not gubun or '증정' not in str(gubun):
@@ -9743,6 +9751,12 @@ def api_gift_ecount_upload():
                                                     trade_code=trade_code, canonical_index=canonical_index,
                                                     trade_code_map=trade_code_map, learned_cache=learned_cache)
             brand = remap_group(str(item_group or ''), str(item))
+            if voucher:
+                dup_key = (str(date_raw), real_seller, str(item).replace(' ', ''), qty, voucher)
+                if dup_key in existing_keys:
+                    skipped_dup += 1
+                    continue
+                existing_keys.add(dup_key)
             conn.execute("""INSERT INTO gift_ecount_record
                 (upload_batch, ecount_date_raw, ecount_date, voucher_no, real_seller, brand, item_name, quantity, uploaded_at, raw_seller, trade_code)
                 VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
@@ -9770,7 +9784,7 @@ def api_gift_ecount_upload():
             pass
         conn.close()
 
-        return jsonify({'ok': True, 'inserted': inserted})
+        return jsonify({'ok': True, 'inserted': inserted, 'skipped_dup': skipped_dup})
     except Exception as e:
         import traceback; traceback.print_exc()
         try: conn.close()
@@ -9834,11 +9848,28 @@ def _gift_dedupe_existing_records(conn, months=None):
                 conn.execute("DELETE FROM gift_usage_record WHERE id=?", (dup_id,))
                 removed_usage += 1
 
-    # 이카운트 쪽은 이제 행 단위로 중복 정리를 하지 않는다 — 전표번호가 실제로는 있는데도
-    # 엑셀 날짜 셀이 순수 datetime으로 읽혀서 전표번호가 비어버리는 경우, 서로 다른 진짜 거래를
-    # "중복"으로 오판해서 하나를 지워버리는 사고가 날 수 있기 때문이다(실제로 있었던 문제).
-    # 재업로드로 인한 중복은 파일 해시 기반 업로드 이력 관리(gift_ecount_upload_log)로 이미 막고 있다.
+    # 이카운트 쪽 중복 정리 — 전표번호(voucher_no)가 있는 건만 대상으로 한다.
+    # 전표번호가 같은 (일자+매장+품목+수량) 조합은 재업로드 등으로 겹친 게 거의 확실하므로 안전하게 정리하고,
+    # 전표번호가 없는 건(날짜 셀이 순수 datetime이라 전표번호를 못 뽑은 경우)은 서로 다른 진짜 거래를
+    # 구분할 방법이 없으므로 절대 건드리지 않는다(실수로 지웠다가 데이터가 유실된 적이 있었음).
     removed_ecount = 0
+    egroups = {}
+    eq = "SELECT id, ecount_date, real_seller, item_name, quantity, matched_usage_id, voucher_no FROM gift_ecount_record WHERE voucher_no!=''"
+    if months:
+        placeholders = ','.join('?' * len(months))
+        eq += f" AND substr(ecount_date,1,7) IN ({placeholders})"
+    eq += " ORDER BY id"
+    for r in conn.execute(eq, list(months) if months else []).fetchall():
+        rid, ecount_date, real_seller, item_name, quantity, matched, voucher_no = r
+        key = (ecount_date, real_seller, (item_name or '').replace(' ', ''), quantity, voucher_no)
+        egroups.setdefault(key, []).append((rid, matched))
+    for key, grp_rows in egroups.items():
+        if len(grp_rows) > 1:
+            keep = next((rid for rid, m in grp_rows if m), grp_rows[0][0])
+            for rid, m in grp_rows:
+                if rid != keep:
+                    conn.execute("DELETE FROM gift_ecount_record WHERE id=?", (rid,))
+                    removed_ecount += 1
     return removed_usage, removed_ecount
 
 
