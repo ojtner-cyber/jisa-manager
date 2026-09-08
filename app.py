@@ -9098,7 +9098,13 @@ def _gift_normalize_store_key(name):
     cleaned = _re_sk.sub(r'점\s*$', '', cleaned.strip())
     cleaned = _re_sk.sub(r'[^\w가-힣]', '', cleaned)
     for p in GIFT_STORE_PREFIX_WORDS + GIFT_STORE_NOISE_WORDS:
-        p_clean = _re_sk.sub(r'[^\w가-힣]', '', p)
+        # 주의: 노이즈 단어를 특수문자까지 제거해버리면 '(주)' 같은 표기가 '주' 한 글자로 줄어들어
+        # '광주'처럼 실제 지명에 포함된 '주'까지 잘못 삭제되는 사고가 난다. 공백만 제거하고
+        # 괄호 등 특수문자는 그대로 둬서(cleaned 쪽은 이미 특수문자가 제거된 상태이므로) 이런
+        # 위험한 짧은 문자열이 다른 단어 내부까지 오염시키지 않도록 한다.
+        p_clean = p.replace(' ', '')
+        if len(p_clean) < 2:
+            continue  # 한 글자짜리 노이즈 단어는 다른 지명을 오염시킬 위험이 커서 건너뜀
         cleaned = cleaned.replace(p_clean, '')
     return cleaned or _re_sk.sub(r'[^\w가-힣]', '', str(name).strip())
 
@@ -9769,16 +9775,26 @@ def _gift_dedupe_existing_records(conn, months=None):
     return removed_usage, removed_ecount
 
 
+# 사은품 대사(매칭) 전용 매장 동일시 규칙 — 실제 매장명은 다르지만 이카운트 전표상으로는
+# 다른 매장명으로 찍히는 경우. (표시용 real_seller는 그대로 두고, 대사 매칭 시에만 동일 매장으로 간주)
+# 예: 베이비하우스 광주점 매출이 이카운트에는 '베이비하우스 영통점'으로 찍힘
+GIFT_MATCH_STORE_EQUIV = {
+    '광주': '영통',
+}
+
 def _gift_auto_match(conn):
     """이카운트 증정 건과 사용내역(건별)을 자동 대사.
-    ① 1차 조건: 매장(실적용거래처명) + 날짜 가 같아야 같은 건으로 본다
+    ① 1차 조건: 매장(실적용거래처명) + 발송일자 가 이카운트의 날짜와 같아야 같은 건으로 본다
+       — 사용내역의 '발송일자'만을 기준으로 삼는다(요청일자로 대체 추정하지 않음). 발송일자가
+       비어있으면 어떤 이카운트 날짜와도 자동으로 맞춰볼 수 없으므로 '누락'으로 표시하고
+       발송일자 입력이 필요하다고 안내한다. 이렇게 해야 매장의 다른 날짜 건들이 서로 섞여
+       '수량상이'가 잘못 발생하는 문제가 생기지 않는다.
     ② 2차 조건: 그 안에서 브랜드별 수량 합계를 비교 — 같은 매장·같은 날짜 안에서
        색상 등으로 여러 줄에 나뉜 품목은 자동으로 하나로 묶여서 비교되지만,
        날짜가 다르면 절대 합쳐지지 않는다 (매장은 같아도 날짜가 다르면 별개 건).
-    날짜는 이카운트 발송일(ecount_date) ↔ 사용내역의 발송일자(ship_date, 없으면 요청일자)를 기준으로 맞춘다.
     ① 일치: 매장+날짜+브랜드 단위로 이카운트 수량 합계 = 대장 수량 합계
     ② 수량상이: 매장+날짜+브랜드는 맞는데 합계 수량이 다름
-    ③ 누락: 해당 매장+날짜+브랜드 조합이 상대편에 아예 없음"""
+    ③ 누락: 해당 매장+날짜+브랜드 조합이 상대편에 아예 없음 (또는 발송일자 미입력)"""
     # store_key 갱신 (신규/수정된 레코드 대비)
     for uid, useller, ustore in conn.execute("SELECT id, real_seller, store_name FROM gift_usage_record").fetchall():
         key = _gift_normalize_store_key(useller or ustore)
@@ -9790,12 +9806,14 @@ def _gift_auto_match(conn):
     usage_rows = conn.execute("SELECT id, store_key, brand, quantity, usage_date, ship_date, item_name FROM gift_usage_record").fetchall()
     ecount_rows = conn.execute("SELECT id, store_key, brand, quantity, ecount_date, item_name FROM gift_ecount_record").fetchall()
 
-    # (store_key, 날짜, brand) 단위로 그룹핑 — 같은 매장·같은 날짜 안에서 색상별로 나뉜 여러 줄만 합산됨
-    u_groups = {}  # key -> {'ids':[...], 'qty':int, 'latest':(date,item)}
+    # (store_key, 발송일자, brand) 단위로 그룹핑 — 같은 매장·같은 발송일자 안에서 색상별로 나뉜 여러 줄만 합산됨
+    u_groups = {}  # key -> {'ids':[...], 'qty':int, 'latest':(date,item), 'no_ship_date':bool}
     for uid, ukey, ubrand, uqty, udate, uship, uitem in usage_rows:
-        match_date = uship or udate  # 발송일자가 있으면 그 날짜로, 없으면 요청일자로 매칭
-        g = u_groups.setdefault((ukey, match_date, ubrand), {'ids': [], 'qty': 0, 'latest': (udate, uitem)})
+        match_key = GIFT_MATCH_STORE_EQUIV.get(ukey, ukey)  # 대사용 매장 동일시 규칙 적용
+        match_date = uship or None  # 발송일자만 사용 — 요청일자로 대체 추정하지 않음
+        g = u_groups.setdefault((match_key, match_date, ubrand), {'ids': [], 'qty': 0, 'latest': (udate, uitem), 'no_ship_date': not uship})
         g['ids'].append(uid); g['qty'] += (uqty or 0)
+        if not uship: g['no_ship_date'] = True
         if (udate or '') >= (g['latest'][0] or ''): g['latest'] = (udate, uitem)
 
     e_groups = {}
@@ -9807,7 +9825,8 @@ def _gift_auto_match(conn):
     for key in all_keys:
         ug = u_groups.get(key)
         eg = e_groups.get(key)
-        if ug and eg:
+        match_date = key[1]
+        if ug and eg and match_date:
             if ug['qty'] == eg['qty']:
                 status, note = '일치', ''
             else:
@@ -9819,7 +9838,8 @@ def _gift_auto_match(conn):
             for eid in eg['ids']:
                 conn.execute("UPDATE gift_ecount_record SET match_status=?, match_note=?, matched_usage_id=? WHERE id=?",
                              (status, note, rep_uid, eid))
-        elif ug and not eg:
+        elif ug and (not eg or not match_date):
+            note = '발송일자가 입력되지 않아 자동대사를 할 수 없습니다 — 발송일자를 입력해주세요' if ug.get('no_ship_date') else ''
             for uid in ug['ids']:
                 conn.execute("UPDATE gift_usage_record SET match_status='누락' WHERE id=?", (uid,))
         elif eg and not ug:
@@ -9906,12 +9926,17 @@ def api_gift_check_list():
         uparams += [f"{month}%", f"{month}%"]
     for u in conn2.execute(uq, uparams).fetchall():
         uid, udate, uship, ustore, ureal, ubrand, uitem, uqty, ukey = u
+        if not uship:
+            note = '발송일자가 입력되지 않아 자동대사를 할 수 없음 — 발송일자를 입력해주세요'
+            diag = '이 건은 발송일자가 비어있어 이카운트와 날짜를 맞춰볼 수 없습니다. 사용내역에서 발송일자를 입력해주세요.'
+        else:
+            note = '이카운트에 대응하는 건이 없음 (사용내역에만 등록됨)'
+            diag = '이카운트 업로드에 이 건이 없습니다 — 발송이 아직 안 됐거나 이카운트 업로드 파일에 누락된 건일 수 있어요.'
         rows.append({
-            'id': f"u{uid}", 'real_seller': ureal or ustore, 'ecount_date_raw': f"(사용내역) {uship or udate}",
+            'id': f"u{uid}", 'real_seller': ureal or ustore, 'ecount_date_raw': f"(사용내역) {uship or udate or '발송일자 미입력'}",
             'ecount_date': uship or udate, 'brand': ubrand, 'item_name': uitem, 'quantity': uqty,
             'store_key': ukey, 'matched_usage_id': None, 'status': '누락',
-            'note': '이카운트에 대응하는 건이 없음 (사용내역에만 등록됨)',
-            'diagnosis': '이카운트 업로드에 이 건이 없습니다 — 발송이 아직 안 됐거나 이카운트 업로드 파일에 누락된 건일 수 있어요.',
+            'note': note, 'diagnosis': diag,
             'nearby_usage': [], 'source': 'usage_only',
         })
     conn2.close()
