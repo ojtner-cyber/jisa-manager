@@ -476,9 +476,36 @@ def init_db():
         item_name TEXT DEFAULT '',
         quantity INTEGER DEFAULT 0,
         matched_usage_id INTEGER DEFAULT NULL,
-        uploaded_at TEXT DEFAULT '',
-        UNIQUE(ecount_date_raw, real_seller, item_name)
+        uploaded_at TEXT DEFAULT ''
     )""")
+    # 마이그레이션: 예전 스키마는 (일자+매장+품목명)에 UNIQUE 제약이 걸려 있어서, 같은 날 같은 매장에
+    # 같은 품목명으로 된 서로 다른(수량이 다른) 정상 전표가 있으면 뒤에 들어온 건의 수량이 통째로
+    # 유실되는 심각한 버그가 있었다("이카운트에 분명 수량이 있는데 없다고 나옴"). 제약을 제거한다.
+    try:
+        idx_rows = conn.execute("PRAGMA index_list(gift_ecount_record)").fetchall()
+        has_bad_unique = any(r[2] for r in idx_rows if 'sqlite_autoindex' in r[1])
+        if has_bad_unique:
+            conn.execute("""CREATE TABLE gift_ecount_record_new (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                upload_batch TEXT DEFAULT '',
+                ecount_date_raw TEXT DEFAULT '',
+                ecount_date TEXT DEFAULT '',
+                voucher_no TEXT DEFAULT '',
+                real_seller TEXT DEFAULT '',
+                brand TEXT DEFAULT '',
+                item_name TEXT DEFAULT '',
+                quantity INTEGER DEFAULT 0,
+                matched_usage_id INTEGER DEFAULT NULL,
+                uploaded_at TEXT DEFAULT ''
+            )""")
+            old_cols = [r[1] for r in conn.execute("PRAGMA table_info(gift_ecount_record)").fetchall()]
+            common = [c for c in ['id','upload_batch','ecount_date_raw','ecount_date','voucher_no','real_seller',
+                                   'brand','item_name','quantity','matched_usage_id','uploaded_at'] if c in old_cols]
+            conn.execute(f"INSERT INTO gift_ecount_record_new ({','.join(common)}) SELECT {','.join(common)} FROM gift_ecount_record")
+            conn.execute("DROP TABLE gift_ecount_record")
+            conn.execute("ALTER TABLE gift_ecount_record_new RENAME TO gift_ecount_record")
+    except Exception:
+        pass
     conn.execute("""CREATE TABLE IF NOT EXISTS gift_brand_quota (
         brand TEXT PRIMARY KEY,
         approved_qty INTEGER DEFAULT 0,
@@ -1428,7 +1455,17 @@ def normalize_item_name(name):
     # 카오스: 클랩 베이비시트 → 클랩하이체어로 통합
     if '[카오스]클랩' in cleaned and '베이비시트' in cleaned:
         cleaned = '[카오스]클랩하이체어'
+    # 표기가 다른 동일 제품명 통일 (예: '안전벨트 커버' = '벨트커버')
+    for alias, canon in ITEM_NAME_SYNONYMS.items():
+        if alias in cleaned:
+            cleaned = cleaned.replace(alias, canon)
     return cleaned if cleaned else name
+
+# 서로 다르게 표기되지만 실제로는 같은 제품인 경우 통일 (제품별 상세 집계 등에서 하나로 묶이도록)
+ITEM_NAME_SYNONYMS = {
+    '안전벨트 커버': '벨트커버',
+    '안전벨트커버': '벨트커버',
+}
 
 
 # ── 엑셀 리포트용 브랜드별 제품 라벨/정렬 커스텀 규칙 (수정2,4,5,6) ──
@@ -9649,7 +9686,15 @@ def api_gift_ecount_upload():
         now = datetime.now().strftime('%Y-%m-%d %H:%M')
         batch = now.replace(' ','').replace(':','').replace('-','')
         inserted = 0
+        skipped_dup = 0
         touched_dates = set()
+        # 완전히 동일한 건(일자+매장+품목명+수량+전표번호)만 재업로드 중복으로 보고 건너뛴다.
+        # 예전에는 (일자+매장+품목명)만으로 유니크 제약을 걸어서, 같은 날 같은 매장에 같은 품목명으로
+        # 수량이 다른 별개의 정상 전표가 있으면 뒤엣것이 통째로 유실되는 심각한 버그가 있었다.
+        existing_keys = set()
+        for r in conn.execute("SELECT ecount_date_raw, real_seller, item_name, quantity, voucher_no FROM gift_ecount_record").fetchall():
+            existing_keys.add((r[0], r[1], (r[2] or '').replace(' ', ''), r[3], r[4]))
+
         for ri in range(header_row_idx+1, ws.max_row+1):
             gubun = ws.cell(ri, col_map['gubun']).value
             if not gubun or '증정' not in str(gubun):
@@ -9680,15 +9725,17 @@ def api_gift_ecount_upload():
                                                     trade_code=trade_code, canonical_index=canonical_index,
                                                     trade_code_map=trade_code_map, learned_cache=learned_cache)
             brand = remap_group(str(item_group or ''), str(item))
-            try:
-                conn.execute("""INSERT INTO gift_ecount_record
-                    (upload_batch, ecount_date_raw, ecount_date, voucher_no, real_seller, brand, item_name, quantity, uploaded_at, raw_seller, trade_code)
-                    VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
-                    (batch, str(date_raw), ecount_date, voucher, real_seller, brand, str(item), qty, now, seller_raw, trade_code))
-                inserted += 1
-                if ecount_date: touched_dates.add(ecount_date[:7])
-            except sqlite3.IntegrityError:
-                pass  # 이미 동일 건 존재 (중복 업로드 방지)
+            dup_key = (str(date_raw), real_seller, str(item).replace(' ', ''), qty, voucher)
+            if dup_key in existing_keys:
+                skipped_dup += 1
+                continue
+            existing_keys.add(dup_key)
+            conn.execute("""INSERT INTO gift_ecount_record
+                (upload_batch, ecount_date_raw, ecount_date, voucher_no, real_seller, brand, item_name, quantity, uploaded_at, raw_seller, trade_code)
+                VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
+                (batch, str(date_raw), ecount_date, voucher, real_seller, brand, str(item), qty, now, seller_raw, trade_code))
+            inserted += 1
+            if ecount_date: touched_dates.add(ecount_date[:7])
 
         conn.commit()
 
@@ -9767,14 +9814,16 @@ def _gift_dedupe_existing_records(conn, months=None):
 
     removed_ecount = 0
     egroups = {}
-    eq = "SELECT id, ecount_date, real_seller, item_name, quantity, matched_usage_id FROM gift_ecount_record"
+    eq = "SELECT id, ecount_date, real_seller, item_name, quantity, matched_usage_id, voucher_no FROM gift_ecount_record"
     if months:
         placeholders = ','.join('?' * len(months))
         eq += f" WHERE substr(ecount_date,1,7) IN ({placeholders})"
     eq += " ORDER BY id"
     for r in conn.execute(eq, list(months) if months else []).fetchall():
-        rid, ecount_date, real_seller, item_name, quantity, matched = r
-        key = (ecount_date, real_seller, (item_name or '').replace(' ', ''), quantity)
+        rid, ecount_date, real_seller, item_name, quantity, matched, voucher_no = r
+        # 전표번호(voucher_no)까지 같아야 진짜 중복 — 같은 날 같은 매장에 같은 품목명으로
+        # 수량이 같은 별개의 정상 전표가 있을 수 있으므로 전표번호가 다르면 절대 중복으로 보지 않는다
+        key = (ecount_date, real_seller, (item_name or '').replace(' ', ''), quantity, voucher_no)
         egroups.setdefault(key, []).append((rid, matched))
     for key, rows in egroups.items():
         if len(rows) > 1:
@@ -9905,6 +9954,14 @@ def api_gift_check_list():
     매장(실적용거래처명)×브랜드 단위로 수량 합계를 대조한 결과(_gift_auto_match)를 그대로 보여준다.
     색상 등으로 여러 줄에 나뉜 품목도 같은 매장·브랜드면 자동으로 합쳐져서 비교되므로
     실제로 대사가 안 맞는 건만 정확히 걸러진다."""
+    from datetime import date as _date_cl, timedelta as _td_cl
+    def _days_between(d1, d2):
+        try:
+            y1,m1,dd1 = map(int, d1.split('-')); y2,m2,dd2 = map(int, d2.split('-'))
+            return abs((_date_cl(y1,m1,dd1) - _date_cl(y2,m2,dd2)).days)
+        except Exception:
+            return 999
+
     month = request.args.get('month', '').strip()
     conn = get_db()
     q = "SELECT * FROM gift_ecount_record WHERE 1=1"
@@ -9923,10 +9980,24 @@ def api_gift_check_list():
 
     # 누락 건: 같은 매장(store_key)에 등록된 사용내역이 있는지(브랜드가 다르게 적혔을 가능성 등) 참고 정보 제공
     usage_by_store = {}
-    for u in conn.execute("SELECT store_key, usage_date, item_name, brand FROM gift_usage_record").fetchall():
-        usage_by_store.setdefault(u[0], []).append({'usage_date': u[1], 'item_name': u[2], 'brand': u[3]})
+    usage_by_canon_brand = {}  # (canon_store_key, brand) -> [{'date':ship_or_usage,'qty':,'item_name':}]
+    for u in conn.execute("SELECT store_key, usage_date, ship_date, item_name, brand, quantity FROM gift_usage_record").fetchall():
+        skey, udate, uship, uitem, ubrand, uqty = u
+        usage_by_store.setdefault(skey, []).append({'usage_date': udate, 'item_name': uitem, 'brand': ubrand})
+        d = uship or udate
+        if d:
+            usage_by_canon_brand.setdefault((_gift_canon_match_key(skey), ubrand), []).append(
+                {'date': d, 'qty': uqty, 'item_name': uitem})
+
+    ecount_by_canon_brand = {}  # (canon_store_key, brand) -> [{'date':,'qty':,'voucher':,'raw':}]
+    for r in rows:
+        d = r.get('ecount_date')
+        if d:
+            ecount_by_canon_brand.setdefault((_gift_canon_match_key(r.get('store_key')), r.get('brand')), []).append(
+                {'date': d, 'qty': r.get('quantity'), 'raw': r.get('ecount_date_raw')})
     conn.close()
 
+    NEAR_DAYS = 5
     for r in rows:
         status = r.get('match_status') or '누락'
         r['status'] = status
@@ -9940,6 +10011,14 @@ def api_gift_check_list():
             r['diagnosis'] = ('같은 매장에 다른 브랜드로 등록된 사용내역 있음 (브랜드 확인 필요)' if near
                                else '해당 매장·브랜드 사용내역 자체가 없음 (사용내역 미등록 의심)')
             r['nearby_usage'] = near[:3]
+            # 근처 날짜(±5일) 후보 — 발송이 며칠 늦어져서 발송일자가 실제와 다르게 입력된 경우를 잡아줌
+            near_date_candidates = usage_by_canon_brand.get((_gift_canon_match_key(r.get('store_key')), r.get('brand')), [])
+            close = sorted(
+                [c for c in near_date_candidates if r.get('ecount_date') and _days_between(c['date'], r['ecount_date']) <= NEAR_DAYS],
+                key=lambda c: _days_between(c['date'], r['ecount_date']))
+            if close:
+                c0 = close[0]
+                r['note'] = (r['note'] + ' ' if r['note'] else '') + f"※ 발송일자 확인 필요 — 근처 날짜({c0['date']})에 사용내역 {c0['qty']}개 등록됨. 발송일자가 실제와 다르게 입력됐을 수 있어요."
             if not r['note']: r['note'] = r['diagnosis']
 
     # 수정: 사용내역(건별)에는 적어뒀지만 이카운트 쪽에는 대응하는 건이 없는 경우도 누락점검에 표시
@@ -9957,6 +10036,14 @@ def api_gift_check_list():
         else:
             note = '이카운트에 대응하는 건이 없음 (사용내역에만 등록됨)'
             diag = '이카운트 업로드에 이 건이 없습니다 — 발송이 아직 안 됐거나 이카운트 업로드 파일에 누락된 건일 수 있어요.'
+            # 근처 날짜(±5일) 이카운트 후보 검색 — "8/24 요청한 게 사실 8/27 건이었다" 케이스 도와줌
+            candidates = ecount_by_canon_brand.get((_gift_canon_match_key(ukey), ubrand), [])
+            close = sorted(
+                [c for c in candidates if _days_between(c['date'], uship) <= 5],
+                key=lambda c: _days_between(c['date'], uship))
+            if close:
+                c0 = close[0]
+                note += f" ※ 근처 날짜({c0['date']} {c0['raw']})에 이카운트 {c0['qty']}개 건 있음 — 발송일자를 이 날짜로 정정해보세요."
         rows.append({
             'id': f"u{uid}", 'real_seller': ureal or ustore, 'ecount_date_raw': f"(사용내역) {uship or udate or '발송일자 미입력'}",
             'ecount_date': uship or udate, 'brand': ubrand, 'item_name': uitem, 'quantity': uqty,
