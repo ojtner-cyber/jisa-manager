@@ -521,6 +521,16 @@ def init_db():
         updated_at TEXT DEFAULT '',
         UNIQUE(key_type, key_value)
     )""")
+    # 이카운트 파일 재업로드로 인한 중복 방지는 '행 단위 유사도'가 아니라 '파일 자체가 동일한지'로 판단한다.
+    # (일자+매장+품목명+수량 같은 필드는 서로 다른 진짜 거래끼리도 우연히 같을 수 있어서, 행 단위로
+    # 중복이라 판단해 걸러내면 실제 데이터가 유실되는 심각한 문제가 생긴다 — 실제로 그런 사고가 있었음)
+    conn.execute("""CREATE TABLE IF NOT EXISTS gift_ecount_upload_log (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        file_hash TEXT NOT NULL UNIQUE,
+        filename TEXT DEFAULT '',
+        row_count INTEGER DEFAULT 0,
+        uploaded_at TEXT DEFAULT ''
+    )""")
     try:
         gu_cols = [r[1] for r in conn.execute("PRAGMA table_info(gift_usage_record)").fetchall()]
         if 'store_key' not in gu_cols:
@@ -9646,6 +9656,19 @@ def api_gift_ecount_upload():
         return jsonify({'ok': False, 'msg': '파일이 없습니다'}), 400
     f = request.files['file']
     data = f.read()
+    filename = f.filename or ''
+
+    # 파일 자체가 이미 업로드된 적이 있는지 확인 (행 단위 유사도가 아닌 파일 해시로 판단 —
+    # 서로 다른 진짜 거래가 같은 날짜/매장/품목/수량이어서 우연히 겹치는 경우까지 중복으로
+    # 오판해서 데이터를 유실시키는 사고를 원천 차단한다)
+    import hashlib
+    file_hash = hashlib.sha256(data).hexdigest()
+    conn_check = get_db()
+    prev = conn_check.execute("SELECT filename, uploaded_at, row_count FROM gift_ecount_upload_log WHERE file_hash=?", (file_hash,)).fetchone()
+    conn_check.close()
+    if prev:
+        return jsonify({'ok': False, 'msg': f'이 파일은 이미 업로드된 파일이에요 ("{prev[0]}", {prev[1]}에 {prev[2]}건 처리됨). 다시 업로드하려면 이카운트에서 파일을 새로 받아주세요.'}), 400
+
     wb = _load_workbook_resilient(data)
     if wb is None:
         return jsonify({'ok': False, 'msg': '엑셀 파일을 읽을 수 없습니다'}), 400
@@ -9686,15 +9709,10 @@ def api_gift_ecount_upload():
         now = datetime.now().strftime('%Y-%m-%d %H:%M')
         batch = now.replace(' ','').replace(':','').replace('-','')
         inserted = 0
-        skipped_dup = 0
         touched_dates = set()
-        # 완전히 동일한 건(일자+매장+품목명+수량+전표번호)만 재업로드 중복으로 보고 건너뛴다.
-        # 예전에는 (일자+매장+품목명)만으로 유니크 제약을 걸어서, 같은 날 같은 매장에 같은 품목명으로
-        # 수량이 다른 별개의 정상 전표가 있으면 뒤엣것이 통째로 유실되는 심각한 버그가 있었다.
-        existing_keys = set()
-        for r in conn.execute("SELECT ecount_date_raw, real_seller, item_name, quantity, voucher_no FROM gift_ecount_record").fetchall():
-            existing_keys.add((r[0], r[1], (r[2] or '').replace(' ', ''), r[3], r[4]))
-
+        # 행 단위 내용 비교로 중복을 판단하지 않는다 — 파일에 있는 '구분=증정' 행은 전부 그대로 반영한다.
+        # (같은 날짜·매장·품목·수량이어도 서로 다른 진짜 거래일 수 있어서, 내용이 비슷하다고
+        # 건너뛰면 실제 수량이 유실되는 심각한 문제가 생긴다. 재업로드 중복은 파일 해시로 위에서 이미 걸렀다)
         for ri in range(header_row_idx+1, ws.max_row+1):
             gubun = ws.cell(ri, col_map['gubun']).value
             if not gubun or '증정' not in str(gubun):
@@ -9725,11 +9743,6 @@ def api_gift_ecount_upload():
                                                     trade_code=trade_code, canonical_index=canonical_index,
                                                     trade_code_map=trade_code_map, learned_cache=learned_cache)
             brand = remap_group(str(item_group or ''), str(item))
-            dup_key = (str(date_raw), real_seller, str(item).replace(' ', ''), qty, voucher)
-            if dup_key in existing_keys:
-                skipped_dup += 1
-                continue
-            existing_keys.add(dup_key)
             conn.execute("""INSERT INTO gift_ecount_record
                 (upload_batch, ecount_date_raw, ecount_date, voucher_no, real_seller, brand, item_name, quantity, uploaded_at, raw_seller, trade_code)
                 VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
@@ -9746,7 +9759,16 @@ def api_gift_ecount_upload():
 
         # 자동 매칭: gift_usage_record와 real_seller + 날짜 + 브랜드 기준으로 대사
         _gift_auto_match(conn)
-        conn.commit(); conn.close()
+        conn.commit()
+
+        # 파일 해시 기록 — 이 파일이 재업로드되면 (행이 아니라 파일 단위로) 걸러지도록
+        try:
+            conn.execute("INSERT INTO gift_ecount_upload_log (file_hash, filename, row_count, uploaded_at) VALUES(?,?,?,?)",
+                         (file_hash, filename, inserted, now))
+            conn.commit()
+        except Exception:
+            pass
+        conn.close()
 
         return jsonify({'ok': True, 'inserted': inserted})
     except Exception as e:
@@ -9812,27 +9834,11 @@ def _gift_dedupe_existing_records(conn, months=None):
                 conn.execute("DELETE FROM gift_usage_record WHERE id=?", (dup_id,))
                 removed_usage += 1
 
+    # 이카운트 쪽은 이제 행 단위로 중복 정리를 하지 않는다 — 전표번호가 실제로는 있는데도
+    # 엑셀 날짜 셀이 순수 datetime으로 읽혀서 전표번호가 비어버리는 경우, 서로 다른 진짜 거래를
+    # "중복"으로 오판해서 하나를 지워버리는 사고가 날 수 있기 때문이다(실제로 있었던 문제).
+    # 재업로드로 인한 중복은 파일 해시 기반 업로드 이력 관리(gift_ecount_upload_log)로 이미 막고 있다.
     removed_ecount = 0
-    egroups = {}
-    eq = "SELECT id, ecount_date, real_seller, item_name, quantity, matched_usage_id, voucher_no FROM gift_ecount_record"
-    if months:
-        placeholders = ','.join('?' * len(months))
-        eq += f" WHERE substr(ecount_date,1,7) IN ({placeholders})"
-    eq += " ORDER BY id"
-    for r in conn.execute(eq, list(months) if months else []).fetchall():
-        rid, ecount_date, real_seller, item_name, quantity, matched, voucher_no = r
-        # 전표번호(voucher_no)까지 같아야 진짜 중복 — 같은 날 같은 매장에 같은 품목명으로
-        # 수량이 같은 별개의 정상 전표가 있을 수 있으므로 전표번호가 다르면 절대 중복으로 보지 않는다
-        key = (ecount_date, real_seller, (item_name or '').replace(' ', ''), quantity, voucher_no)
-        egroups.setdefault(key, []).append((rid, matched))
-    for key, rows in egroups.items():
-        if len(rows) > 1:
-            # 매칭된(matched_usage_id 있는) 건을 우선 보존, 없으면 가장 먼저 등록된 건 보존
-            keep = next((rid for rid, m in rows if m), rows[0][0])
-            for rid, m in rows:
-                if rid != keep:
-                    conn.execute("DELETE FROM gift_ecount_record WHERE id=?", (rid,))
-                    removed_ecount += 1
     return removed_usage, removed_ecount
 
 
@@ -10011,15 +10017,20 @@ def api_gift_check_list():
             r['diagnosis'] = ('같은 매장에 다른 브랜드로 등록된 사용내역 있음 (브랜드 확인 필요)' if near
                                else '해당 매장·브랜드 사용내역 자체가 없음 (사용내역 미등록 의심)')
             r['nearby_usage'] = near[:3]
-            # 근처 날짜(±5일) 후보 — 발송이 며칠 늦어져서 발송일자가 실제와 다르게 입력된 경우를 잡아줌
+        if status in ('누락', '수량상이'):
+            # 근처 날짜(±5일) 후보 — 발송이 며칠 늦어져서 발송일자가 실제와 다르게 입력된 경우를 잡아줌.
+            # 여러 건이 흩어져 있을 수 있으므로 최대 3건까지 보여주고, 합계가 부족분과 맞는지도 참고로 표시한다.
             near_date_candidates = usage_by_canon_brand.get((_gift_canon_match_key(r.get('store_key')), r.get('brand')), [])
             close = sorted(
-                [c for c in near_date_candidates if r.get('ecount_date') and _days_between(c['date'], r['ecount_date']) <= NEAR_DAYS],
+                [c for c in near_date_candidates if r.get('ecount_date') and _days_between(c['date'], r['ecount_date']) <= NEAR_DAYS
+                 and c['date'] != r.get('ecount_date')],
                 key=lambda c: _days_between(c['date'], r['ecount_date']))
             if close:
-                c0 = close[0]
-                r['note'] = (r['note'] + ' ' if r['note'] else '') + f"※ 발송일자 확인 필요 — 근처 날짜({c0['date']})에 사용내역 {c0['qty']}개 등록됨. 발송일자가 실제와 다르게 입력됐을 수 있어요."
-            if not r['note']: r['note'] = r['diagnosis']
+                shown = close[:3]
+                cand_txt = ', '.join(f"{c['date']}({c['qty']}개)" for c in shown)
+                cand_sum = sum(c['qty'] for c in shown)
+                r['note'] = (r['note'] + ' ' if r['note'] else '') + f"※ 발송일자 확인 필요 — 근처 날짜 사용내역: {cand_txt} (합 {cand_sum}개). 발송일자가 실제 이카운트 날짜와 다르게 입력됐을 수 있어요."
+            if status == '누락' and not r['note']: r['note'] = r['diagnosis']
 
     # 수정: 사용내역(건별)에는 적어뒀지만 이카운트 쪽에는 대응하는 건이 없는 경우도 누락점검에 표시
     conn2 = get_db()
@@ -10042,8 +10053,13 @@ def api_gift_check_list():
                 [c for c in candidates if _days_between(c['date'], uship) <= 5],
                 key=lambda c: _days_between(c['date'], uship))
             if close:
-                c0 = close[0]
-                note += f" ※ 근처 날짜({c0['date']} {c0['raw']})에 이카운트 {c0['qty']}개 건 있음 — 발송일자를 이 날짜로 정정해보세요."
+                shown = close[:3]
+                uniq_dates = []
+                for c in shown:
+                    if c['date'] not in [d for d,_ in uniq_dates]:
+                        uniq_dates.append((c['date'], c['raw']))
+                cand_txt = ', '.join(f"{d}({raw})" for d, raw in uniq_dates)
+                note += f" ※ 근처 날짜에 이카운트 건 있음: {cand_txt} — 발송일자를 확인해보세요."
         rows.append({
             'id': f"u{uid}", 'real_seller': ureal or ustore, 'ecount_date_raw': f"(사용내역) {uship or udate or '발송일자 미입력'}",
             'ecount_date': uship or udate, 'brand': ubrand, 'item_name': uitem, 'quantity': uqty,
