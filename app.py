@@ -6104,12 +6104,21 @@ def _load_workbook_resilient(file_bytes, data_only=False):
         return None
 
 
-def _copy_sheet_with_style(src_ws, dst_ws):
-    """시트를 값+서식(폰트/배경색/테두리/정렬/병합/열너비/행높이)까지 통째로 복사"""
+def _copy_sheet_with_style(src_ws, dst_ws, value_ws=None):
+    """시트를 값+서식(폰트/배경색/테두리/정렬/병합/열너비/행높이)까지 통째로 복사.
+    value_ws가 주어지면 셀 값은 그쪽(data_only=True로 계산된 결과값)에서 가져온다 —
+    수식이 그대로 복사되면 원본이 참조하던 다른 시트가 사라져 #VALUE!/#REF! 오류가 나므로,
+    화면에 보이던 '계산된 값'을 대신 넣어서 다운로드해도 정상적으로 보이게 한다."""
     from copy import copy as _copy_style
     for row in src_ws.iter_rows():
         for cell in row:
-            new_cell = dst_ws.cell(row=cell.row, column=cell.column, value=cell.value)
+            v = cell.value
+            if value_ws is not None and isinstance(v, str) and v.startswith('='):
+                try:
+                    v = value_ws.cell(row=cell.row, column=cell.column).value
+                except Exception:
+                    pass
+            new_cell = dst_ws.cell(row=cell.row, column=cell.column, value=v)
             if cell.has_style:
                 new_cell.font = _copy_style(cell.font)
                 new_cell.border = _copy_style(cell.border)
@@ -6695,7 +6704,16 @@ def api_export_visit_report_xlsx():
                 src_wb = _load_workbook_resilient(src_bytes)
                 if src_wb is None: raise ValueError("원본 로드 실패")
                 src_ws = src_wb[src_wb.sheetnames[0]]
-                _copy_sheet_with_style(src_ws, ws)
+                # 수식이 다른 시트를 참조하는 경우 그대로 복사하면 #VALUE!/#REF!가 나므로
+                # 계산된 결과값(data_only)을 함께 읽어서 값은 그쪽 것을 사용한다
+                value_ws = None
+                try:
+                    value_wb = _load_workbook_resilient(src_bytes, data_only=True)
+                    if value_wb is not None:
+                        value_ws = value_wb[value_wb.sheetnames[0]]
+                except Exception:
+                    pass
+                _copy_sheet_with_style(src_ws, ws, value_ws=value_ws)
                 continue
             except Exception:
                 pass
@@ -6767,7 +6785,16 @@ def api_export_visit_report_by_store():
                 src_wb = _load_workbook_resilient(src_bytes)
                 if src_wb is None: raise ValueError("원본 로드 실패")
                 src_ws = src_wb[src_wb.sheetnames[0]]
-                _copy_sheet_with_style(src_ws, ws)
+                # 수식이 다른 시트(브랜드별 매출 비율/월별 판매 추이 등 계산용 시트)를 참조하는 경우
+                # 그 시트 없이 복사하면 #VALUE!/#REF!가 뜨므로, 계산된 결과값(data_only)을 대신 넣는다
+                value_ws = None
+                try:
+                    value_wb = _load_workbook_resilient(src_bytes, data_only=True)
+                    if value_wb is not None:
+                        value_ws = value_wb[value_wb.sheetnames[0]]
+                except Exception:
+                    pass
+                _copy_sheet_with_style(src_ws, ws, value_ws=value_ws)
                 continue
             except Exception:
                 pass
