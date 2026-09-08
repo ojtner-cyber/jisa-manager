@@ -9575,13 +9575,25 @@ def api_gift_usage_update(rid):
 
 
 def _gift_parse_ecount_date(raw):
-    """이카운트 '일자'열의 '2026/08/03 -508' 형식에서 (날짜, 전표번호) 분리"""
+    """이카운트 '일자'열에서 날짜와 전표번호를 최대한 유연하게 분리.
+    'YYYY/MM/DD -123' 텍스트뿐 아니라 'YYYY-MM-DD', 'YYYY.MM.DD', 엑셀 날짜(datetime) 셀도 지원한다.
+    (기존엔 '/' 구분자 텍스트만 인식해서, 엑셀이 날짜를 datetime으로 읽거나 '-'로 구분된 경우
+    날짜가 통째로 빈 값이 되어 사용내역과 절대 매칭되지 않는 문제가 있었다)"""
     import re as _re_ed
-    m = _re_ed.match(r'(\d{4})/(\d{1,2})/(\d{1,2})\s*-?\s*(\d+)?', str(raw).strip())
+    from datetime import datetime as _dt_ed, date as _date_ed
+    if raw is None:
+        return '', ''
+    if isinstance(raw, (_dt_ed, _date_ed)):
+        return raw.strftime('%Y-%m-%d'), ''
+    s = str(raw).strip()
+    m = _re_ed.match(r'(\d{4})[/\-\.](\d{1,2})[/\-\.](\d{1,2})\s*-?\s*(\d+)?', s)
     if not m:
         return '', ''
     y, mo, d, voucher = m.groups()
-    date_str = f"{y}-{int(mo):02d}-{int(d):02d}"
+    try:
+        date_str = f"{int(y):04d}-{int(mo):02d}-{int(d):02d}"
+    except Exception:
+        return '', ''
     return date_str, (voucher or '')
 
 
@@ -9775,12 +9787,24 @@ def _gift_dedupe_existing_records(conn, months=None):
     return removed_usage, removed_ecount
 
 
-# 사은품 대사(매칭) 전용 매장 동일시 규칙 — 실제 매장명은 다르지만 이카운트 전표상으로는
-# 다른 매장명으로 찍히는 경우. (표시용 real_seller는 그대로 두고, 대사 매칭 시에만 동일 매장으로 간주)
-# 예: 베이비하우스 광주점 매출이 이카운트에는 '베이비하우스 영통점'으로 찍힘
-GIFT_MATCH_STORE_EQUIV = {
-    '광주': '영통',
-}
+# 사은품 대사(매칭) 전용 매장 동일시 규칙 — 실제로는 같은 매장이지만 표기(언더스코어, 지점명,
+# 별칭 등)가 달라 정규화 키가 서로 다르게 나오는 경우를 그룹으로 묶어준다.
+# (표시용 real_seller는 그대로 두고, 대사 매칭 시에만 같은 매장으로 간주)
+GIFT_STORE_EQUIV_GROUPS = [
+    {'광주', '영통', '수원'},        # 베이비하우스 광주점·수원점 매출이 이카운트엔 영통점으로 찍힘
+    {'군포', '안양'},                # 베이비하우스 군포점 = 안양점
+    {'대전세종', '대전'},            # 베이비하우스 대전세종점 = 대전점
+    {'베이비투키즈', '베투키'},      # 베이비 투 키즈 = 베투키 (별칭)
+]
+GIFT_MATCH_STORE_EQUIV = {}
+for _grp in GIFT_STORE_EQUIV_GROUPS:
+    _canon = sorted(_grp)[0]
+    for _k in _grp:
+        GIFT_MATCH_STORE_EQUIV[_k] = _canon
+
+def _gift_canon_match_key(key):
+    """대사 매칭 시에만 쓰는 매장 그룹 대표키 변환 — 위 GIFT_STORE_EQUIV_GROUPS에 속하면 대표키로 통일"""
+    return GIFT_MATCH_STORE_EQUIV.get(key, key)
 
 def _gift_auto_match(conn):
     """이카운트 증정 건과 사용내역(건별)을 자동 대사.
@@ -9809,7 +9833,7 @@ def _gift_auto_match(conn):
     # (store_key, 발송일자, brand) 단위로 그룹핑 — 같은 매장·같은 발송일자 안에서 색상별로 나뉜 여러 줄만 합산됨
     u_groups = {}  # key -> {'ids':[...], 'qty':int, 'latest':(date,item), 'no_ship_date':bool}
     for uid, ukey, ubrand, uqty, udate, uship, uitem in usage_rows:
-        match_key = GIFT_MATCH_STORE_EQUIV.get(ukey, ukey)  # 대사용 매장 동일시 규칙 적용
+        match_key = _gift_canon_match_key(ukey)  # 대사용 매장 동일시 규칙 적용
         match_date = uship or None  # 발송일자만 사용 — 요청일자로 대체 추정하지 않음
         g = u_groups.setdefault((match_key, match_date, ubrand), {'ids': [], 'qty': 0, 'latest': (udate, uitem), 'no_ship_date': not uship})
         g['ids'].append(uid); g['qty'] += (uqty or 0)
@@ -9818,7 +9842,8 @@ def _gift_auto_match(conn):
 
     e_groups = {}
     for eid, ekey, ebrand, eqty, edate, eitem in ecount_rows:
-        g = e_groups.setdefault((ekey, edate, ebrand), {'ids': [], 'qty': 0})
+        ekey_canon = _gift_canon_match_key(ekey)  # 이카운트 쪽에도 동일하게 그룹 대표키 적용
+        g = e_groups.setdefault((ekey_canon, edate, ebrand), {'ids': [], 'qty': 0})
         g['ids'].append(eid); g['qty'] += (eqty or 0)
 
     all_keys = set(u_groups.keys()) | set(e_groups.keys())
