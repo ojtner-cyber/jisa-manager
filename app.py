@@ -1295,6 +1295,8 @@ SELLER_ALIAS = {
     '베네피아구로 (발육기)':    '링크맘 구로점',
     '베네피아구로(발육기)':     '링크맘 구로점',
     '청라베이비하우스':         '베이비하우스 청라점',
+    # 링크맘 대전점 = 베이비페어365 대전점 (같은 매장, 베이비페어365로 통합)
+    '링크맘 대전점':            '베이비페어365 대전점',
     # 수정(신규): 주식회사 티에스엘컴퍼니 → 베이비하우스 청라점 (실적용거래처명으로 확인됨)
     '주식회사 티에스엘컴퍼니':  '베이비하우스 청라점',
     # 수정(신규): 주식회사 더케이앤피 = 베이비하우스 동래점
@@ -9131,20 +9133,24 @@ GIFT_BRAND_ALIAS = {
 
 # 매장명 표기가 서로 크게 다른 경우(어순 도치, "점" 유무, 부서/법인명 등)까지 매칭하기 위한 정규화 키
 GIFT_STORE_PREFIX_WORDS = ['베이비하우스','링크맘','베이비파크','베이비스토리','베이비스토어',
-                           '베네피아','베이비플러스','베이비세븐','베이비 투 키즈','베투키']
+                           '베네피아','베이비플러스','베이비세븐','베이비 투 키즈','베투키','베이비페어365']
 # 매장명에 흔히 붙는 부서/카테고리/법인 표기 — 정규화 키 계산 시 노이즈로 간주해 제거
 GIFT_STORE_NOISE_WORDS = ['용품','발육','유아용품','완구','서적','도서','매장','지점',
                            '주식회사','(주)','㈜','컴퍼니','법인']
 
 def _gift_normalize_store_key(name):
-    """매장명 비교용 정규화 키 — 공백/점 제거 후 브랜드 프리픽스·부서/법인 표기를 걷어내고 지역명만 남긴다.
-    '베이비하우스 향남' / '베이비하우스 향남점' / '향남베이비하우스' / '울산 베이비하우스_용품' 모두 동일 키로 수렴"""
+    """매장명 비교용 정규화 키 — 공백/점 제거 후 부서·법인 표기는 걷어내되,
+    브랜드 프리픽스(링크맘/베이비하우스 등)는 지역명과 묶어서 '브랜드::지역' 형태로 남긴다.
+    '베이비하우스 향남' / '베이비하우스 향남점' / '향남베이비하우스' 는 모두 '베이비하우스::향남'으로 동일하게 수렴하지만,
+    '링크맘 마곡점'과 '베이비하우스 마곡점'처럼 같은 지역명이라도 서로 다른 브랜드 체인이면
+    서로 다른 매장으로 구분된다 (브랜드 프리픽스까지 지워버리면 실제로 다른 두 매장이
+    같은 지역명 하나로 뭉개져서 이카운트 수량이 엉뚱하게 합산되는 심각한 오류가 생긴다)."""
     import re as _re_sk
     if not name: return ''
     cleaned = str(name).strip().replace('_', ' ')
     cleaned = _re_sk.sub(r'점\s*$', '', cleaned.strip())
     cleaned = _re_sk.sub(r'[^\w가-힣]', '', cleaned)
-    for p in GIFT_STORE_PREFIX_WORDS + GIFT_STORE_NOISE_WORDS:
+    for p in GIFT_STORE_NOISE_WORDS:
         # 주의: 노이즈 단어를 특수문자까지 제거해버리면 '(주)' 같은 표기가 '주' 한 글자로 줄어들어
         # '광주'처럼 실제 지명에 포함된 '주'까지 잘못 삭제되는 사고가 난다. 공백만 제거하고
         # 괄호 등 특수문자는 그대로 둬서(cleaned 쪽은 이미 특수문자가 제거된 상태이므로) 이런
@@ -9153,7 +9159,17 @@ def _gift_normalize_store_key(name):
         if len(p_clean) < 2:
             continue  # 한 글자짜리 노이즈 단어는 다른 지명을 오염시킬 위험이 커서 건너뜀
         cleaned = cleaned.replace(p_clean, '')
-    return cleaned or _re_sk.sub(r'[^\w가-힣]', '', str(name).strip())
+    if not cleaned:
+        return _re_sk.sub(r'[^\w가-힣]', '', str(name).strip())
+
+    # 브랜드 프리픽스를 지역명과 분리해서 'BRAND::REGION' 키로 — 브랜드 정보를 보존해야
+    # 서로 다른 체인의 동명(同名) 지역 매장이 하나로 섞이지 않는다
+    for p in GIFT_STORE_PREFIX_WORDS:
+        p_clean = p.replace(' ', '')
+        if p_clean and p_clean in cleaned:
+            region = cleaned.replace(p_clean, '')
+            return f"{p_clean}::{region}" if region else p_clean
+    return cleaned
 
 
 def _gift_build_canonical_store_index(conn):
@@ -9709,18 +9725,11 @@ def api_gift_ecount_upload():
         now = datetime.now().strftime('%Y-%m-%d %H:%M')
         batch = now.replace(' ','').replace(':','').replace('-','')
         inserted = 0
-        skipped_dup = 0
         touched_dates = set()
-        # 전표번호(voucher_no)가 파싱된 경우에 한해서만 중복(재업로드 등)을 안전하게 걸러낸다.
-        # (일자+매장+품목명+수량+전표번호)가 모두 같으면 재업로드로 겹친 것으로 보고 건너뛴다.
-        # 단, 전표번호를 못 뽑은 경우(엑셀 날짜 셀이 순수 datetime이라 표시서식의 전표번호가 값에 없는 경우)는
-        # 서로 다른 진짜 거래를 구분할 방법이 없으므로 절대 건너뛰지 않고 전부 반영한다 —
-        # 이 경우의 재업로드 중복은 파일 해시 기반 업로드 이력관리로 막는다.
-        existing_keys = set()
-        for r in conn.execute(
-                "SELECT ecount_date_raw, real_seller, item_name, quantity, voucher_no FROM gift_ecount_record WHERE voucher_no!=''").fetchall():
-            existing_keys.add((r[0], r[1], (r[2] or '').replace(' ', ''), r[3], r[4]))
-
+        # 행 단위 내용 비교로 중복을 판단하지 않는다 — 같은 전표번호 아래 완전히 동일해 보이는 행이
+        # 여러 개 있어도(예: -103번 전표가 1개씩 5줄로 나뉘어 있는 경우) 그건 실제로 5개의 개별 단위를
+        # 나타내는 정상 데이터이므로 전부 그대로 반영해야 한다. 재업로드로 인한 중복은 행 내용이 아니라
+        # '파일 자체가 이미 업로드됐는지'(파일 해시)로만 판단한다 — 이미 위에서 확인했다.
         for ri in range(header_row_idx+1, ws.max_row+1):
             gubun = ws.cell(ri, col_map['gubun']).value
             if not gubun or '증정' not in str(gubun):
@@ -9751,12 +9760,6 @@ def api_gift_ecount_upload():
                                                     trade_code=trade_code, canonical_index=canonical_index,
                                                     trade_code_map=trade_code_map, learned_cache=learned_cache)
             brand = remap_group(str(item_group or ''), str(item))
-            if voucher:
-                dup_key = (str(date_raw), real_seller, str(item).replace(' ', ''), qty, voucher)
-                if dup_key in existing_keys:
-                    skipped_dup += 1
-                    continue
-                existing_keys.add(dup_key)
             conn.execute("""INSERT INTO gift_ecount_record
                 (upload_batch, ecount_date_raw, ecount_date, voucher_no, real_seller, brand, item_name, quantity, uploaded_at, raw_seller, trade_code)
                 VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
@@ -9784,7 +9787,7 @@ def api_gift_ecount_upload():
             pass
         conn.close()
 
-        return jsonify({'ok': True, 'inserted': inserted, 'skipped_dup': skipped_dup})
+        return jsonify({'ok': True, 'inserted': inserted})
     except Exception as e:
         import traceback; traceback.print_exc()
         try: conn.close()
@@ -9825,12 +9828,9 @@ def _gift_reconcile_store_names(conn, canonical_index, trade_code_map, learned_c
 
 
 def _gift_dedupe_existing_records(conn, months=None):
-    """이미 DB에 쌓인 중복 레코드 정리 — 매장명 표기가 통합되면서 드러난 기존 중복 건들을
-    (일자+정식매장명+브랜드+품목+수량+단가) 기준으로 묶어 가장 먼저 등록된 1건만 남기고 정리한다."""
-    removed_usage = 0
-    """이미 DB에 쌓인 중복 레코드 정리 — 매장명 표기가 통합되면서 드러난 기존 중복 건들을
-    (일자+정식매장명+브랜드+품목+수량+단가) 기준으로 묶어 가장 먼저 등록된 1건만 남기고 정리한다.
-    months가 주어지면 해당 월(YYYY-MM 집합)만 대상으로 해서 대량 데이터에서도 매 업로드마다 빠르게 끝난다."""
+    """사용내역(건별) 쪽의 중복 레코드만 정리한다 — (일자+정식매장명+브랜드+품목+수량+단가) 기준으로
+    묶어 가장 먼저 등록된 1건만 남긴다. 이카운트 쪽은 행 내용 유사도로는 절대 정리하지 않는다
+    (아래 참고). months가 주어지면 해당 월(YYYY-MM 집합)만 대상으로 해서 대량 데이터에서도 빠르게 끝난다."""
     removed_usage = 0
     groups = {}
     uq = "SELECT id, usage_date, real_seller, brand, item_name, quantity, unit_price FROM gift_usage_record"
@@ -9848,28 +9848,11 @@ def _gift_dedupe_existing_records(conn, months=None):
                 conn.execute("DELETE FROM gift_usage_record WHERE id=?", (dup_id,))
                 removed_usage += 1
 
-    # 이카운트 쪽 중복 정리 — 전표번호(voucher_no)가 있는 건만 대상으로 한다.
-    # 전표번호가 같은 (일자+매장+품목+수량) 조합은 재업로드 등으로 겹친 게 거의 확실하므로 안전하게 정리하고,
-    # 전표번호가 없는 건(날짜 셀이 순수 datetime이라 전표번호를 못 뽑은 경우)은 서로 다른 진짜 거래를
-    # 구분할 방법이 없으므로 절대 건드리지 않는다(실수로 지웠다가 데이터가 유실된 적이 있었음).
+    # 이카운트 쪽은 행 내용이 같다고 해서 중복으로 판단하지 않는다 — 같은 전표번호 아래 완전히
+    # 동일해 보이는 행(예: 1개씩 5줄로 나뉜 -103번 전표)이 실제로는 서로 다른 개별 단위를 나타내는
+    # 정상 데이터인 경우가 있어서, 이런 걸 지워버리면 수량이 실제보다 적게 잡히는 사고가 난다.
+    # 재업로드로 인한 중복은 파일 해시 기반 업로드 이력관리로 막고 있으므로 여기서는 건드리지 않는다.
     removed_ecount = 0
-    egroups = {}
-    eq = "SELECT id, ecount_date, real_seller, item_name, quantity, matched_usage_id, voucher_no FROM gift_ecount_record WHERE voucher_no!=''"
-    if months:
-        placeholders = ','.join('?' * len(months))
-        eq += f" AND substr(ecount_date,1,7) IN ({placeholders})"
-    eq += " ORDER BY id"
-    for r in conn.execute(eq, list(months) if months else []).fetchall():
-        rid, ecount_date, real_seller, item_name, quantity, matched, voucher_no = r
-        key = (ecount_date, real_seller, (item_name or '').replace(' ', ''), quantity, voucher_no)
-        egroups.setdefault(key, []).append((rid, matched))
-    for key, grp_rows in egroups.items():
-        if len(grp_rows) > 1:
-            keep = next((rid for rid, m in grp_rows if m), grp_rows[0][0])
-            for rid, m in grp_rows:
-                if rid != keep:
-                    conn.execute("DELETE FROM gift_ecount_record WHERE id=?", (rid,))
-                    removed_ecount += 1
     return removed_usage, removed_ecount
 
 
@@ -9877,10 +9860,11 @@ def _gift_dedupe_existing_records(conn, months=None):
 # 별칭 등)가 달라 정규화 키가 서로 다르게 나오는 경우를 그룹으로 묶어준다.
 # (표시용 real_seller는 그대로 두고, 대사 매칭 시에만 같은 매장으로 간주)
 GIFT_STORE_EQUIV_GROUPS = [
-    {'광주', '영통', '수원'},        # 베이비하우스 광주점·수원점 매출이 이카운트엔 영통점으로 찍힘
-    {'군포', '안양'},                # 베이비하우스 군포점 = 안양점
-    {'대전세종', '대전'},            # 베이비하우스 대전세종점 = 대전점
-    {'베이비투키즈', '베투키'},      # 베이비 투 키즈 = 베투키 (별칭)
+    {'베이비하우스::광주', '베이비하우스::영통', '베이비하우스::수원'},  # 광주점·수원점 매출이 이카운트엔 영통점으로 찍힘
+    {'베이비하우스::군포', '베이비하우스::안양'},                        # 베이비하우스 군포점 = 안양점
+    {'베이비하우스::대전세종', '베이비하우스::대전'},                    # 베이비하우스 대전세종점 = 대전점
+    {'베이비투키즈', '베투키'},                                          # 베이비 투 키즈 = 베투키 (별칭)
+    {'베네피아::다산', '베이비스토어::다산'},                            # 베네피아 다산 = 베이비스토어 다산 (별칭)
 ]
 GIFT_MATCH_STORE_EQUIV = {}
 for _grp in GIFT_STORE_EQUIV_GROUPS:
@@ -10267,7 +10251,7 @@ def api_export_gift_xlsx():
     for ci, w in zip(range(2,15), [6,12,18,10,22,9,12,13,13,26,18,10,14]):
         ws1.column_dimensions[get_column_letter(ci)].width = w
 
-    # ── 시트2: 누락점검 ──
+    # ── 시트2: 누락점검 ── (화면의 누락점검 탭과 동일한 로직 — 이카운트 쪽 + 사용내역에만 있는 건까지 모두 포함)
     ws2 = wb.create_sheet("누락점검")
     ws2.column_dimensions['A'].width = 2
     ws2.merge_cells('B2:G2')
@@ -10284,14 +10268,31 @@ def api_export_gift_xlsx():
     q2 += " ORDER BY ecount_date, real_seller"
     rows2 = conn.execute(q2, p2).fetchall()
     ri2 = 5
+    STATUS_COLOR_XL = {'일치': '16A34A', '수량상이': 'D97706', '누락': 'DC2626'}
     for r in rows2:
-        status = '확인' if r['matched_usage_id'] else '누락'
+        status = r['match_status'] or '누락'
         vals = [r['real_seller'], r['ecount_date_raw'], r['brand'], r['item_name'], r['quantity'], status]
         for ci, v in enumerate(vals, 2):
             c = ws2.cell(row=ri2, column=ci, value=v); c.font=Font(size=9,name=FNAME); c.border=bdr
             c.alignment = right_a if ci==6 else (left_a if ci in (2,5) else ctr)
             if ci==7:
-                c.font = Font(bold=True, size=9, name=FNAME, color='16A34A' if status=='확인' else 'DC2626')
+                c.font = Font(bold=True, size=9, name=FNAME, color=STATUS_COLOR_XL.get(status,'DC2626'))
+        ri2 += 1
+
+    # 사용내역(건별)에는 적어뒀지만 이카운트 쪽에는 대응 건이 없는 경우도 함께 표시 (화면과 동일)
+    uq_only = "SELECT usage_date, ship_date, store_name, real_seller, brand, item_name, quantity FROM gift_usage_record WHERE match_status='누락'"
+    up_only = []
+    if month:
+        uq_only += " AND (ship_date LIKE ? OR (ship_date='' AND usage_date LIKE ?))"
+        up_only += [f"{month}%", f"{month}%"]
+    for r in conn.execute(uq_only, up_only).fetchall():
+        udate, uship, ustore, ureal, ubrand, uitem, uqty = r
+        vals = [ureal or ustore, f"(사용내역) {uship or udate or '발송일자 미입력'}", ubrand, uitem, uqty, '누락']
+        for ci, v in enumerate(vals, 2):
+            c = ws2.cell(row=ri2, column=ci, value=v); c.font=Font(size=9,name=FNAME,italic=True); c.border=bdr
+            c.alignment = right_a if ci==6 else (left_a if ci in (2,5) else ctr)
+            if ci==7:
+                c.font = Font(bold=True, italic=True, size=9, name=FNAME, color='DC2626')
         ri2 += 1
 
     # 브랜드별 수량 대사 (우측)
