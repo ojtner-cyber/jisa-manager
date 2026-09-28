@@ -3,7 +3,7 @@
 Flask + SQLite | 본사 전용 지사 관리 플랫폼
 """
 from flask import Flask, render_template, request, jsonify, session, redirect, url_for, send_file
-import sqlite3, json, os, csv, io
+import sqlite3, json, os, csv, io, re
 from datetime import date, datetime
 from functools import wraps
 try:
@@ -23,7 +23,7 @@ _data_dir = "/data" if os.path.isdir("/data") else os.path.dirname(os.path.abspa
 DB_FILE   = os.path.join(_data_dir, "jisa.db")
 GOAL_FILE = os.path.join(_data_dir, "sales_goals.json")
 
-REGIONS = ["서울","경기","인천","강원","충북","충남","대전","세종","경북","경남","대구","부산","울산","전북","전남","광주","제주"]
+REGIONS = ["서울","경기","인천","강원","충북","충남","대전 세종","경북","경남","대구","부산","울산","전북","전남","광주","제주"]
 
 # ── DB 초기화 ─────────────────────────────────
 def get_db():
@@ -704,13 +704,10 @@ def api_branches():
     q += " ORDER BY name"
     rows = [dict(r) for r in conn.execute(q, params).fetchall()]
     y = datetime.now().year
+    # 판매현황(sales_data)에서 실적 연동 — 표기가 달라도 같은 매장이면 합산
+    year_map = _work_sales_by_key(conn, f"{y}%")
     for row in rows:
-        # 판매현황(sales_data)에서 실적 연동 — real_seller 기준
-        sd = conn.execute("""
-            SELECT SUM(total) total FROM sales_data
-            WHERE real_seller=? AND sale_date LIKE ?""",
-            (row["name"], f"{y}%")).fetchone()
-        row["year_actual"] = int(sd["total"] or 0)
+        row["year_actual"] = int(year_map.get(_store_loose_key(row["name"]), 0))
     conn.close()
     return jsonify(rows)
 
@@ -756,7 +753,7 @@ def parse_region_from_address(addr):
     addr = addr or ''
     region_map = [
         ('서울', '서울'), ('경기', '경기'), ('인천', '인천'), ('강원', '강원'),
-        ('충북', '충북'), ('충남', '충남'), ('대전', '대전'), ('세종', '세종'),
+        ('충북', '충북'), ('충남', '충남'), ('대전', '대전 세종'), ('세종', '대전 세종'),
         ('경북', '경북'), ('경남', '경남'), ('대구', '대구'), ('부산', '부산'),
         ('울산', '울산'), ('전북', '전북'), ('전남', '전남'), ('광주', '광주'),
         ('제주', '제주'),
@@ -776,7 +773,7 @@ def detect_region_from_name(name):
     #   군포, 광주, 이천, 안성, 하남, 오산, 여주, 양평, 김포, 의왕, 과천
     GG_SOUTH = ['수원', '용인', '성남', '부천', '화성', '안산', '평택', '안양', '시흥', '광명',
                 '군포', '이천', '안성', '하남', '오산', '여주', '양평', '김포', '의왕', '과천',
-                '영통', '동탄', '판교', '분당', '서수원', '다산', '미사']
+                '영통', '동탄', '판교', '분당', '서수원', '다산', '미사', '평촌', '산본']
 
     # 인천 (검단/청라 등 서구 포함) — 경기와 혼동 주의, 최우선 체크
     if any(k in name for k in ['인천', '부평', '송도', '계양', '검단', '청라', '연수', '남동']):
@@ -803,9 +800,9 @@ def detect_region_from_name(name):
         ('연제', '부산'), ('수영', '부산'), ('금정', '부산'), ('남구', '부산'),
         ('대구', '대구'), ('달성', '대구'), ('수성', '대구'), ('달서', '대구'),
         ('광주', '광주'), ('북구', '광주'), ('서구', '광주'),
-        ('대전', '대전'), ('유성', '대전'), ('서대전', '대전'),
+        ('대전', '대전 세종'), ('유성', '대전 세종'), ('서대전', '대전 세종'),
         ('울산', '울산'),
-        ('세종', '세종'),
+        ('세종', '대전 세종'),
         # 경기 (북부/남부 키워드에 없는 나머지 — 광범위 매칭)
         ('경기', '경기남부'),
         # 강원
@@ -1395,6 +1392,188 @@ def resolve_seller(name):
     # 3. 앞뒤 공백 제거
     cleaned = cleaned.strip()
     return cleaned if cleaned else name
+
+# ══════════════════════════════════════════════════════
+# ── 매장 통합 규칙 (같은 매장인데 표기가 여러 개인 경우 대표명 하나로) ──
+# ══════════════════════════════════════════════════════
+STORE_MERGE_RULES = {
+    '베이비하우스 안양점': ['베이비하우스 군포점', '베이비하우스_군포점', '베이비하우스군포점', '베이비하우스 군포'],
+    '링크맘 창원2호점':    ['베네피아 창원2호점', '베네피아 창원 2호점', '베네피아 창원2호점(링크맘)',
+                           '링크맘 창원 2호점', '링크맘_창원2호점', '베네피아_창원2호점'],
+    '베이비하우스 대구점': ['베이비하우스 대구', '베이비하우스_대구', '베이비하우스_대구점', '베이비하우스대구점'],
+    '링크맘 평촌점':       ['베네피아 평촌점', '베네피아 평촌', '링크맘 평촌', '링크맘_평촌점', '링크맘평촌점', '베네피아_평촌점'],
+    '베이비하우스 일산점': ['베이비하우스일산점', '베이비하우스 일산', '베이비하우스_일산점'],
+    '베이비 투 키즈':      ['베투키', '베이비투키즈', '주식회사 베이비투키즈', '베이비 투키즈', '베이비투 키즈'],
+    '베이비하우스 울산점': ['울산 베이비하우스', '울산베이비하우스', '베이비하우스 울산', '베이비하우스_울산점',
+                            '베이비하우스울산점', '울산 베이비하우스_용품', '울산 베이비하우스 용품'],
+    '베이비하우스 안동점': ['에뜨와 안동점', '에뜨와 안동', '에뜨와안동점', '에뜨와_안동점', '베이비하우스 안동', '베이비하우스_안동점'],
+    '베이비세븐 아산점':   ['주식회사 베이비세븐', '베이비세븐 아산', '베이비세븐_아산점'],
+}
+
+# 새로 저장해줄 판매처 정보 (한 번만 반영 — 이후 화면에서 수정한 값은 덮어쓰지 않는다)
+STORE_INFO_SEEDS = [
+    {'seed_key': 'seed_베이비세븐아산점_v1', 'name': '베이비세븐 아산점', 'ceo': '채민영',
+     'ceo_phone': '010-5431-1106', 'address': '충남 아산시 배방읍 월천1길 45', 'region': '충남', 'note': '베이비세븐'},
+]
+
+def _store_simple_key(name):
+    return (name or '').replace(' ', '').replace('_', '').replace('(', '').replace(')', '').lower()
+
+_STORE_SIMPLE_MAP = {}
+for _canon, _variants in STORE_MERGE_RULES.items():
+    # 대표명 자체가 다른 이름으로 바뀌는 예전 규칙(예: 안양점→군포점)이 남아있으면 통합이 꼬이므로 제거
+    if SELLER_ALIAS.get(_canon) not in (None, _canon):
+        SELLER_ALIAS.pop(_canon, None)
+    if DISPLAY_NAME.get(_canon) not in (None, _canon):
+        DISPLAY_NAME.pop(_canon, None)
+    _STORE_SIMPLE_MAP[_store_simple_key(_canon)] = _canon
+    for _v in _variants:
+        SELLER_ALIAS[_v] = _canon          # 신규 업로드 때부터 대표명으로 저장
+        DISPLAY_NAME[_v] = _canon          # 화면 표시도 대표명으로
+        _STORE_SIMPLE_MAP[_store_simple_key(_v)] = _canon
+
+def _canon_once(cur):
+    for cand in (cur, cur.replace('_', ' ').strip()):
+        if cand in SELLER_ALIAS:
+            return SELLER_ALIAS[cand], True
+    sk = _store_simple_key(cur)
+    if sk in _STORE_SIMPLE_MAP:
+        return _STORE_SIMPLE_MAP[sk], True
+    return cur, False
+
+def canon_store(name):
+    """저장돼 있는 어떤 표기든 '대표 매장명' 하나로 통일 (띄어쓰기·언더바·별칭 모두 처리)"""
+    if not name: return name
+    cur = str(name).strip()
+    for _ in range(4):
+        nxt, hit = _canon_once(cur)
+        if not hit: break
+        if not nxt: return ''
+        if nxt == cur: return cur
+        cur = nxt
+    cur2 = resolve_seller(cur.replace('_', ' ').strip())
+    if cur2 != cur:
+        nxt, hit = _canon_once(cur2)
+        if hit and nxt: cur2 = nxt
+    return cur2
+
+def _store_loose_key(name):
+    """매장 매칭용 느슨한 키 — 대표명으로 통일한 뒤 공백/언더바/끝의 '점'을 무시"""
+    k = _store_simple_key(canon_store(name))
+    return k[:-1] if k.endswith('점') else k
+
+def _apply_store_merges(conn):
+    """저장된 데이터 전체를 대표 매장명으로 통합 — 판매현황(real_seller), 판매처 관리(branches),
+    진열/방문/SNS 등 매장명이 들어간 표를 한꺼번에 맞춘다. 여러 번 실행해도 결과가 같다(idempotent)."""
+    stats = {'sales_renamed': 0, 'branches_merged': 0, 'other_renamed': 0, 'region_updated': 0, 'seeded': 0}
+    conn.execute("CREATE TABLE IF NOT EXISTS app_migration_log (name TEXT PRIMARY KEY, applied_at TEXT)")
+
+    # 1) 판매현황 매장명
+    for (old,) in conn.execute("SELECT DISTINCT real_seller FROM sales_data WHERE real_seller!=''").fetchall():
+        new = canon_store(old)
+        if new and new != old:
+            conn.execute("UPDATE sales_data SET real_seller=? WHERE real_seller=?", (new, old))
+            stats['sales_renamed'] += 1
+
+    # 2) 매장명이 들어간 다른 표들 (진열·방문·SNS 등) — 제약 충돌 시 그 행은 그대로 둔다
+    skip_tables = {'sales_data', 'branches', 'sales_upload_file', 'app_migration_log', 'sqlite_sequence'}
+    for (t,) in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall():
+        if t in skip_tables or t.startswith('gift_'):
+            continue
+        try:
+            cols = [r[1] for r in conn.execute(f"PRAGMA table_info({t})").fetchall()]
+        except Exception:
+            continue
+        for col in ('seller_name', 'store_name', 'real_seller'):
+            if col not in cols: continue
+            try:
+                for (old,) in conn.execute(f"SELECT DISTINCT {col} FROM {t} WHERE {col}!=''").fetchall():
+                    new = canon_store(old)
+                    if not new or new == old: continue
+                    if t == 'display_record' and col == 'seller_name':
+                        # 진열 기록은 (캠페인+매장+제품)이 유일 — 겹치면 더 큰 값을 남기고 합친다
+                        for (rid, camp, prod, sc, qty, hd) in conn.execute(
+                                "SELECT id, campaign_id, product_name, score, quantity, has_display FROM display_record WHERE seller_name=?", (old,)).fetchall():
+                            ex = conn.execute("SELECT id, score, quantity, has_display FROM display_record WHERE seller_name=? AND campaign_id=? AND product_name=?",
+                                              (new, camp, prod)).fetchone()
+                            if ex:
+                                conn.execute("UPDATE display_record SET score=?, quantity=?, has_display=? WHERE id=?",
+                                             (max(ex[1] or 0, sc or 0), max(ex[2] or 0, qty or 0), max(ex[3] or 0, hd or 0), ex[0]))
+                                conn.execute("DELETE FROM display_record WHERE id=?", (rid,))
+                            else:
+                                conn.execute("UPDATE display_record SET seller_name=? WHERE id=?", (new, rid))
+                    else:
+                        conn.execute(f"UPDATE OR IGNORE {t} SET {col}=? WHERE {col}=?", (new, old))
+                    stats['other_renamed'] += 1
+            except Exception:
+                continue
+
+    # 3) 판매처 관리(branches) — 같은 매장은 한 줄로 합치고 연락처·주소 등 정보도 합친다
+    FIELDS = ['ceo', 'ceo_phone', 'store_manager', 'store_manager_phone', 'region', 'manager',
+              'phone', 'email', 'address', 'contract_date', 'note']
+    branches = [dict(r) for r in conn.execute("SELECT * FROM branches").fetchall()]
+    groups = {}
+    for b in branches:
+        c = canon_store(b['name'])
+        if not c:
+            continue
+        groups.setdefault(_store_simple_key(c), []).append((b, c))
+    for key, members in groups.items():
+        names = {c for _, c in members}
+        target_name = sorted(names, key=lambda n: (0 if ' ' in n else 1, -len(n)))[0]
+        if len(members) == 1 and members[0][0]['name'] == target_name:
+            continue
+        def _filled(b): return sum(1 for f in FIELDS if b.get(f))
+        exact = [b for b, _ in members if b['name'] == target_name]
+        target = max(exact or [b for b, _ in members], key=_filled)
+        upd = {}
+        for b, _ in members:
+            if b['id'] == target['id']: continue
+            for f in FIELDS:
+                if not (target.get(f) or upd.get(f)) and b.get(f):
+                    upd[f] = b[f]
+        if any((b.get('status') == '운영중') for b, _ in members) and target.get('status') != '운영중':
+            upd['status'] = '운영중'
+        if target['name'] != target_name:
+            upd['name'] = target_name
+        if upd:
+            conn.execute(f"UPDATE branches SET {', '.join(k + '=?' for k in upd)} WHERE id=?", list(upd.values()) + [target['id']])
+        for b, _ in members:
+            if b['id'] == target['id']: continue
+            try:
+                conn.execute("UPDATE OR IGNORE sales SET branch_id=? WHERE branch_id=?", (target['id'], b['id']))
+                conn.execute("DELETE FROM sales WHERE branch_id=?", (b['id'],))
+            except Exception:
+                pass
+            conn.execute("DELETE FROM branches WHERE id=?", (b['id'],))
+            stats['branches_merged'] += 1
+
+    # 4) 새로 저장해줄 판매처 정보 (한 번만)
+    for seed in STORE_INFO_SEEDS:
+        if conn.execute("SELECT 1 FROM app_migration_log WHERE name=?", (seed['seed_key'],)).fetchone():
+            continue
+        row = conn.execute("SELECT id, region, note FROM branches WHERE name=?", (seed['name'],)).fetchone()
+        if row:
+            conn.execute("UPDATE branches SET ceo=?, ceo_phone=?, address=?, region=CASE WHEN COALESCE(region,'')='' THEN ? ELSE region END, "
+                         "note=CASE WHEN COALESCE(note,'')='' THEN ? ELSE note END WHERE id=?",
+                         (seed['ceo'], seed['ceo_phone'], seed['address'], seed['region'], seed['note'], row[0]))
+        else:
+            conn.execute("INSERT INTO branches (name, ceo, ceo_phone, address, region, note, status) VALUES (?,?,?,?,?,?, '운영중')",
+                         (seed['name'], seed['ceo'], seed['ceo_phone'], seed['address'], seed['region'], seed['note']))
+        conn.execute("INSERT OR REPLACE INTO app_migration_log (name, applied_at) VALUES (?,?)",
+                     (seed['seed_key'], datetime.now().strftime('%Y-%m-%d %H:%M')))
+        stats['seeded'] += 1
+
+    # 5) 지역 정리 — 대전·세종은 '대전 세종'으로 합쳐서 관리, 비어있는 지역은 이름/주소로 채움
+    cur = conn.execute("UPDATE branches SET region='대전 세종' WHERE region IN ('대전','세종','대전세종','대전/세종','대전 / 세종')")
+    stats['region_updated'] += cur.rowcount or 0
+    for (bid, name, addr) in conn.execute(
+            "SELECT id, name, address FROM branches WHERE region IS NULL OR region='' OR region='기타'").fetchall():
+        rg = detect_region_from_name(name) or parse_region_from_address(addr)
+        if rg:
+            conn.execute("UPDATE branches SET region=? WHERE id=?", (rg, bid))
+            stats['region_updated'] += 1
+    return stats
 
 # 백화점 운영사(거래처명 기준) — 오프라인 매장과 별도 채널로 구분
 DEPARTMENT_STORE_COMPANIES = [
@@ -2249,7 +2428,7 @@ def api_script_report():
                     WHERE strftime('%Y-%W',sale_date)=? AND sale_date!=''
                       AND (real_seller=? OR real_seller=?)
                     GROUP BY item_name ORDER BY total DESC LIMIT 20""",
-                    (wk_key, seller, seller_raw)).fetchall()
+                    (wk_key, seller, seller)).fetchall()
 
                 # 브랜드별 집계
                 brand_wi = {}
@@ -3360,70 +3539,9 @@ def export_xlsx_monthly():
     for ci,ww in enumerate([8,18,16,10,10,16,16,12],2):
         ws4.column_dimensions[get_column_letter(ci)].width=ww
 
-    # 수정1: 기초 데이터 — 업로드하신 원본 엑셀 파일을 그대로 시트로 재현 (요약치 검증용)
-    # 수정5: "전체"(월 미지정) 다운로드 시 원본 파일이 여러 개(달마다 하나씩) 걸리면 전체를 픽셀 단위로
-    # 복원하려다 시간이 오래 걸려 서버 오류가 나던 문제 — 파일 수가 많으면 가벼운 요약 시트로 자동 전환한다.
-    raw_files = []
-    try:
-        raw_file_q = "SELECT filename, file_b64, months FROM sales_upload_file WHERE year=?"
-        raw_file_params = [int(year)]
-        if month:
-            raw_file_q += " AND months LIKE ?"
-            raw_file_params.append(f"%{year}-{month.zfill(2)}%")
-        raw_files = conn.execute(raw_file_q, raw_file_params).fetchall()
-        if len(raw_files) > 3:
-            raw_files = []  # 너무 많으면 원본 복원을 건너뛰고 아래에서 요약 시트로 대체
-    except Exception:
-        raw_files = []
-
-    raw_sheet_names = []
-    if raw_files:
-        import base64 as _b64_dl
-        for _file_i, (fname_orig, fb64, months_str) in enumerate(raw_files):
-            try:
-                src_bytes = _b64_dl.b64decode(fb64)
-                src_wb = _load_workbook_resilient(src_bytes)
-                if src_wb is None: continue
-                for src_sheet_name in src_wb.sheetnames:
-                    src_ws = src_wb[src_sheet_name]
-                    tab_name = f"기초데이터_{months_str.split(',')[0][5:]}월"[:31] if len(raw_files)==1 and len(src_wb.sheetnames)==1 \
-                        else f"기초_{months_str.split(',')[0][5:]}월_{src_sheet_name}"[:31]
-                    # 중복 시트명 방지
-                    base_tab = tab_name; suf = 1
-                    while tab_name in raw_sheet_names:
-                        tab_name = f"{base_tab[:28]}_{suf}"; suf += 1
-                    ws_raw = wb.create_sheet(tab_name)
-                    _copy_sheet_with_style(src_ws, ws_raw)
-                    raw_sheet_names.append(tab_name)
-            except Exception:
-                continue
-
-    if not raw_sheet_names:
-        # 원본 파일이 저장되기 전 데이터(과거 업로드분) 대비 — 요약 데이터로 폴백
-        ws_raw = wb.create_sheet("기초데이터")
-        ws_raw.column_dimensions['A'].width = 2.5
-        c0 = ws_raw.cell(row=2, column=2, value="⚠ 원본 파일이 저장되지 않은 기간입니다. 해당 월 데이터를 다시 업로드하면 원본 그대로 표시됩니다.")
-        c0.font = mft(FONT_BLACK, True, 10)
-        raw_hdrs = ['일자','거래처명','실적용거래처명','거래처코드','품목명','수량','단가','공급가액','부가세','합계','채널']
-        for ci, h in enumerate(raw_hdrs, 2):
-            c = ws_raw.cell(row=4, column=ci, value=h)
-            c.font=mft(FONT_BLACK,True,9); c.fill=mf("F2F2F2"); c.alignment=center
-        ws_raw.row_dimensions[4].height=20
-        raw_q = "SELECT sale_date,seller_name,real_seller,trade_code,item_name,quantity,unit_price,supply_price,vat,total,channel FROM sales_data WHERE sale_date LIKE ? AND real_seller!=''"
-        raw_params=[f"{year}-{month.zfill(2)}%" if month else f"{year}%"]
-        if seller: raw_q += " AND real_seller=?"; raw_params.append(seller)
-        raw_q += " ORDER BY sale_date, real_seller"
-        ri_raw=5
-        for r in conn.execute(raw_q, raw_params).fetchall():
-            for ci,v in enumerate(r,2):
-                c=ws_raw.cell(row=ri_raw,column=ci,value=v); c.font=mft(FONT_BLACK,False,8)
-                c.alignment = right if ci in (7,8,9,10) else (center if ci in (2,6) else left)
-                if ci in (8,9,10): c.number_format=num_fmt
-            ri_raw+=1
-        for ci,w in zip(range(2,13),[11,20,20,14,26,8,10,11,10,11,9]):
-            ws_raw.column_dimensions[get_column_letter(ci)].width=w
-        ws_raw.freeze_panes='B5'
-        raw_sheet_names = ["기초데이터"]
+    # 기초 데이터 — 업로드하신 원본 엑셀을 그대로 시트로 재현 (못 나오는 달은 원인과 함께 안내)
+    raw_sheet_names, _raw_info = _restore_raw_data_sheets(
+        wb, conn, year, [f"{year}-{month.zfill(2)}"] if month else None, seller)
 
     conn.close()
 
@@ -4340,63 +4458,10 @@ def export_xlsx_weekly():
             ri+=1
     for ci,w in enumerate([10,26,14,36,12,16],2): ws4.column_dimensions[get_column_letter(ci)].width=w
 
-    # 수정1: 기초 데이터 — 업로드하신 원본 엑셀 파일을 그대로 시트로 재현 (요약치 검증용)
-    # 수정5: 걸치는 원본 파일이 많으면(예: 연간 전체) 픽셀 단위 복원이 오래 걸려 서버 오류가 나던 문제 —
-    # 파일 수가 많으면 가벼운 요약 시트로 자동 전환한다.
+    # 기초 데이터 — 이 리포트에 포함된 주차들이 걸치는 월의 원본 엑셀을 그대로 복원 (못 나오는 달은 원인과 함께 안내)
     covered_ym = sorted(set(f"{r['ws'][:7]}" for r in weeks if r.get('ws')) | set(f"{r['we'][:7]}" for r in weeks if r.get('we')))
-    raw_files = []
-    try:
-        if covered_ym:
-            placeholders = ' OR '.join(['months LIKE ?'] * len(covered_ym))
-            raw_files = conn.execute(
-                f"SELECT filename, file_b64, months FROM sales_upload_file WHERE {placeholders}",
-                [f"%{ym}%" for ym in covered_ym]).fetchall()
-        if len(raw_files) > 3:
-            raw_files = []  # 너무 많으면 원본 복원을 건너뛰고 아래에서 요약 시트로 대체
-    except Exception:
-        raw_files = []
-
-    raw_sheet_names = []
-    if raw_files:
-        import base64 as _b64_dl
-        for fname_orig, fb64, months_str in raw_files:
-            try:
-                src_bytes = _b64_dl.b64decode(fb64)
-                src_wb = _load_workbook_resilient(src_bytes)
-                if src_wb is None: continue
-                for src_sheet_name in src_wb.sheetnames:
-                    src_ws = src_wb[src_sheet_name]
-                    tab_name = f"기초_{months_str.split(',')[0][5:]}월_{src_sheet_name}"[:31]
-                    base_tab = tab_name; suf = 1
-                    while tab_name in raw_sheet_names:
-                        tab_name = f"{base_tab[:28]}_{suf}"; suf += 1
-                    ws_raw = wb.create_sheet(tab_name)
-                    _copy_sheet_with_style(src_ws, ws_raw)
-                    raw_sheet_names.append(tab_name)
-            except Exception:
-                continue
-
-    if not raw_sheet_names:
-        ws_raw = wb.create_sheet("기초데이터")
-        ws_raw.column_dimensions['A'].width = 2.5
-        c0 = ws_raw.cell(row=2, column=2, value="⚠ 원본 파일이 저장되지 않은 기간입니다. 해당 월 데이터를 다시 업로드하면 원본 그대로 표시됩니다.")
-        c0.font = mft(FONT_BLACK, True, 10)
-        raw_hdrs = ['일자','거래처명','실적용거래처명','거래처코드','품목명','수량','단가','공급가액','부가세','합계','채널']
-        for ci, h in enumerate(raw_hdrs, 2):
-            c = ws_raw.cell(row=4, column=ci, value=h)
-            c.font=mft(FONT_BLACK,True,9); c.fill=mf("F2F2F2"); c.alignment=center
-        ws_raw.row_dimensions[4].height=20
-        raw_q = f"SELECT sale_date,seller_name,real_seller,trade_code,item_name,quantity,unit_price,supply_price,vat,total,channel FROM sales_data WHERE {' AND '.join(qp)} ORDER BY sale_date, real_seller"
-        ri_raw=5
-        for r in conn.execute(raw_q, pp).fetchall():
-            for ci,v in enumerate(r,2):
-                c=ws_raw.cell(row=ri_raw,column=ci,value=v); c.font=mft(FONT_BLACK,False,8)
-                c.alignment = right if ci in (7,8,9,10) else (center if ci in (2,6) else left)
-                if ci in (8,9,10): c.number_format=num_fmt
-            ri_raw+=1
-        for ci,w in zip(range(2,13),[11,20,20,14,26,8,10,11,10,11,9]):
-            ws_raw.column_dimensions[get_column_letter(ci)].width=w
-        ws_raw.freeze_panes='B5'
+    covered_ym = [m for m in covered_ym if m.startswith(str(year))]
+    _raw_sheets, _raw_info = _restore_raw_data_sheets(wb, conn, year, covered_ym or None)
 
     conn.close()
 
@@ -4577,8 +4642,12 @@ def api_export_sellers_xlsx():
     branch_info = {}
     try:
         for r in conn.execute("SELECT name, ceo, ceo_phone, address, manager, phone FROM branches").fetchall():
-            branch_info[r[0]] = {'ceo': r[1] or '', 'ceo_phone': r[2] or '',
-                                  'address': r[3] or '', 'manager': r[4] or '', 'phone': r[5] or ''}
+            info_new = {'ceo': r[1] or '', 'ceo_phone': r[2] or '',
+                        'address': r[3] or '', 'manager': r[4] or '', 'phone': r[5] or ''}
+            kk = _store_loose_key(r[0])
+            cur_info = branch_info.setdefault(kk, {'ceo': '', 'ceo_phone': '', 'address': '', 'manager': '', 'phone': ''})
+            for f, v in info_new.items():
+                if v and not cur_info.get(f): cur_info[f] = v
     except Exception:
         pass
 
@@ -4596,6 +4665,31 @@ def api_export_sellers_xlsx():
         brand_items[seller][brand].add(normalize_item_name(iname))
 
     conn.close()
+
+    # 표기만 다른 같은 매장(띄어쓰기·군포/안양·베투키 등)은 한 줄로 합산
+    _K = _store_loose_key
+    merged_rows = {}
+    for r in rows:
+        k = _K(r[0])
+        if k not in merged_rows:
+            merged_rows[k] = [canon_store(r[0]) or r[0], r[1] or 0, r[2] or 0, r[3] or 0, r[4] or '', r[5]]
+        else:
+            m = merged_rows[k]
+            m[1] += r[1] or 0; m[2] += r[2] or 0; m[3] += r[3] or 0
+            if (r[4] or '') > m[4]: m[4] = r[4] or ''
+    rows = [tuple(v) for v in merged_rows.values()]
+    rows.sort(key=lambda x: x[0])
+    def _rekey_sum(d):
+        out = {}
+        for kk, vv in d.items(): out[_K(kk)] = out.get(_K(kk), 0) + (vv or 0)
+        return out
+    cur_period_totals = _rekey_sum(cur_period_totals)
+    prev_totals = _rekey_sum(prev_totals)
+    _bi2 = {}
+    for kk, vv in brand_items.items():
+        tgt = _bi2.setdefault(_K(kk), {})
+        for brand_k, items_k in vv.items(): tgt.setdefault(brand_k, set()).update(items_k)
+    brand_items = _bi2
 
     MANUAL_REGION = {
         '링크맘 중랑점': '서울', '링크맘 평촌점': '경기남부', '베이비 투 키즈': '서울',
@@ -4619,17 +4713,17 @@ def api_export_sellers_xlsx():
         if is_hidden_seller(raw_name): continue
         disp_name = display_seller(raw_name) or raw_name
         region = MANUAL_REGION.get(disp_name) or MANUAL_REGION.get(raw_name) or detect_region_from_name(disp_name) or '기타'
-        info = branch_info.get(raw_name, branch_info.get(disp_name, {}))
+        info = branch_info.get(_K(raw_name), {})
 
         cur_total = r[2] or 0
-        cur_period_total  = cur_period_totals.get(raw_name, 0)
-        prev_period_total = prev_totals.get(raw_name, 0)
+        cur_period_total  = cur_period_totals.get(_K(raw_name), 0)
+        prev_period_total = prev_totals.get(_K(raw_name), 0)
         if prev_period_total > 0:
             yoy_pct = round((cur_period_total - prev_period_total) / prev_period_total * 100, 1)
         else:
             yoy_pct = None
 
-        items_by_brand = brand_items.get(raw_name, {})
+        items_by_brand = brand_items.get(_K(raw_name), {})
         brand_marks = {}
         for b in BRANDS_ORDER:
             items = items_by_brand.get(b)
@@ -4653,7 +4747,7 @@ def api_export_sellers_xlsx():
             'brands': brand_marks,
         })
 
-    REGION_ORDER = ['서울','경기북부','경기남부','인천','부산','대구','광주','대전','울산','세종',
+    REGION_ORDER = ['서울','경기북부','경기남부','인천','부산','대구','광주','대전 세종','울산',
                     '강원','충북','충남','전북','전남','경북','경남','제주','기타']
     seller_data.sort(key=lambda x: (
         REGION_ORDER.index(x['region']) if x['region'] in REGION_ORDER else 99, x['name']))
@@ -4788,19 +4882,15 @@ def export_xlsx_branches():
                manager,phone,address,email,status,note,region
         FROM branches ORDER BY note,name""").fetchall()]
 
-    # 매장별 취급 브랜드
+    # 매장별 취급 브랜드 (표기가 달라도 같은 매장이면 합산)
     brand_sold = {}
     for r in conn.execute(f"""SELECT real_seller,item_group FROM sales_data
         WHERE sale_date LIKE '{year}%' AND real_seller!='' AND item_group!=''
         GROUP BY real_seller,item_group""").fetchall():
-        if r[0] not in brand_sold: brand_sold[r[0]] = set()
-        brand_sold[r[0]].add(r[1])
+        brand_sold.setdefault(_store_loose_key(r[0]), set()).add(r[1])
 
     # 연간 실적
-    year_sales_map = {r[0]:r[1] for r in conn.execute(f"""
-        SELECT real_seller, SUM(total) FROM sales_data
-        WHERE sale_date LIKE '{year}%' AND real_seller!=''
-        GROUP BY real_seller""").fetchall()}
+    year_sales_map = _work_sales_by_key(conn, f"{year}%")
     conn.close()
 
     wb = openpyxl.Workbook()
@@ -4838,8 +4928,8 @@ def export_xlsx_branches():
         else: rf=mf("FFFFFF")
         grp=b.get('note','') or ''
         gv=grp if grp!=prev_grp else ''; prev_grp=grp
-        sold=brand_sold.get(nm,set())
-        yr_sales=year_sales_map.get(nm,0)
+        sold=brand_sold.get(_store_loose_key(nm),set())
+        yr_sales=year_sales_map.get(_store_loose_key(nm),0)
         row_vals=[gv,nm,nm,b.get('phone',''),b.get('ceo',''),b.get('ceo_phone',''),
                   b.get('store_manager',''),b.get('store_manager_phone',''),
                   b.get('manager',''),b.get('address',''),b.get('email',''),
@@ -5436,10 +5526,12 @@ def normalize_sellers():
             conn.execute("UPDATE branches SET region=? WHERE id=?", (region, b["id"]))
             region_updated += 1
 
+    merge_stats = _apply_store_merges(conn)
     conn.commit(); conn.close()
     return jsonify({
-        "ok": True, "normalized": updated, "deleted": deleted,
-        "disp_updated": disp_updated, "region_updated": region_updated
+        "ok": True, "normalized": updated + merge_stats['sales_renamed'], "deleted": deleted,
+        "disp_updated": disp_updated, "region_updated": region_updated + merge_stats['region_updated'],
+        "branches_merged": merge_stats['branches_merged']
     })
 
 @app.route("/api/admin/merge-branches", methods=["POST"])
@@ -5696,7 +5788,7 @@ def upload_branches_preview():
     content = f.read().decode("utf-8-sig")
     reader = csv.DictReader(io.StringIO(content))
     rows, errors = [], []
-    REGIONS = ["서울","경기","인천","강원","충북","충남","대전","세종","경북","경남","대구","부산","울산","전북","전남","광주","제주"]
+    REGIONS = ["서울","경기","인천","강원","충북","충남","대전 세종","경북","경남","대구","부산","울산","전북","전남","광주","제주"]
     for i, row in enumerate(reader, 1):
         name = row.get("지사명","").strip()
         region = row.get("지역","").strip()
@@ -6157,10 +6249,12 @@ def _load_workbook_resilient(file_bytes, data_only=False):
 
 def _copy_sheet_with_style(src_ws, dst_ws, value_ws=None):
     """시트를 값+서식(폰트/배경색/테두리/정렬/병합/열너비/행높이)까지 통째로 복사.
-    value_ws가 주어지면 셀 값은 그쪽(data_only=True로 계산된 결과값)에서 가져온다 —
-    수식이 그대로 복사되면 원본이 참조하던 다른 시트가 사라져 #VALUE!/#REF! 오류가 나므로,
-    화면에 보이던 '계산된 값'을 대신 넣어서 다운로드해도 정상적으로 보이게 한다."""
+    value_ws가 주어지면 수식 셀의 값은 그쪽(data_only=True로 계산된 결과값)에서 가져온다 —
+    수식이 그대로 복사되면 원본이 참조하던 다른 시트가 사라져 #VALUE!/#REF! 오류가 나기 때문이다.
+    속도: 셀마다 스타일 객체를 복사하면 수천 행짜리 원본 12개월치를 복원할 때 서버 제한시간을 넘기므로,
+    같은 서식(style id)은 한 번만 복사해서 캐시해두고 이후 셀에는 그 결과를 재사용한다."""
     from copy import copy as _copy_style
+    style_cache = {}   # 원본 셀 style 배열 → 대상 워크북 쪽 style 배열
     for row in src_ws.iter_rows():
         for cell in row:
             v = cell.value
@@ -6171,12 +6265,18 @@ def _copy_sheet_with_style(src_ws, dst_ws, value_ws=None):
                     pass
             new_cell = dst_ws.cell(row=cell.row, column=cell.column, value=v)
             if cell.has_style:
-                new_cell.font = _copy_style(cell.font)
-                new_cell.border = _copy_style(cell.border)
-                new_cell.fill = _copy_style(cell.fill)
-                new_cell.number_format = cell.number_format
-                new_cell.protection = _copy_style(cell.protection)
-                new_cell.alignment = _copy_style(cell.alignment)
+                key = tuple(cell._style)
+                cached = style_cache.get(key)
+                if cached is None:
+                    new_cell.font = _copy_style(cell.font)
+                    new_cell.border = _copy_style(cell.border)
+                    new_cell.fill = _copy_style(cell.fill)
+                    new_cell.number_format = cell.number_format
+                    new_cell.protection = _copy_style(cell.protection)
+                    new_cell.alignment = _copy_style(cell.alignment)
+                    style_cache[key] = _copy_style(new_cell._style)
+                else:
+                    new_cell._style = _copy_style(cached)
     for col_letter, dim in src_ws.column_dimensions.items():
         if dim.width:
             dst_ws.column_dimensions[col_letter].width = dim.width
@@ -6196,6 +6296,143 @@ def _copy_sheet_with_style(src_ws, dst_ws, value_ws=None):
         dst_ws.sheet_view.showGridLines = src_ws.sheet_view.showGridLines
     except Exception:
         pass
+
+
+def _copy_sheet_values_fast(src_ws, dst_ws):
+    """간이 복원 — 값과 열 너비, 첫 행 굵게만 옮긴다(서식 전체 복사가 시간상 어려울 때만 사용)."""
+    from openpyxl.styles import Font as _F
+    for ri, row in enumerate(src_ws.iter_rows(values_only=True), 1):
+        for ci, v in enumerate(row, 1):
+            if v is not None:
+                dst_ws.cell(row=ri, column=ci, value=v)
+    for col_letter, dim in src_ws.column_dimensions.items():
+        if dim.width:
+            dst_ws.column_dimensions[col_letter].width = dim.width
+    try:
+        dst_ws.freeze_panes = src_ws.freeze_panes
+    except Exception:
+        pass
+
+
+def _restore_raw_data_sheets(wb, conn, year, months_needed=None, seller_filter=''):
+    """'기초데이터' — 업로드했던 원본 엑셀을 월별 시트로 그대로 복원한다.
+    · months_needed: 필요한 'YYYY-MM' 목록(없으면 그 해 거래가 있는 모든 달)
+    · 원본이 없거나 시간 제한으로 복원하지 못한 달이 있으면 '기초데이터_안내' 시트에
+      '몇 월이 왜 원본으로 못 나왔는지'를 적고, 그 달 데이터만 요약 목록으로 함께 넣어준다.
+    반환: (추가된 시트 이름 리스트, 정보 dict)"""
+    import time, base64
+    t0 = time.time()
+    FULL_STYLE_BUDGET = 12.0   # 원본 서식까지 그대로 복사하는 데 쓰는 시간(초)
+    TOTAL_BUDGET = 22.0        # 이 시간이 넘으면 나머지 달은 복원을 포기하고 안내한다
+
+    data_months = sorted(set(r[0] for r in conn.execute(
+        "SELECT DISTINCT substr(sale_date,1,7) FROM sales_data WHERE sale_date LIKE ? AND real_seller!=''",
+        (f"{year}%",)).fetchall() if r[0]))
+    target_months = sorted(set(months_needed)) if months_needed else data_months
+
+    def _months_of(ms): return [m.strip() for m in (ms or '').split(',') if m.strip()]
+
+    files = []
+    try:
+        for fid, fname, fb64, ms in conn.execute(
+                "SELECT id, filename, file_b64, months FROM sales_upload_file WHERE year=? ORDER BY id", (int(year),)).fetchall():
+            fm = _months_of(ms)
+            if set(fm) & set(target_months):
+                files.append((fid, fname, fb64, fm))
+    except Exception:
+        files = []
+    # 같은 달 원본이 여러 번 저장돼 있으면 가장 최근에 올린 파일 하나만 사용한다
+    claimed = set()
+    picked = []
+    for f in sorted(files, key=lambda x: -x[0]):
+        if any(m in target_months and m not in claimed for m in f[3]):
+            picked.append(f)
+            claimed.update(m for m in f[3] if m in target_months)
+    files = sorted(picked, key=lambda x: (x[3][0] if x[3] else '9999'))
+
+    covered, simple_mode, skipped_time, failed = set(), set(), set(), set()
+    sheet_names = []
+    for fid, fname, fb64, fm in files:
+        need_here = [m for m in fm if m in target_months]
+        if time.time() - t0 > TOTAL_BUDGET:
+            skipped_time.update(need_here); continue
+        try:
+            src_bytes = base64.b64decode(fb64)
+            src_wb = _load_workbook_resilient(src_bytes)
+            if src_wb is None:
+                failed.update(need_here); continue
+            label = f"{fm[0][5:7]}월" if len(fm) == 1 else f"{fm[0][5:7]}-{fm[-1][5:7]}월"
+            use_full = (time.time() - t0) <= FULL_STYLE_BUDGET
+            for sn in src_wb.sheetnames:
+                src_ws = src_wb[sn]
+                tab = (f"기초_{label}" if len(src_wb.sheetnames) == 1 else f"기초_{label}_{sn}")[:31]
+                base_tab, suf = tab, 1
+                while tab in wb.sheetnames:
+                    tab = f"{base_tab[:28]}_{suf}"; suf += 1
+                ws_raw = wb.create_sheet(tab)
+                if use_full:
+                    _copy_sheet_with_style(src_ws, ws_raw)
+                else:
+                    _copy_sheet_values_fast(src_ws, ws_raw)
+                sheet_names.append(tab)
+            covered.update(need_here)
+            if not use_full:
+                simple_mode.update(need_here)
+        except Exception:
+            failed.update(need_here)
+
+    no_file = [m for m in target_months if m not in covered and m not in skipped_time and m not in failed]
+    problem = {}
+    for m in no_file: problem[m] = '원본 파일이 저장돼 있지 않음 → 판매현황 탭에서 이 달 iCOUNT 파일을 다시 업로드해주세요'
+    for m in sorted(skipped_time): problem[m] = '원본이 너무 커서 시간 제한으로 복원하지 못함 → 월을 하나씩 선택해서 다운로드해주세요'
+    for m in sorted(failed): problem[m] = '원본 파일을 열 수 없음 → 판매현황 탭에서 이 달 파일을 다시 업로드해주세요'
+
+    if problem or simple_mode:
+        from openpyxl.styles import Font as _Fn, PatternFill as _Pf, Alignment as _Al
+        name = "기초데이터_안내" if sheet_names else "기초데이터"
+        ws_n = wb.create_sheet(name); sheet_names.append(name)
+        ws_n.column_dimensions['A'].width = 2.5
+        r0 = 2
+        if problem:
+            ws_n.cell(row=r0, column=2, value="⚠ 아래 달은 기초데이터를 원본 그대로 넣지 못했어요 (원인 안내)").font = _Fn(name='맑은 고딕', bold=True, size=11)
+            r0 += 2
+            for ci, h in enumerate(['월', '원인 / 조치'], 2):
+                c = ws_n.cell(row=r0, column=ci, value=h); c.font = _Fn(name='맑은 고딕', bold=True, size=9); c.fill = _Pf('solid', fgColor='F2F2F2')
+            r0 += 1
+            for m in sorted(problem):
+                ws_n.cell(row=r0, column=2, value=f"{m[:4]}년 {int(m[5:7])}월").font = _Fn(name='맑은 고딕', size=9)
+                ws_n.cell(row=r0, column=3, value=problem[m]).font = _Fn(name='맑은 고딕', size=9)
+                r0 += 1
+            r0 += 1
+        if simple_mode:
+            ws_n.cell(row=r0, column=2, value="ℹ 처리 시간 때문에 아래 달은 서식 없이 값 위주로 간이 복원했어요: " +
+                      ', '.join(f"{int(m[5:7])}월" for m in sorted(simple_mode))).font = _Fn(name='맑은 고딕', size=9)
+            r0 += 2
+        prob_months = sorted(problem)
+        if prob_months:
+            ws_n.cell(row=r0, column=2, value="▼ 원본이 없는 달의 데이터를 DB에서 요약해서 보여드려요").font = _Fn(name='맑은 고딕', bold=True, size=9)
+            r0 += 1
+            hdrs = ['일자','거래처명','실적용거래처명','거래처코드','품목명','수량','단가','공급가액','부가세','합계','채널']
+            for ci, h in enumerate(hdrs, 2):
+                c = ws_n.cell(row=r0, column=ci, value=h); c.font = _Fn(name='맑은 고딕', bold=True, size=9); c.fill = _Pf('solid', fgColor='F2F2F2')
+            r0 += 1
+            ph = ' OR '.join(['sale_date LIKE ?'] * len(prob_months))
+            q = f"""SELECT sale_date,seller_name,real_seller,trade_code,item_name,quantity,unit_price,supply_price,vat,total,channel
+                    FROM sales_data WHERE ({ph}) AND real_seller!=''"""
+            params = [f"{m}%" for m in prob_months]
+            if seller_filter:
+                q += " AND real_seller=?"; params.append(seller_filter)
+            q += " ORDER BY sale_date, real_seller LIMIT 30000"
+            for r in conn.execute(q, params).fetchall():
+                for ci, v in enumerate(r, 2):
+                    c = ws_n.cell(row=r0, column=ci, value=v); c.font = _Fn(name='맑은 고딕', size=8)
+                    if ci in (8, 9, 10, 11, 12):
+                        c.number_format = '#,##0'
+                r0 += 1
+        for ci, w in zip(range(2, 13), [16, 60, 20, 14, 26, 8, 10, 11, 10, 11, 9]):
+            ws_n.column_dimensions[get_column_letter(ci)].width = w
+    info = {'covered': sorted(covered), 'problem': problem, 'simple': sorted(simple_mode)}
+    return sheet_names, info
 
 
 def _extract_single_sheet_xlsx_b64(src_ws):
@@ -8596,7 +8833,8 @@ def api_instagram_delete(pid):
 MAJOR_REGION_MAP = {
     # 대권역 매핑: 세부 지역 → 수도권/충청권/영남권/호남권/강원기타
     '서울': '수도권', '경기북부': '수도권', '경기남부': '수도권', '인천': '수도권',
-    '대전': '충청권', '충북': '충청권', '충남': '충청권', '세종': '충청권',
+    '대전': '충청권', '충북': '충청권', '충남': '충청권', '세종': '충청권', '대전 세종': '충청권',
+    '경기': '수도권',
     '부산': '영남권', '대구': '영남권', '울산': '영남권', '경북': '영남권', '경남': '영남권',
     '광주': '호남권', '전북': '호남권', '전남': '호남권',
     '강원': '강원/기타', '제주': '강원/기타', '기타': '강원/기타',
@@ -8604,9 +8842,59 @@ MAJOR_REGION_MAP = {
 MAJOR_REGION_ORDER = ['수도권', '충청권', '영남권', '호남권', '강원/기타']
 
 
-def _major_region(seller_name):
-    small = detect_region_from_name(seller_name) or '기타'
-    return MAJOR_REGION_MAP.get(small, '강원/기타')
+def _major_region(seller_name, branch_region=''):
+    """매장명(없으면 판매처 관리의 지역값)으로 대권역 판별"""
+    name = seller_name or ''
+    if '베이비하우스' in name and '광주' in name and '경기' not in name:
+        small = '경기남부'          # 베이비하우스 광주점은 경기도 광주(영통점 하위 매장)
+    else:
+        small = detect_region_from_name(name)
+    if not small and branch_region:
+        small = branch_region
+    mr = MAJOR_REGION_MAP.get(small)
+    if not mr and branch_region:
+        mr = MAJOR_REGION_MAP.get(branch_region)
+    return mr or '강원/기타'
+
+
+def _work_managed_stores(conn, manager, year=None):
+    """업무 탭 담당 매장 목록 — 판매처 관리(branches) 기준.
+    · 이름은 대표 매장명으로 통일하고, 표기가 달라도 같은 매장이면 한 줄로 합친다
+    · 담당자를 고르지 않은 '전체'일 때는 올해 실제 판매가 있는데 판매처 관리에 없는 오프라인 매장도 포함
+      (그래야 매출이 어느 매장에도 안 잡히고 사라지는 일이 없다)"""
+    q = "SELECT name, region FROM branches WHERE status='운영중'"
+    params = []
+    if manager:
+        q += " AND manager=?"; params.append(manager)
+    stores = {}
+    for name, region in conn.execute(q, params).fetchall():
+        cn = canon_store(name)
+        if not cn: continue
+        k = _store_loose_key(cn)
+        if k not in stores:
+            stores[k] = {'name': cn, 'region': region or '', 'key': k}
+    if not manager and year:
+        for (rs,) in conn.execute(
+                "SELECT DISTINCT real_seller FROM sales_data WHERE real_seller!='' AND sale_date LIKE ? AND channel='오프라인'",
+                (f"{year}%",)).fetchall():
+            if is_hidden_seller(rs): continue
+            cn = canon_store(rs)
+            if not cn: continue
+            k = _store_loose_key(cn)
+            if k not in stores:
+                stores[k] = {'name': cn, 'region': '', 'key': k}
+    return list(stores.values())
+
+
+def _work_sales_by_key(conn, like):
+    """기간(LIKE 패턴)별 매장 매출 — 표기가 달라도 같은 매장이면 합산해서 {느슨한키: 매출}"""
+    out = {}
+    for seller, total in conn.execute(
+            "SELECT real_seller, SUM(total) FROM sales_data WHERE sale_date LIKE ? AND real_seller!='' GROUP BY real_seller",
+            (like,)).fetchall():
+        k = _store_loose_key(seller)
+        out[k] = out.get(k, 0) + (total or 0)
+    return out
 
 
 @app.route("/api/work/managers")
@@ -8626,27 +8914,19 @@ def api_work_managers():
 @app.route("/api/work/stores-by-manager")
 @login_required
 def api_work_stores_by_manager():
-    """담당자별 매장 리스트 (지역/최근매출 포함)"""
+    """담당자별 매장 리스트 (지역/연간매출 포함)"""
     manager = request.args.get('manager', '').strip()
     year = request.args.get('year', str(datetime.now().year))
     conn = get_db()
-    q = "SELECT name, region, phone FROM branches WHERE status='운영중'"
-    params = []
-    if manager:
-        q += " AND manager=?"; params.append(manager)
-    q += " ORDER BY name"
-    stores = conn.execute(q, params).fetchall()
-
-    sales_map = {r[0]: r[1] for r in conn.execute(
-        f"SELECT real_seller, SUM(total) FROM sales_data WHERE sale_date LIKE '{year}%' GROUP BY real_seller").fetchall()}
+    stores = _work_managed_stores(conn, manager, year)
+    sales_map = _work_sales_by_key(conn, f"{year}%")
     conn.close()
-
     result = []
-    for name, region, phone in stores:
+    for s in stores:
         result.append({
-            'name': name, 'region': region or detect_region_from_name(name) or '',
-            'major_region': _major_region(name), 'phone': phone or '',
-            'year_sales': sales_map.get(name, 0),
+            'name': s['name'], 'region': s['region'] or detect_region_from_name(s['name']) or '',
+            'major_region': _major_region(s['name'], s['region']), 'phone': '',
+            'year_sales': sales_map.get(s['key'], 0),
         })
     result.sort(key=lambda x: -x['year_sales'])
     return jsonify(result)
@@ -8656,13 +8936,15 @@ def _work_kpi_data(year, month, manager):
     """월간 목표 vs 실적 KPI 계산 (API/엑셀 export 공용 헬퍼)"""
     conn = get_db()
 
-    # 담당 매장 목록
-    q = "SELECT name FROM branches WHERE status='운영중'"
-    params = []
-    if manager: q += " AND manager=?"; params.append(manager)
-    managed_stores = [r[0] for r in conn.execute(q, params).fetchall()]
-    managed_set = set(managed_stores)
-    total_managed = len(managed_stores) or 1
+    stores = _work_managed_stores(conn, manager, year)
+    managed_keys = {s['key'] for s in stores}
+    total_managed = len(stores) or 1
+
+    def _count(names, require_total=None):
+        keys = {_store_loose_key(n) for n in names if n}
+        if manager:
+            keys &= managed_keys
+        return len(keys)
 
     ym = f"{year}-{month:02d}"
 
@@ -8670,43 +8952,39 @@ def _work_kpi_data(year, month, manager):
     visit_q = "SELECT DISTINCT store_name FROM store_visit_report WHERE visit_date LIKE ?"
     visit_params = [f"{ym}%"]
     if manager: visit_q += " AND manager=?"; visit_params.append(manager)
-    visited_stores = [r[0] for r in conn.execute(visit_q, visit_params).fetchall()]
-    visit_actual = len([s for s in visited_stores if not manager or s in managed_set])
+    visit_actual = _count([r[0] for r in conn.execute(visit_q, visit_params).fetchall()])
     visit_target = max(round(total_managed * 0.8), 1)  # 담당 매장의 80% 방문을 목표로 산정
 
-    # 2) 신규 진열 확보: display_record 중 이달 applied_date가 있고 has_display=1인 매장 수 (담당 매장 한정)
-    disp_q = """SELECT DISTINCT dr.seller_name FROM display_record dr
-                WHERE dr.has_display=1 AND dr.applied_date LIKE ?"""
-    disp_params = [f"{ym}%"]
-    disp_rows = [r[0] for r in conn.execute(disp_q, disp_params).fetchall()]
-    disp_actual = len([s for s in disp_rows if not manager or s in managed_set])
-    disp_target = max(round(total_managed * 0.15), 3)  # 담당 매장의 약 15% 신규 진열 목표
+    # 2) 신규 진열 확보: display_record 중 이달 applied_date가 있고 has_display=1인 매장 수
+    disp_rows = [r[0] for r in conn.execute(
+        """SELECT DISTINCT dr.seller_name FROM display_record dr
+           WHERE dr.has_display=1 AND dr.applied_date LIKE ?""", (f"{ym}%",)).fetchall()]
+    disp_actual = _count(disp_rows)
+    disp_target = max(round(total_managed * 0.15), 3)
 
-    # 3) 프로모션 참여 매장: 이달 기간이 걸치는 캠페인에 has_display=1인 담당 매장 수
-    promo_q = """SELECT DISTINCT dr.seller_name FROM display_record dr
-                 JOIN display_campaign dc ON dr.campaign_id=dc.id
-                 WHERE dr.has_display=1 AND dc.period_start<=? AND dc.period_end>=?"""
+    # 3) 프로모션 참여 매장: 이달 기간이 걸치는 캠페인에 has_display=1인 매장 수
     month_end = f"{year}-{month:02d}-31"
-    promo_rows = [r[0] for r in conn.execute(promo_q, (month_end, f"{ym}-01")).fetchall()]
-    promo_actual = len([s for s in promo_rows if not manager or s in managed_set])
+    promo_rows = [r[0] for r in conn.execute(
+        """SELECT DISTINCT dr.seller_name FROM display_record dr
+           JOIN display_campaign dc ON dr.campaign_id=dc.id
+           WHERE dr.has_display=1 AND dc.period_start<=? AND dc.period_end>=?""", (month_end, f"{ym}-01")).fetchall()]
+    promo_actual = _count(promo_rows)
     promo_target = max(round(total_managed * 0.2), 3)
 
-    # 4) 발주 전환율: 이달 매출 발생 담당 매장 비율
-    sales_q = f"SELECT DISTINCT real_seller FROM sales_data WHERE sale_date LIKE ? AND total>0"
-    sales_rows = [r[0] for r in conn.execute(sales_q, (f"{ym}%",)).fetchall()]
-    ordered_actual = len([s for s in sales_rows if not manager or s in managed_set])
+    # 4) 발주 전환율: 이달 매출 발생 매장 비율 (표기가 달라도 같은 매장은 1곳으로 계산)
+    sales_rows = [r[0] for r in conn.execute(
+        "SELECT DISTINCT real_seller FROM sales_data WHERE sale_date LIKE ? AND total>0", (f"{ym}%",)).fetchall()]
+    ordered_actual = _count(sales_rows)
     conversion_actual = round(ordered_actual / total_managed * 100, 1)
-    conversion_target = 70.0  # 업계 통상 목표치
+    conversion_target = 70.0
 
-    # 전월 실적 (증감 비교용)
     prev_month = month - 1 if month > 1 else 12
     prev_year = year if month > 1 else year - 1
     prev_ym = f"{prev_year}-{prev_month:02d}"
-    prev_visit = len(set(r[0] for r in conn.execute(
+    prev_visit = _count([r[0] for r in conn.execute(
         "SELECT DISTINCT store_name FROM store_visit_report WHERE visit_date LIKE ?"
         + (" AND manager=?" if manager else ""),
-        [f"{prev_ym}%"] + ([manager] if manager else [])).fetchall()
-        if not manager or r[0] in managed_set))
+        [f"{prev_ym}%"] + ([manager] if manager else [])).fetchall()])
 
     conn.close()
 
@@ -8723,7 +9001,6 @@ def _work_kpi_data(year, month, manager):
         _item('conversion_rate', '발주 전환율', conversion_target, conversion_actual, 0, '%'),
     ]
 
-    # 수정2-1: 수기 입력값이 있으면 자동계산값을 덮어씀 (목표·실적 모두 사용자가 직접 관리 가능)
     conn2 = get_db()
     manual_rows = conn2.execute(
         "SELECT item_key, target, actual FROM work_kpi_manual WHERE year=? AND month=? AND manager=?",
@@ -8776,63 +9053,112 @@ def api_work_kpi_save():
     return jsonify({'ok': True})
 
 
-def _work_brand_perf_data(year, month, manager):
-    """브랜드별 실적 계산 — 목표매출은 제품별로 '작년 동월 실적 × 1.05(5% 성장)'을 산정한 뒤 브랜드 단위로 합산 (API/엑셀 export 공용)"""
+def _work_sales_matrix(conn, year, keyset):
+    """(브랜드, 제품) → [0, 1월..12월] 매출. keyset이 있으면 그 매장들만 집계"""
+    rows = conn.execute(
+        """SELECT substr(sale_date,1,7) ym, real_seller, item_group, item_name, SUM(total)
+           FROM sales_data WHERE sale_date LIKE ? AND sale_date!='' AND real_seller!=''
+           GROUP BY ym, real_seller, item_group, item_name""", (f"{year}%",)).fetchall()
+    out = {}
+    for ym, seller, grp, name, total in rows:
+        if keyset is not None and _store_loose_key(seller) not in keyset:
+            continue
+        try: m = int(ym[5:7])
+        except Exception: continue
+        brand = remap_group(grp, name) or '(미분류)'
+        prod = normalize_item_name(name) or name or '(품목미상)'
+        arr = out.setdefault((brand, prod), [0] * 13)
+        arr[m] += total or 0
+    return out
+
+
+def _work_target_data(year, manager):
+    """브랜드 → 제품별 월별 목표/실적. 목표 = 전년 동월 실적 × 1.05 (제품 단위로 산정해 브랜드로 합산)"""
     conn = get_db()
-
-    q = "SELECT name FROM branches WHERE status='운영중'"
-    params = []
-    if manager: q += " AND manager=?"; params.append(manager)
-    managed_stores = [r[0] for r in conn.execute(q, params).fetchall()]
-
-    def _product_sales(y, m, stores):
-        """제품별(item_name) 매출 집계"""
-        if not stores:
-            return {}
-        placeholders = ','.join('?' for _ in stores)
-        rows = conn.execute(f"""
-            SELECT item_group, item_name, SUM(total) t FROM sales_data
-            WHERE sale_date LIKE ? AND real_seller IN ({placeholders})
-            GROUP BY item_group, item_name""",
-            [f"{y}-{m:02d}%"] + stores).fetchall()
-        out = {}
-        for grp, name, total in rows:
-            out[(grp, name)] = {'brand': remap_group(grp, name), 'total': total or 0}
-        return out
-
-    actual_products = _product_sales(year, month, managed_stores)
-    last_year_products = _product_sales(year - 1, month, managed_stores)  # 작년 동월
-
-    # 실적: 브랜드별 합산
-    actual_map = {}
-    for (grp, name), v in actual_products.items():
-        actual_map[v['brand']] = actual_map.get(v['brand'], 0) + v['total']
-
-    # 목표: 제품별로 작년 동월 실적 × 1.05 산정 후 브랜드 단위로 합산
-    target_map = {}
-    products_without_history = 0
-    for (grp, name), v in actual_products.items():
-        last_year_val = last_year_products.get((grp, name), {}).get('total', 0)
-        products_without_history += (1 if last_year_val == 0 else 0)
-        target_map[v['brand']] = target_map.get(v['brand'], 0) + round(last_year_val * 1.05)
-    # 작년엔 있었지만 올해 실적이 아직 없는 제품도 목표에는 반영 (성장 목표는 유지되어야 하므로)
-    for (grp, name), v in last_year_products.items():
-        if (grp, name) not in actual_products:
-            b = v['brand']
-            target_map[b] = target_map.get(b, 0) + round(v['total'] * 1.05)
-
+    keyset = None
+    if manager:
+        keyset = {s['key'] for s in _work_managed_stores(conn, manager, year)}
+    cur = _work_sales_matrix(conn, year, keyset)
+    prev = _work_sales_matrix(conn, year - 1, keyset)
     conn.close()
-
-    all_brands = set(actual_map.keys()) | set(target_map.keys()) | set(BRAND_ORDER)
+    brands = {}
+    for key in set(cur) | set(prev):
+        brand, prod = key
+        p = prev.get(key, [0] * 13); c = cur.get(key, [0] * 13)
+        if not any(p) and not any(c):
+            continue
+        disp = re.sub(r'^\[[^\]]+\]\s*', '', prod).strip() or prod
+        tm = [0] + [round(p[m] * 1.05) for m in range(1, 13)]
+        brands.setdefault(brand, []).append({'name': disp, 'prev': p, 'cur': c, 'target': tm})
+    ordered = [b for b in BRAND_ORDER if b in brands] + sorted(b for b in brands if b not in BRAND_ORDER)
     result = []
-    for b in BRAND_ORDER + sorted(all_brands - set(BRAND_ORDER)):
-        if b not in all_brands: continue
-        target = target_map.get(b, 0)
-        actual = actual_map.get(b, 0)
-        rate = round(actual / target * 100, 1) if target else (100.0 if actual > 0 else 0)
-        result.append({'brand': b, 'target': target, 'actual': actual, 'rate': rate})
-    return {'ok': True, 'items': result,
-                     'basis': f'{year-1}년 {month}월 실적 × 1.05 (전년 동기 대비 5% 성장 목표)'}
+    for b in ordered:
+        prods = sorted(brands[b], key=lambda x: -(sum(x['prev']) + sum(x['cur'])))
+        agg = {k: [sum(pr[k][i] for pr in prods) for i in range(13)] for k in ('prev', 'cur', 'target')}
+        result.append({'brand': b, 'products': prods, **agg})
+    return result
+
+
+def _rate(actual, target):
+    return round(actual / target * 100, 1) if target else (100.0 if actual > 0 else 0)
+
+
+def _work_brand_perf_data(year, month, manager, mode='month'):
+    """브랜드별 실적 — 브랜드 아래 제품별 목표/실적/달성률까지 (API/엑셀 export 공용).
+    mode='month': 선택한 달 (목표 = 전년 동월 × 1.05)
+    mode='year' : 연간 (연간 목표 = 전년 각 월 × 1.05의 합, 실적 = 1월~선택월 누적)"""
+    data = _work_target_data(year, manager)
+
+    def _pack(name, arrs):
+        if mode == 'year':
+            target = sum(arrs['target'][1:13]); actual = sum(arrs['cur'][1:month + 1])
+            cum_target = sum(arrs['target'][1:month + 1])
+            return {'name': name, 'target': target, 'actual': actual, 'rate': _rate(actual, target),
+                    'cum_target': cum_target, 'cum_rate': _rate(actual, cum_target),
+                    'prev_total': sum(arrs['prev'][1:13])}
+        target = arrs['target'][month]; actual = arrs['cur'][month]
+        return {'name': name, 'target': target, 'actual': actual, 'rate': _rate(actual, target),
+                'prev_total': arrs['prev'][month]}
+
+    items = []
+    for b in data:
+        it = _pack(b['brand'], b); it['brand'] = it.pop('name')
+        it['products'] = [_pack(p['name'], p) for p in b['products']]
+        items.append(it)
+    basis = (f'{year-1}년 각 월 실적 × 1.05 (전년 동기 대비 5% 성장 목표) — 연간 목표 대비 {month}월까지 누적 실적'
+             if mode == 'year' else f'{year-1}년 {month}월 실적 × 1.05 (전년 동기 대비 5% 성장 목표)')
+    return {'ok': True, 'items': items, 'basis': basis, 'mode': mode}
+
+
+def _work_monthly_grid(year, manager):
+    """월별 목표 실적 — 브랜드/제품별 1~12월 목표(전년 동월×1.05)·실적·달성률"""
+    now = datetime.now()
+    data = _work_target_data(year, manager)
+    def _is_future(m): return (year > now.year) or (year == now.year and m > now.month)
+    brands = []
+    for b in data:
+        def _row(name, arrs):
+            months = []
+            for m in range(1, 13):
+                t = arrs['target'][m]; a = arrs['cur'][m]
+                fut = _is_future(m)
+                months.append({'month': m, 'target': t, 'actual': None if fut else a,
+                               'rate': None if fut else _rate(a, t)})
+            ann_t = sum(arrs['target'][1:13]); ann_a = sum(arrs['cur'][m] for m in range(1, 13) if not _is_future(m))
+            return {'name': name, 'months': months, 'annual_target': ann_t, 'ytd_actual': ann_a, 'annual_rate': _rate(ann_a, ann_t)}
+        row = _row(b['brand'], b)
+        row['products'] = [_row(p['name'], p) for p in b['products']]
+        brands.append(row)
+    return {'ok': True, 'year': year, 'brands': brands,
+            'basis': f'{year-1}년 동월 실적 × 1.05 (전년 동기 대비 5% 성장)'}
+
+
+@app.route("/api/work/monthly-targets")
+@login_required
+def api_work_monthly_targets():
+    year = int(request.args.get('year', datetime.now().year))
+    manager = request.args.get('manager', '').strip()
+    return jsonify(_work_monthly_grid(year, manager))
 
 
 @app.route("/api/work/brand-performance")
@@ -8841,24 +9167,19 @@ def api_work_brand_performance():
     year = int(request.args.get('year', datetime.now().year))
     month = int(request.args.get('month', datetime.now().month))
     manager = request.args.get('manager', '').strip()
-    return jsonify(_work_brand_perf_data(year, month, manager))
+    mode = request.args.get('mode', 'month')
+    return jsonify(_work_brand_perf_data(year, month, manager, mode))
 
 
 def _work_coverage_data(year, month, manager):
     """매장 방문 커버리지 계산 (API/엑셀 export 공용) — 담당 매장수는 자동 계산, 방문 매장수는 수기 입력값 반영, 담당 매장 세부 리스트 포함"""
     conn = get_db()
+    stores = _work_managed_stores(conn, manager, year)
+    sales_map = _work_sales_by_key(conn, f"{year}-{month:02d}%")
 
-    q = "SELECT name FROM branches WHERE status='운영중'"
-    params = []
-    if manager: q += " AND manager=?"; params.append(manager)
-    stores = [r[0] for r in conn.execute(q, params).fetchall()]
-
-    sales_map = {r[0]: r[1] for r in conn.execute(
-        f"SELECT real_seller, SUM(total) FROM sales_data WHERE sale_date LIKE '{year}-{month:02d}%' GROUP BY real_seller").fetchall()}
-
-    region_stores = {}  # mr -> [매장명, ...]
+    region_stores = {}  # mr -> [{'name','key'}, ...]
     for s in stores:
-        mr = _major_region(s)
+        mr = _major_region(s['name'], s['region'])
         region_stores.setdefault(mr, []).append(s)
 
     visited_q = "SELECT region, visited_count, note FROM work_visit_coverage WHERE year=? AND month=? AND manager=?"
@@ -8868,13 +9189,12 @@ def _work_coverage_data(year, month, manager):
 
     result = []
     for mr in MAJOR_REGION_ORDER:
-        store_list = sorted(region_stores.get(mr, []))
+        store_list = sorted(region_stores.get(mr, []), key=lambda s: s['name'])
         managed = len(store_list)
         if managed == 0 and mr not in visited_map: continue
         v = visited_map.get(mr, {'visited': 0, 'note': ''})
         rate = round(v['visited'] / managed * 100, 1) if managed else 0
-        # 수정2-3: 담당 매장 세부 리스트 (매장명 + 이달 매출)
-        store_detail = [{'name': s, 'sales': sales_map.get(s, 0)} for s in store_list]
+        store_detail = [{'name': s['name'], 'sales': sales_map.get(s['key'], 0)} for s in store_list]
         result.append({'region': mr, 'managed': managed, 'visited': v['visited'],
                         'rate': rate, 'note': v['note'] or '', 'stores': store_detail})
     return {'ok': True, 'items': result}
@@ -10420,7 +10740,7 @@ def api_export_gift_xlsx():
 @app.route("/api/export/xlsx/work")
 @login_required
 def api_export_work_xlsx():
-    """업무 탭 엑셀 다운로드 — 기존 앱과 동일한 절제된 스타일 (맑은 고딕, A열 여백, 흰 배경)"""
+    """업무 탭 엑셀 — 월간 목표vs실적 / 연간 목표 실적(브랜드·제품별) / 월별 목표 실적(브랜드·제품별)"""
     from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
     from openpyxl.utils import get_column_letter
 
@@ -10430,30 +10750,51 @@ def api_export_work_xlsx():
 
     FNAME = '맑은 고딕'
     def mf(h): return PatternFill("solid", fgColor=h)
-    thin = Side(style='thin', color='E5E7EB')
+    thin = Side(style='thin', color='D1D5DB')
     bdr  = Border(left=thin, right=thin, top=thin, bottom=thin)
     ctr  = Alignment(horizontal='center', vertical='center', wrap_text=True)
     left = Alignment(horizontal='left', vertical='center', wrap_text=True)
     rgt  = Alignment(horizontal='right', vertical='center')
+    HDR = mf('F3F4F6'); BRAND_FILL = mf('EEF2FF'); TOTAL_FILL = mf('F9FAFB')
 
     wb = openpyxl.Workbook()
     mgr_label = manager or '전체'
     title_suffix = f"{year}년 {month}월 · {mgr_label}"
 
-    def _title(ws, text, span_to='F'):
+    def _title(ws, text, last_col):
         ws.column_dimensions['A'].width = 2
-        ws.merge_cells(f'B1:{span_to}1')
+        ws.merge_cells(start_row=1, start_column=2, end_row=1, end_column=last_col)
         c = ws.cell(row=1, column=2, value=text)
         c.font = Font(bold=True, size=13, name=FNAME, color='1F2937'); c.alignment = ctr
         ws.row_dimensions[1].height = 26
 
-    # ── 시트1: 월간 목표 vs 실적 ──
+    def _hdr(ws, row, col, text):
+        c = ws.cell(row=row, column=col, value=text)
+        c.font = Font(bold=True, size=9, name=FNAME, color='374151'); c.fill = HDR; c.border = bdr; c.alignment = ctr
+        return c
+
+    def _rate_font(rate, bold=True):
+        color = '16A34A' if rate >= 100 else 'DC2626' if rate < 70 else 'D97706'
+        return Font(size=9, name=FNAME, bold=bold, color=color)
+
+    def _num(ws, row, col, val, bold=False, fill=None):
+        c = ws.cell(row=row, column=col, value=val)
+        c.number_format = '#,##0'; c.font = Font(size=9, name=FNAME, bold=bold); c.border = bdr; c.alignment = rgt
+        if fill: c.fill = fill
+        return c
+
+    def _pct(ws, row, col, rate, bold=False, fill=None):
+        c = ws.cell(row=row, column=col, value=(rate / 100.0) if rate is not None else None)
+        c.number_format = '0.0%'; c.border = bdr; c.alignment = ctr
+        c.font = _rate_font(rate or 0, bold) if rate is not None else Font(size=9, name=FNAME)
+        if fill: c.fill = fill
+        return c
+
+    # ── 시트1: 월간 목표 vs 실적 (KPI) ──
     ws1 = wb.active; ws1.title = '월간목표vs실적'
-    _title(ws1, f'월간 목표 vs 실적  ({title_suffix})', 'F')
-    hdrs = ['항목', '목표', '실적', '달성률', '전월대비']
-    for ci, h in enumerate(hdrs, 2):
-        c = ws1.cell(row=3, column=ci, value=h)
-        c.font = Font(bold=True, size=9, name=FNAME, color='374151'); c.fill = mf('F3F4F6'); c.border = bdr; c.alignment = ctr
+    _title(ws1, f'월간 목표 vs 실적  ({title_suffix})', 6)
+    for ci, h in enumerate(['항목', '목표', '실적', '달성률', '전월대비'], 2):
+        _hdr(ws1, 3, ci, h)
     ws1.row_dimensions[3].height = 20
     kpi_data = _work_kpi_data(year, month, manager)
     ri = 4
@@ -10464,102 +10805,102 @@ def api_export_work_xlsx():
             c = ws1.cell(row=ri, column=ci, value=v); c.font = Font(size=9, name=FNAME); c.border = bdr
             c.alignment = left if ci == 2 else ctr
         ri += 1
-    for ci, w in zip(range(2,7), [20,14,14,12,12]):
+    for ci, w in zip(range(2, 7), [20, 14, 14, 12, 12]):
         ws1.column_dimensions[get_column_letter(ci)].width = w
 
-    # ── 시트2: 브랜드별 실적 ──
-    ws2 = wb.create_sheet('브랜드별실적')
-    _title(ws2, f'브랜드별 실적  ({title_suffix})  · 목표=전년동월×1.05', 'E')
-    hdrs2 = ['브랜드', '목표매출(원)', '실적매출(원)', '달성률']
-    for ci, h in enumerate(hdrs2, 2):
-        c = ws2.cell(row=3, column=ci, value=h)
-        c.font = Font(bold=True, size=9, name=FNAME, color='374151'); c.fill = mf('F3F4F6'); c.border = bdr; c.alignment = ctr
-    ws2.row_dimensions[3].height = 20
-    brand_data = _work_brand_perf_data(year, month, manager)
+    # ── 시트2: 연간 목표 실적 (브랜드 아래 제품별) ──
+    ws2 = wb.create_sheet('연간 목표 실적')
+    _title(ws2, f'연간 목표 실적  ({year}년 · {mgr_label})  · 목표 = 전년 동월 실적 × 1.05 · 누적실적 = 1~{month}월', 8)
+    heads = ['구분 (브랜드 / 제품)', f'{year-1}년 연간 실적', f'{year}년 연간 목표', f'{year}년 누적 실적(1~{month}월)',
+             '연간 달성률', f'누적 목표(1~{month}월)', '누적 달성률']
+    for ci, h in enumerate(heads, 2):
+        _hdr(ws2, 3, ci, h)
+    ws2.row_dimensions[3].height = 32
+    data = _work_target_data(year, manager)
     ri = 4
-    for it in brand_data['items']:
-        c = ws2.cell(row=ri, column=2, value=it['brand']); c.font = Font(size=9, name=FNAME, bold=True); c.border = bdr; c.alignment = left
-        c2 = ws2.cell(row=ri, column=3, value=it['target']); c2.number_format = '#,##0'; c2.font = Font(size=9, name=FNAME); c2.border = bdr; c2.alignment = rgt
-        c3 = ws2.cell(row=ri, column=4, value=it['actual']); c3.number_format = '#,##0'; c3.font = Font(size=9, name=FNAME); c3.border = bdr; c3.alignment = rgt
-        c4 = ws2.cell(row=ri, column=5, value=f"{it['rate']}%")
-        c4.font = Font(size=9, name=FNAME, bold=True, color='16A34A' if it['rate']>=100 else 'DC2626' if it['rate']<70 else 'D97706')
-        c4.border = bdr; c4.alignment = ctr
+    grand = {'prev': 0, 'target': 0, 'actual': 0, 'cum_target': 0}
+    def _annual_vals(arrs):
+        prev_total = sum(arrs['prev'][1:13]); target = sum(arrs['target'][1:13])
+        actual = sum(arrs['cur'][1:month + 1]); cum_t = sum(arrs['target'][1:month + 1])
+        return prev_total, target, actual, cum_t
+    for b in data:
+        pt, tg, ac, ct = _annual_vals(b)
+        for k, v in zip(('prev', 'target', 'actual', 'cum_target'), (pt, tg, ac, ct)): grand[k] += v
+        c = ws2.cell(row=ri, column=2, value=b['brand']); c.font = Font(size=10, name=FNAME, bold=True); c.fill = BRAND_FILL; c.border = bdr; c.alignment = left
+        _num(ws2, ri, 3, pt, True, BRAND_FILL); _num(ws2, ri, 4, tg, True, BRAND_FILL); _num(ws2, ri, 5, ac, True, BRAND_FILL)
+        _pct(ws2, ri, 6, _rate(ac, tg), True, BRAND_FILL); _num(ws2, ri, 7, ct, True, BRAND_FILL); _pct(ws2, ri, 8, _rate(ac, ct), True, BRAND_FILL)
         ri += 1
-    for ci, w in zip(range(2,6), [16,18,18,12]):
-        ws2.column_dimensions[get_column_letter(ci)].width = w
-
-    # ── 시트3: 매장 방문 커버리지 (세부 매장 리스트 포함) ──
-    ws3 = wb.create_sheet('매장방문커버리지')
-    _title(ws3, f'매장 방문 커버리지  ({title_suffix})', 'F')
-    cov_data = _work_coverage_data(year, month, manager)
-    ri = 3
-    hdrs3 = ['권역', '담당매장수', '방문매장수', '방문율', '비고']
-    for ci, h in enumerate(hdrs3, 2):
-        c = ws3.cell(row=ri, column=ci, value=h)
-        c.font = Font(bold=True, size=9, name=FNAME, color='374151'); c.fill = mf('F3F4F6'); c.border = bdr; c.alignment = ctr
-    ws3.row_dimensions[ri].height = 20
-    ri += 1
-    for it in cov_data['items']:
-        vals = [it['region'], it['managed'], it['visited'], f"{it['rate']}%", it['note']]
-        for ci, v in enumerate(vals, 2):
-            c = ws3.cell(row=ri, column=ci, value=v); c.font = Font(size=9, name=FNAME); c.border = bdr
-            c.alignment = left if ci in (2,6) else ctr
-        ri += 1
-        # 세부 매장 리스트 (수정2-3)
-        if it['stores']:
-            ws3.merge_cells(f'B{ri}:F{ri}')
-            store_names = ', '.join(f"{s['name']}({s['sales']:,}원)" for s in it['stores'])
-            c = ws3.cell(row=ri, column=2, value=f"   ㄴ 담당 매장: {store_names}")
-            c.font = Font(size=8, name=FNAME, color='6B7280'); c.alignment = left
-            ws3.row_dimensions[ri].height = 26
+        for p in b['products']:
+            pt, tg, ac, ct = _annual_vals(p)
+            c = ws2.cell(row=ri, column=2, value=f"   └ {p['name']}"); c.font = Font(size=9, name=FNAME); c.border = bdr; c.alignment = left
+            _num(ws2, ri, 3, pt); _num(ws2, ri, 4, tg); _num(ws2, ri, 5, ac)
+            _pct(ws2, ri, 6, _rate(ac, tg)); _num(ws2, ri, 7, ct); _pct(ws2, ri, 8, _rate(ac, ct))
             ri += 1
-    for ci, w in zip(range(2,7), [12,12,12,10,50]):
-        ws3.column_dimensions[get_column_letter(ci)].width = w
+    c = ws2.cell(row=ri, column=2, value='합계'); c.font = Font(size=10, name=FNAME, bold=True); c.fill = TOTAL_FILL; c.border = bdr
+    _num(ws2, ri, 3, grand['prev'], True, TOTAL_FILL); _num(ws2, ri, 4, grand['target'], True, TOTAL_FILL)
+    _num(ws2, ri, 5, grand['actual'], True, TOTAL_FILL); _pct(ws2, ri, 6, _rate(grand['actual'], grand['target']), True, TOTAL_FILL)
+    _num(ws2, ri, 7, grand['cum_target'], True, TOTAL_FILL); _pct(ws2, ri, 8, _rate(grand['actual'], grand['cum_target']), True, TOTAL_FILL)
+    ws2.column_dimensions['B'].width = 34
+    for ci in range(3, 9): ws2.column_dimensions[get_column_letter(ci)].width = 17
+    ws2.freeze_panes = 'C4'
 
-    # ── 시트4: 프로모션·행사 캘린더 ──
-    ws4 = wb.create_sheet('프로모션캘린더')
-    _title(ws4, f'프로모션 · 행사 캘린더  ({title_suffix})', 'G')
-    conn = get_db()
-    promo_rows = [dict(r) for r in conn.execute(
-        "SELECT * FROM work_promotion WHERE year=? AND month=? ORDER BY period_start", (year, month)).fetchall()]
-    conn.close()
-    hdrs4 = ['기간', '브랜드', '행사명', '대상채널', '준비물/사은품', '상태']
-    for ci, h in enumerate(hdrs4, 2):
-        c = ws4.cell(row=3, column=ci, value=h)
-        c.font = Font(bold=True, size=9, name=FNAME, color='374151'); c.fill = mf('F3F4F6'); c.border = bdr; c.alignment = ctr
-    ws4.row_dimensions[3].height = 20
-    ri = 4
-    for r in promo_rows:
-        period = f"{r['period_start']}~{r['period_end']}" if r['period_start'] else '기간 미정'
-        vals = [period, r['brand'], r['event_name'], r['target_channel'], r['prep_items'], r['status']]
-        for ci, v in enumerate(vals, 2):
-            c = ws4.cell(row=ri, column=ci, value=v); c.font = Font(size=9, name=FNAME); c.border = bdr
-            c.alignment = left if ci in (4,6) else ctr
-        ri += 1
-    for ci, w in zip(range(2,8), [20,10,20,16,36,10]):
-        ws4.column_dimensions[get_column_letter(ci)].width = w
+    # ── 시트3: 월별 목표 실적 (브랜드 아래 제품별, 1~12월) ──
+    ws3 = wb.create_sheet('월별 목표 실적')
+    grid = _work_monthly_grid(year, manager)
+    last_col = 2 + 12 * 3 + 3
+    _title(ws3, f'월별 목표 실적  ({year}년 · {mgr_label})  · 월 목표 = 전년 동월 실적 × 1.05', last_col)
+    ws3.merge_cells(start_row=3, start_column=2, end_row=4, end_column=2)
+    _hdr(ws3, 3, 2, '구분 (브랜드 / 제품)'); ws3.cell(row=4, column=2).border = bdr; ws3.cell(row=4, column=2).fill = HDR
+    for m in range(1, 13):
+        c0 = 3 + (m - 1) * 3
+        ws3.merge_cells(start_row=3, start_column=c0, end_row=3, end_column=c0 + 2)
+        _hdr(ws3, 3, c0, f'{m}월')
+        for k in (1, 2): ws3.cell(row=3, column=c0 + k).border = bdr; ws3.cell(row=3, column=c0 + k).fill = HDR
+        for k, h in enumerate(['목표', '실적', '달성률']):
+            _hdr(ws3, 4, c0 + k, h)
+    tc = 3 + 12 * 3
+    ws3.merge_cells(start_row=3, start_column=tc, end_row=3, end_column=tc + 2)
+    _hdr(ws3, 3, tc, '연간 합계')
+    for k in (1, 2): ws3.cell(row=3, column=tc + k).border = bdr; ws3.cell(row=3, column=tc + k).fill = HDR
+    for k, h in enumerate(['연간 목표', '누적 실적', '달성률']):
+        _hdr(ws3, 4, tc + k, h)
+    ws3.row_dimensions[3].height = 20; ws3.row_dimensions[4].height = 20
 
-    # ── 시트5: 월간 회고 ──
-    ws5 = wb.create_sheet('월간회고')
-    _title(ws5, f'월간 회고 (KPT)  ({title_suffix})', 'C')
-    conn = get_db()
-    retro_row = conn.execute("SELECT * FROM work_retro WHERE year=? AND month=? AND manager=?",
-                              (year, month, manager or '전체')).fetchone()
-    conn.close()
-    retro = dict(retro_row) if retro_row else {'keep_text':'', 'problem_text':'', 'try_text':''}
-    labels = [('Keep (잘한 점)', retro.get('keep_text','')), ('Problem (아쉬운 점)', retro.get('problem_text','')),
-              ('Try (다음 달 시도)', retro.get('try_text',''))]
-    ri = 3
-    for label, text in labels:
-        ws5.cell(row=ri, column=2, value=label).font = Font(bold=True, size=10, name=FNAME, color='1F2937')
-        ri += 1
-        ws5.merge_cells(f'B{ri}:C{ri}')
-        c = ws5.cell(row=ri, column=2, value=text or '(내용 없음)')
-        c.font = Font(size=9, name=FNAME); c.alignment = left
-        ws5.row_dimensions[ri].height = 60
-        ri += 2
-    ws5.column_dimensions['B'].width = 20
-    ws5.column_dimensions['C'].width = 50
+    def _write_row(ri, row, is_brand):
+        fill = BRAND_FILL if is_brand else None
+        c = ws3.cell(row=ri, column=2, value=row['name'] if is_brand else f"   └ {row['name']}")
+        c.font = Font(size=10 if is_brand else 9, name=FNAME, bold=is_brand); c.border = bdr; c.alignment = left
+        if fill: c.fill = fill
+        for md in row['months']:
+            c0 = 3 + (md['month'] - 1) * 3
+            _num(ws3, ri, c0, md['target'], is_brand, fill)
+            _num(ws3, ri, c0 + 1, md['actual'], is_brand, fill)
+            _pct(ws3, ri, c0 + 2, md['rate'], is_brand, fill)
+        _num(ws3, ri, tc, row['annual_target'], is_brand, fill); _num(ws3, ri, tc + 1, row['ytd_actual'], is_brand, fill)
+        _pct(ws3, ri, tc + 2, row['annual_rate'], is_brand, fill)
+
+    ri = 5
+    tot_t = [0] * 13; tot_a = [0] * 13
+    for br in grid['brands']:
+        _write_row(ri, br, True); ri += 1
+        for md in br['months']:
+            tot_t[md['month']] += md['target']; tot_a[md['month']] += (md['actual'] or 0)
+        for pr in br['products']:
+            _write_row(ri, pr, False); ri += 1
+    # 합계 행
+    c = ws3.cell(row=ri, column=2, value='합계'); c.font = Font(size=10, name=FNAME, bold=True); c.fill = TOTAL_FILL; c.border = bdr
+    now = datetime.now()
+    def _fut(m): return (year > now.year) or (year == now.year and m > now.month)
+    for m in range(1, 13):
+        c0 = 3 + (m - 1) * 3
+        _num(ws3, ri, c0, tot_t[m], True, TOTAL_FILL)
+        _num(ws3, ri, c0 + 1, None if _fut(m) else tot_a[m], True, TOTAL_FILL)
+        _pct(ws3, ri, c0 + 2, None if _fut(m) else _rate(tot_a[m], tot_t[m]), True, TOTAL_FILL)
+    ann_t = sum(tot_t[1:13]); ann_a = sum(tot_a[m] for m in range(1, 13) if not _fut(m))
+    _num(ws3, ri, tc, ann_t, True, TOTAL_FILL); _num(ws3, ri, tc + 1, ann_a, True, TOTAL_FILL); _pct(ws3, ri, tc + 2, _rate(ann_a, ann_t), True, TOTAL_FILL)
+    ws3.column_dimensions['B'].width = 34
+    for ci in range(3, last_col + 1): ws3.column_dimensions[get_column_letter(ci)].width = 12
+    ws3.freeze_panes = 'C5'
 
     buf = io.BytesIO(); wb.save(buf); buf.seek(0)
     fname = f'업무_{year}년{month}월_{mgr_label}.xlsx'
@@ -11537,33 +11878,8 @@ def api_export_display():
             ws_dept = wb.create_sheet('백화점'[:31])
             _build_matrix_sheet(ws_dept, f"※ 백화점 판매수량_{brand_sel}_{year}", dept_sellers, qty_map, None)
 
-        # 시트4: 기초 데이터 (수정7) — 요약 데이터의 근거가 된 원본 판매 데이터 그대로 (검증용)
-        ws_raw = wb.create_sheet('기초데이터')
-        ws_raw.column_dimensions['A'].width = 2
-        raw_hdrs = ['일자', '거래처명', '실적용거래처명', '거래처코드', '품목명', '수량', '단가', '공급가액', '부가세', '합계', '채널']
-        for ci, h in enumerate(raw_hdrs, 2):
-            c = ws_raw.cell(row=2, column=ci, value=h)
-            c.font = Font(bold=True, size=9, name=FNAME, color=BLACK); c.fill = HDR_BG; c.alignment = ctr
-        ws_raw.row_dimensions[2].height = 20
-        raw_rows = conn.execute("""
-            SELECT sale_date, seller_name, real_seller, trade_code, item_name,
-                   quantity, unit_price, supply_price, vat, total, channel
-            FROM sales_data
-            WHERE sale_date LIKE ? AND real_seller!=''
-            ORDER BY sale_date, real_seller""", (f"{year}%",)).fetchall()
-        ri_raw = 3
-        for r in raw_rows:
-            item_brand = remap_group('', r[4]) if not r[4].startswith('[') else remap_group('X', r[4])
-            if item_brand != brand_sel: continue
-            for ci, v in enumerate(r, 2):
-                c = ws_raw.cell(row=ri_raw, column=ci, value=v)
-                c.font = Font(size=8, name=FNAME, color=BLACK)
-                c.alignment = ctr if ci in (2,5,6,7) else left_a
-                if ci in (8,9,10,11): c.number_format = '#,##0'; c.alignment = Alignment(horizontal='right')
-            ri_raw += 1
-        for ci, w in zip(range(2,13), [11,20,20,14,26,8,10,11,10,11,9]):
-            ws_raw.column_dimensions[get_column_letter(ci)].width = w
-        ws_raw.freeze_panes = 'B3'
+        # 시트4: 기초 데이터 — 업로드했던 원본 엑셀 그대로 (못 나오는 달은 원인 안내 시트로)
+        _restore_raw_data_sheets(wb, conn, year, None)
 
         conn.close()
         buf = io.BytesIO(); wb.save(buf); buf.seek(0)
@@ -11734,56 +12050,8 @@ def api_export_display():
         ws.column_dimensions[get_column_letter(sum_col)].width = 8
         ws.freeze_panes = 'B5'
 
-    # 수정6: 판매실적처럼 기초데이터(원본 엑셀) 시트 추가 — 파일이 많으면(예: 연간 전체) 가벼운 요약으로 대체
-    def mft2(color, bold, size): return Font(name='맑은 고딕', bold=bold, size=size, color=color)
-    def mf2(hexv): return PatternFill('solid', fgColor=hexv)
-    try:
-        raw_files = conn.execute(
-            "SELECT filename, file_b64, months FROM sales_upload_file WHERE year=?", (int(year),)).fetchall()
-        if len(raw_files) > 3:
-            raw_files = []
-    except Exception:
-        raw_files = []
-
-    raw_sheet_names = []
-    if raw_files:
-        import base64 as _b64_dl2
-        for fname_orig, fb64, months_str in raw_files:
-            try:
-                src_bytes = _b64_dl2.b64decode(fb64)
-                src_wb = _load_workbook_resilient(src_bytes)
-                if src_wb is None: continue
-                for src_sheet_name in src_wb.sheetnames:
-                    src_ws = src_wb[src_sheet_name]
-                    tab_name = f"기초_{months_str.split(',')[0][5:]}월_{src_sheet_name}"[:31]
-                    base_tab = tab_name; suf = 1
-                    while tab_name in raw_sheet_names:
-                        tab_name = f"{base_tab[:28]}_{suf}"; suf += 1
-                    ws_raw = wb.create_sheet(tab_name)
-                    _copy_sheet_with_style(src_ws, ws_raw)
-                    raw_sheet_names.append(tab_name)
-            except Exception:
-                continue
-
-    if not raw_sheet_names:
-        ws_raw = wb.create_sheet("기초데이터")
-        ws_raw.column_dimensions['A'].width = 2.5
-        c0 = ws_raw.cell(row=2, column=2, value="⚠ 원본 파일이 저장되지 않았거나 파일 수가 많아 요약으로 대체된 기간입니다.")
-        c0.font = mft2(None, True, 10)
-        raw_hdrs = ['일자','거래처명','실적용거래처명','거래처코드','품목명','수량','단가','공급가액','부가세','합계','채널']
-        for ci, h in enumerate(raw_hdrs, 2):
-            c = ws_raw.cell(row=4, column=ci, value=h)
-            c.font=mft2(None,True,9); c.fill=mf2("F2F2F2")
-        ws_raw.row_dimensions[4].height=20
-        ri_raw=5
-        for r in conn.execute("""SELECT sale_date,seller_name,real_seller,trade_code,item_name,quantity,unit_price,supply_price,vat,total,channel
-                FROM sales_data WHERE sale_date LIKE ? AND real_seller!='' ORDER BY sale_date, real_seller""", (f"{year}%",)).fetchall():
-            for ci,v in enumerate(r,2):
-                c=ws_raw.cell(row=ri_raw,column=ci,value=v); c.font=mft2(None,False,8)
-            ri_raw+=1
-        for ci,w in zip(range(2,13),[11,20,20,14,26,8,10,11,10,11,9]):
-            ws_raw.column_dimensions[get_column_letter(ci)].width=w
-        ws_raw.freeze_panes='B5'
+    # 기초데이터(원본 엑셀) 시트 — 못 나오는 달은 원인과 함께 안내
+    _restore_raw_data_sheets(wb, conn, year, None)
 
     conn.close()
     buf = io.BytesIO(); wb.save(buf); buf.seek(0)
@@ -12857,6 +13125,10 @@ def api_display_events():
 
 # Render/gunicorn 실행 시 자동 초기화
 init_db()
+try:
+    _mc = get_db(); _apply_store_merges(_mc); _mc.commit(); _mc.close()
+except Exception as _merge_err:
+    print('[store-merge] 건너뜀:', _merge_err)
 
 if __name__ == "__main__":
     import webbrowser, threading

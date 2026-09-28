@@ -437,7 +437,7 @@ td.center{text-align:center}
           {% for r in regions %}<option>{{r}}</option>{% endfor %}
           <option>서울</option><option>경기</option><option>인천</option>
           <option>부산</option><option>대구</option><option>광주</option>
-          <option>대전</option><option>울산</option><option>강원</option>
+          <option>대전 세종</option><option>울산</option><option>강원</option>
           <option>충북</option><option>충남</option><option>전북</option>
           <option>전남</option><option>경북</option><option>경남</option><option>제주</option>
         </select>
@@ -949,22 +949,37 @@ td.center{text-align:center}
         <div id="work-kpi-grid" style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px"></div>
       </div>
 
-      <!-- 2. 브랜드별 실적 -->
+      <!-- 2. 브랜드별 실적 (브랜드 → 제품별 목표/실적) -->
       <div style="margin-bottom:24px">
-        <div style="font-size:13px;font-weight:700;color:var(--t-700);margin-bottom:10px;display:flex;align-items:center;gap:6px">
+        <div style="font-size:13px;font-weight:700;color:var(--t-700);margin-bottom:10px;display:flex;align-items:center;gap:6px;flex-wrap:wrap">
           <span style="width:20px;height:20px;border-radius:6px;background:var(--p);color:#fff;display:inline-flex;align-items:center;justify-content:center;font-size:11px">2</span>
-          브랜드별 실적
-          <span style="font-size:11px;font-weight:500;color:var(--t-300)">— 목표매출 = 제품별 전년 동월 실적 × 1.05 (5% 성장)</span>
+          브랜드·제품별 목표 실적
+          <span id="work-brand-basis" style="font-size:11px;font-weight:500;color:var(--t-300)">— 목표매출 = 전년 동월 실적 × 1.05 (5% 성장)</span>
+          <span style="margin-left:auto;display:inline-flex;gap:4px">
+            <button id="work-brand-mode-month" class="btn btn-dark btn-sm" onclick="setWorkBrandMode('month')">월간</button>
+            <button id="work-brand-mode-year" class="btn btn-ghost btn-sm" onclick="setWorkBrandMode('year')">연간 누적</button>
+          </span>
         </div>
         <div style="background:var(--paper);border:1px solid var(--border);border-radius:12px;overflow:hidden">
           <table style="width:100%;border-collapse:collapse">
-            <thead><tr style="background:var(--bg)">
-              <th style="padding:9px 14px;text-align:left;font-size:11px;font-weight:700;color:var(--t-500);border-bottom:1.5px solid var(--border)">브랜드</th>
-              <th style="padding:9px 14px;text-align:right;font-size:11px;font-weight:700;color:var(--t-500);border-bottom:1.5px solid var(--border)">목표매출</th>
-              <th style="padding:9px 14px;text-align:right;font-size:11px;font-weight:700;color:var(--t-500);border-bottom:1.5px solid var(--border)">실적매출</th>
-              <th style="padding:9px 14px;text-align:center;font-size:11px;font-weight:700;color:var(--t-500);border-bottom:1.5px solid var(--border)">달성률</th>
-            </tr></thead>
+            <thead id="work-brand-thead"></thead>
             <tbody id="work-brand-tbody"></tbody>
+          </table>
+        </div>
+        <div style="font-size:10.5px;color:var(--t-300);margin-top:6px">브랜드 행을 클릭하면 제품별 목표·실적이 펼쳐져요.</div>
+      </div>
+
+      <!-- 2-2. 월별 목표 실적 -->
+      <div style="margin-bottom:24px">
+        <div style="font-size:13px;font-weight:700;color:var(--t-700);margin-bottom:10px;display:flex;align-items:center;gap:6px">
+          <span style="width:20px;height:20px;border-radius:6px;background:var(--p);color:#fff;display:inline-flex;align-items:center;justify-content:center;font-size:11px">2-2</span>
+          월별 목표 실적
+          <span style="font-size:11px;font-weight:500;color:var(--t-300)">— 월 목표 = 전년 동월 실적 × 1.05 · 칸에는 달성률과 (실적/목표)가 표시돼요</span>
+        </div>
+        <div style="background:var(--paper);border:1px solid var(--border);border-radius:12px;overflow-x:auto">
+          <table style="width:100%;border-collapse:collapse;white-space:nowrap">
+            <thead id="work-monthly-thead"></thead>
+            <tbody id="work-monthly-tbody"></tbody>
           </table>
         </div>
       </div>
@@ -2936,6 +2951,7 @@ async function loadWorkPage(){
 
   loadWorkKPI(year, month, manager);
   loadWorkBrandPerf(year, month, manager);
+  loadWorkMonthlyGrid(year, manager);
   loadWorkCoverage(year, month, manager);
   loadWorkPromotions(year, month);
   loadWorkRetro(year, month, manager);
@@ -2992,24 +3008,84 @@ async function saveWorkKPI(year, month, manager, itemKey, field, value){
   }
 }
 
+let workBrandMode = 'month';
+function setWorkBrandMode(mode){
+  workBrandMode = mode;
+  document.getElementById('work-brand-mode-month').className = 'btn btn-sm ' + (mode==='month' ? 'btn-dark' : 'btn-ghost');
+  document.getElementById('work-brand-mode-year').className = 'btn btn-sm ' + (mode==='year' ? 'btn-dark' : 'btn-ghost');
+  loadWorkBrandPerf(document.getElementById('work-year').value, document.getElementById('work-month').value, document.getElementById('work-manager').value);
+}
+
+function _workRateColor(rate){ return rate>=100?'#16A34A':rate>=70?'#D97706':'#DC2626'; }
+
+function toggleWorkBrand(idx){
+  document.querySelectorAll('.wb-prod-'+idx).forEach(tr=>{ tr.style.display = tr.style.display==='none' ? 'table-row' : 'none'; });
+  const ar = document.getElementById('wb-arrow-'+idx);
+  if(ar) ar.textContent = ar.textContent==='▸' ? '▾' : '▸';
+}
+
 async function loadWorkBrandPerf(year, month, manager){
-  const r = await api(`/api/work/brand-performance?year=${year}&month=${month}&manager=${encodeURIComponent(manager)}`);
+  const r = await api(`/api/work/brand-performance?year=${year}&month=${month}&manager=${encodeURIComponent(manager)}&mode=${workBrandMode}`);
   const tbody = document.getElementById('work-brand-tbody');
+  const thead = document.getElementById('work-brand-thead');
+  const isYear = workBrandMode === 'year';
+  const th = (t,al)=>`<th style="padding:9px 14px;text-align:${al};font-size:11px;font-weight:700;color:var(--t-500);border-bottom:1.5px solid var(--border)">${t}</th>`;
+  thead.innerHTML = `<tr style="background:var(--bg)">${th('브랜드 / 제품','left')}${th(isYear?'연간 목표':'목표매출','right')}${th(isYear?`누적 실적(1~${month}월)`:'실적매출','right')}${th(isYear?'연간 달성률':'달성률','center')}${isYear?th(`누적 목표 달성률`,'center'):''}</tr>`;
+  document.getElementById('work-brand-basis').textContent = r?.basis ? '— ' + r.basis : '';
+  const cols = isYear ? 5 : 4;
   if(!r?.ok || !r.items.length){
-    tbody.innerHTML = `<tr><td colspan="4" style="text-align:center;padding:30px;color:var(--t-300);font-size:12px">데이터가 없습니다</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="${cols}" style="text-align:center;padding:30px;color:var(--t-300);font-size:12px">데이터가 없습니다</td></tr>`;
     return;
   }
-  tbody.innerHTML = r.items.map(it=>{
-    const rateColor = it.rate>=100?'#16A34A':it.rate>=70?'#D97706':'#DC2626';
-    return `<tr>
-      <td style="padding:9px 14px;font-size:12.5px;font-weight:700;color:var(--t-800);border-bottom:1px solid var(--border)">${it.brand}</td>
+  tbody.innerHTML = r.items.map((it,idx)=>{
+    const brandRow = `<tr onclick="toggleWorkBrand(${idx})" style="cursor:pointer;background:var(--bg)">
+      <td style="padding:9px 14px;font-size:12.5px;font-weight:800;color:var(--t-800);border-bottom:1px solid var(--border)"><span id="wb-arrow-${idx}" style="display:inline-block;width:14px;color:var(--t-400)">▸</span>${it.brand}</td>
       <td style="padding:9px 14px;text-align:right;font-size:12px;color:var(--t-500);border-bottom:1px solid var(--border)">${N(it.target)}원</td>
       <td style="padding:9px 14px;text-align:right;font-size:12px;font-weight:700;color:var(--t-900);border-bottom:1px solid var(--border)">${N(it.actual)}원</td>
-      <td style="padding:9px 14px;text-align:center;border-bottom:1px solid var(--border)">
-        <span style="font-size:11.5px;font-weight:800;color:${rateColor}">${it.rate}%</span>
-      </td>
+      <td style="padding:9px 14px;text-align:center;border-bottom:1px solid var(--border)"><span style="font-size:11.5px;font-weight:800;color:${_workRateColor(it.rate)}">${it.rate}%</span></td>
+      ${isYear?`<td style="padding:9px 14px;text-align:center;border-bottom:1px solid var(--border)"><span style="font-size:11.5px;font-weight:800;color:${_workRateColor(it.cum_rate)}">${it.cum_rate}%</span></td>`:''}
     </tr>`;
+    const prodRows = (it.products||[]).map(p=>`<tr class="wb-prod-${idx}" style="display:none">
+      <td style="padding:7px 14px 7px 38px;font-size:11.5px;color:var(--t-600);border-bottom:1px solid var(--border)">└ ${p.name}</td>
+      <td style="padding:7px 14px;text-align:right;font-size:11.5px;color:var(--t-400);border-bottom:1px solid var(--border)">${N(p.target)}원</td>
+      <td style="padding:7px 14px;text-align:right;font-size:11.5px;color:var(--t-700);border-bottom:1px solid var(--border)">${N(p.actual)}원</td>
+      <td style="padding:7px 14px;text-align:center;border-bottom:1px solid var(--border)"><span style="font-size:11px;font-weight:700;color:${_workRateColor(p.rate)}">${p.rate}%</span></td>
+      ${isYear?`<td style="padding:7px 14px;text-align:center;border-bottom:1px solid var(--border)"><span style="font-size:11px;font-weight:700;color:${_workRateColor(p.cum_rate)}">${p.cum_rate}%</span></td>`:''}
+    </tr>`).join('');
+    return brandRow + prodRows;
   }).join('');
+}
+
+async function loadWorkMonthlyGrid(year, manager){
+  const r = await api(`/api/work/monthly-targets?year=${year}&manager=${encodeURIComponent(manager)}`);
+  const thead = document.getElementById('work-monthly-thead');
+  const tbody = document.getElementById('work-monthly-tbody');
+  const th = (t,al,extra='')=>`<th style="padding:8px 10px;text-align:${al};font-size:10.5px;font-weight:700;color:var(--t-500);border-bottom:1.5px solid var(--border);${extra}">${t}</th>`;
+  thead.innerHTML = `<tr style="background:var(--bg)">${th('브랜드 / 제품','left','position:sticky;left:0;background:var(--bg)')}${[1,2,3,4,5,6,7,8,9,10,11,12].map(m=>th(m+'월','center')).join('')}${th('연간','center')}</tr>`;
+  if(!r?.ok || !r.brands.length){
+    tbody.innerHTML = `<tr><td colspan="14" style="text-align:center;padding:30px;color:var(--t-300);font-size:12px">데이터가 없습니다</td></tr>`;
+    return;
+  }
+  const cell = (md)=> (md.rate===null || md.rate===undefined)
+    ? `<td style="padding:7px 10px;text-align:center;border-bottom:1px solid var(--border);color:var(--t-200);font-size:10.5px" title="목표 ${N(md.target)}원">— <div style="font-size:9px">목표 ${N(md.target)}</div></td>`
+    : `<td style="padding:7px 10px;text-align:center;border-bottom:1px solid var(--border)" title="목표 ${N(md.target)}원 / 실적 ${N(md.actual)}원">
+        <div style="font-size:11.5px;font-weight:800;color:${_workRateColor(md.rate)}">${md.rate}%</div>
+        <div style="font-size:9px;color:var(--t-400)">${N(md.actual)}/${N(md.target)}</div></td>`;
+  tbody.innerHTML = r.brands.map((b,idx)=>{
+    const row = (name, x, isBrand)=>`<tr ${isBrand?`onclick="toggleWorkMonthlyBrand(${idx})" style="cursor:pointer;background:var(--bg)"`:`class="wm-prod-${idx}" style="display:none"`}>
+      <td style="padding:8px 10px;font-size:${isBrand?12:11.5}px;font-weight:${isBrand?800:500};color:var(--t-800);border-bottom:1px solid var(--border);position:sticky;left:0;background:${isBrand?'var(--bg)':'var(--paper)'}">${isBrand?`<span id="wm-arrow-${idx}" style="display:inline-block;width:14px;color:var(--t-400)">▸</span>`:'&nbsp;&nbsp;└ '}${name}</td>
+      ${x.months.map(cell).join('')}
+      <td style="padding:7px 10px;text-align:center;border-bottom:1px solid var(--border)">
+        <div style="font-size:11.5px;font-weight:800;color:${_workRateColor(x.annual_rate)}">${x.annual_rate}%</div>
+        <div style="font-size:9px;color:var(--t-400)">${N(x.ytd_actual)}/${N(x.annual_target)}</div></td></tr>`;
+    return row(b.name, b, true) + b.products.map(p=>row(p.name, p, false)).join('');
+  }).join('');
+}
+
+function toggleWorkMonthlyBrand(idx){
+  document.querySelectorAll('.wm-prod-'+idx).forEach(tr=>{ tr.style.display = tr.style.display==='none' ? 'table-row' : 'none'; });
+  const ar = document.getElementById('wm-arrow-'+idx);
+  if(ar) ar.textContent = ar.textContent==='▸' ? '▾' : '▸';
 }
 
 let workCoverageData = {};
@@ -5818,7 +5894,7 @@ async function confirmUpload(){
 }
 
 async function normalizeSellers(){
-  if(!confirm('저장된 데이터에서 매장명을 정규화합니다.\n• 베이비하우스 대구 → 베이비하우스 대구점\n• 주식회사 에스엘컴퍼니 → 베이비하우스 동대전점\n• 베이비하우스 하남미시점 → 베이비하우스 하남미사점\n• 고객 포함 항목 삭제\n계속하시겠습니까?')) return;
+  if(!confirm('저장된 데이터에서 매장명을 정규화하고 같은 매장은 하나로 통합합니다.\n• 군포점→안양점, 베투키→베이비 투 키즈, 울산·안동·일산·평촌·창원2호점 등 같은 매장 통합\n• 베이비하우스 대구 → 베이비하우스 대구점\n• 주식회사 에스엘컴퍼니 → 베이비하우스 동대전점\n• 베이비하우스 하남미시점 → 베이비하우스 하남미사점\n• 고객 포함 항목 삭제\n계속하시겠습니까?')) return;
   const r = await api('/api/admin/normalize-sellers', {method:'POST', body:{}});
   if(r && r.ok) {
     toast(`✅ ${r.normalized}개 통합, ${r.deleted}개 삭제 완료`);
