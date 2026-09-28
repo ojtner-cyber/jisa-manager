@@ -549,6 +549,8 @@ def init_db():
             conn.execute("ALTER TABLE gift_ecount_record ADD COLUMN match_status TEXT DEFAULT ''")
         if 'match_note' not in ge_cols:
             conn.execute("ALTER TABLE gift_ecount_record ADD COLUMN match_note TEXT DEFAULT ''")
+        if 'file_hash' not in ge_cols:
+            conn.execute("ALTER TABLE gift_ecount_record ADD COLUMN file_hash TEXT DEFAULT ''")
     except Exception:
         pass
     conn.execute("""CREATE TABLE IF NOT EXISTS work_retro (
@@ -9679,11 +9681,14 @@ def api_gift_ecount_upload():
     # 오판해서 데이터를 유실시키는 사고를 원천 차단한다)
     import hashlib
     file_hash = hashlib.sha256(data).hexdigest()
+    force = str(request.form.get('force', '')).lower() in ('1', 'true', 'yes')
     conn_check = get_db()
     prev = conn_check.execute("SELECT filename, uploaded_at, row_count FROM gift_ecount_upload_log WHERE file_hash=?", (file_hash,)).fetchone()
     conn_check.close()
-    if prev:
-        return jsonify({'ok': False, 'msg': f'이 파일은 이미 업로드된 파일이에요 ("{prev[0]}", {prev[1]}에 {prev[2]}건 처리됨). 다시 업로드하려면 이카운트에서 파일을 새로 받아주세요.'}), 400
+    if prev and not force:
+        return jsonify({'ok': False, 'already_uploaded': True,
+                         'msg': f'이 파일은 이미 업로드된 파일이에요 ("{prev[0]}", {prev[1]}에 {prev[2]}건 처리됨). '
+                                f'그래도 다시 처리하시겠어요? (예: 이전 업로드 때 일부 항목이 누락됐던 경우 다시 반영하려면 진행하세요)'}), 409
 
     wb = _load_workbook_resilient(data)
     if wb is None:
@@ -9716,6 +9721,29 @@ def api_gift_ecount_upload():
 
     try:
         conn = get_db()
+
+        # 강제 재업로드(force)인 경우 — 이 파일로 예전에 들어갔던 행들을 모두 지우고 다시 반영한다.
+        # ① 이 파일 해시로 이미 태깅된 행(직전에 이 파일을 정상적으로 올렸던 경우)은 통째로 지운다.
+        # ② 예전(수정 전) 코드가 해시 태깅 없이 잘못 걸러내서 일부만 반영했던 legacy 행들도,
+        #    이번 파일에 실제로 존재하는 (일자+품목명) 조합에 한해서만 정확히 찾아 지운다.
+        # 이렇게 해야 재반영 시 기존 행과 새 행이 겹쳐서 수량이 두 배로 불어나지 않는다.
+        if prev and force:
+            removed_same_hash = conn.execute("DELETE FROM gift_ecount_record WHERE file_hash=?", (file_hash,)).rowcount
+            file_keys = set()
+            for ri in range(header_row_idx+1, ws.max_row+1):
+                gubun_chk = ws.cell(ri, col_map['gubun']).value
+                if not gubun_chk or '증정' not in str(gubun_chk):
+                    continue
+                d_chk = ws.cell(ri, col_map['date']).value
+                item_chk = ws.cell(ri, col_map['item']).value
+                if d_chk and item_chk:
+                    file_keys.add((str(d_chk), str(item_chk)))
+            for date_raw_k, item_k in file_keys:
+                conn.execute(
+                    "DELETE FROM gift_ecount_record WHERE (file_hash='' OR file_hash IS NULL) AND ecount_date_raw=? AND item_name=?",
+                    (date_raw_k, item_k))
+            conn.commit()
+
         canonical_index, trade_code_map = _gift_build_canonical_store_index(conn)
         learned_cache = _gift_load_learned_cache(conn)
         # 수정4: 판매실적 업로드 이력에 쌓인 거래처코드 매핑을 아직 학습되지 않은 것들 위주로 선반영 (메모리 캐시로 처리, DB 왕복 없음)
@@ -9761,9 +9789,9 @@ def api_gift_ecount_upload():
                                                     trade_code_map=trade_code_map, learned_cache=learned_cache)
             brand = remap_group(str(item_group or ''), str(item))
             conn.execute("""INSERT INTO gift_ecount_record
-                (upload_batch, ecount_date_raw, ecount_date, voucher_no, real_seller, brand, item_name, quantity, uploaded_at, raw_seller, trade_code)
-                VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
-                (batch, str(date_raw), ecount_date, voucher, real_seller, brand, str(item), qty, now, seller_raw, trade_code))
+                (upload_batch, ecount_date_raw, ecount_date, voucher_no, real_seller, brand, item_name, quantity, uploaded_at, raw_seller, trade_code, file_hash)
+                VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (batch, str(date_raw), ecount_date, voucher, real_seller, brand, str(item), qty, now, seller_raw, trade_code, file_hash))
             inserted += 1
             if ecount_date: touched_dates.add(ecount_date[:7])
 
@@ -9780,7 +9808,8 @@ def api_gift_ecount_upload():
 
         # 파일 해시 기록 — 이 파일이 재업로드되면 (행이 아니라 파일 단위로) 걸러지도록
         try:
-            conn.execute("INSERT INTO gift_ecount_upload_log (file_hash, filename, row_count, uploaded_at) VALUES(?,?,?,?)",
+            conn.execute("""INSERT INTO gift_ecount_upload_log (file_hash, filename, row_count, uploaded_at) VALUES(?,?,?,?)
+                ON CONFLICT(file_hash) DO UPDATE SET filename=excluded.filename, row_count=excluded.row_count, uploaded_at=excluded.uploaded_at""",
                          (file_hash, filename, inserted, now))
             conn.commit()
         except Exception:

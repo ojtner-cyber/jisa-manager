@@ -2706,9 +2706,15 @@ async function saveGiftEdit(){
 async function uploadGiftEcount(e){
   const file = e.target.files[0];
   if(!file) return;
+  await _doUploadGiftEcount(file, false);
+  e.target.value = '';
+}
+
+async function _doUploadGiftEcount(file, force){
   const formData = new FormData();
   formData.append('file', file);
-  toast('이카운트 판매현황을 분석하고 있습니다...');
+  if(force) formData.append('force', '1');
+  toast(force ? '다시 처리하고 있습니다...' : '이카운트 판매현황을 분석하고 있습니다...');
   try{
     const resp = await fetch('/api/gift/ecount/upload', {method:'POST', body:formData});
     const r = await resp.json();
@@ -2716,13 +2722,16 @@ async function uploadGiftEcount(e){
       toast(`${r.inserted}건의 증정 기록을 반영하고 자동 대사했어요`);
       loadGiftCheckList();
       loadGiftUsageList();
+    } else if(r.already_uploaded){
+      if(confirm(r.msg + '\n\n다시 처리하시겠어요?')){
+        await _doUploadGiftEcount(file, true);
+      }
     } else {
       toast(r.msg || '업로드에 실패했습니다', false);
     }
   } catch(err){
     toast('업로드 중 오류가 발생했습니다', false);
   }
-  e.target.value = '';
 }
 
 let giftCheckShowMissingOnly = false;
