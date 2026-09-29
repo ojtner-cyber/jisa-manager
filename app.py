@@ -9153,6 +9153,74 @@ def _work_monthly_grid(year, manager):
             'basis': f'{year-1}년 동월 실적 × 1.05 (전년 동기 대비 5% 성장)'}
 
 
+def _work_store_month_totals(conn, year):
+    """매장(느슨한 키)별 1~12월 매출 합계 — 표기가 달라도 같은 매장이면 합산"""
+    out = {}
+    for ym, seller, total in conn.execute(
+            "SELECT substr(sale_date,1,7) ym, real_seller, SUM(total) FROM sales_data "
+            "WHERE sale_date LIKE ? AND sale_date!='' AND real_seller!='' GROUP BY ym, real_seller",
+            (f"{year}%",)).fetchall():
+        try: m = int(ym[5:7])
+        except Exception: continue
+        k = _store_loose_key(seller)
+        arr = out.setdefault(k, [0] * 13)
+        arr[m] += total or 0
+    return out
+
+
+def _work_store_group(name):
+    """매장별 목표 실적 정렬용 그룹 — 베이비하우스 → 링크맘 → 기타"""
+    if '베이비하우스' in name: return (0, '베이비하우스')
+    if '링크맘' in name: return (1, '링크맘')
+    return (2, '기타매장')
+
+
+def _work_store_grid(year, manager):
+    """매장별 월별 목표 실적 — 목표 = 전년 동월 실적 × 1.05, 베이비하우스/링크맘/기타 순 정렬"""
+    conn = get_db()
+    stores = _work_managed_stores(conn, manager, year)
+    cur = _work_store_month_totals(conn, year)
+    prev = _work_store_month_totals(conn, year - 1)
+    conn.close()
+
+    now = datetime.now()
+    def _fut(m): return (year > now.year) or (year == now.year and m > now.month)
+
+    rows = []
+    for s in stores:
+        k = s['key']; p = prev.get(k, [0] * 13); c = cur.get(k, [0] * 13)
+        if not any(p) and not any(c):
+            continue
+        months = []
+        for m in range(1, 13):
+            t = round(p[m] * 1.05); a = c[m]; fut = _fut(m)
+            months.append({'month': m, 'target': t, 'actual': None if fut else a,
+                           'rate': None if fut else _rate(a, t)})
+        ann_t = sum(round(p[m] * 1.05) for m in range(1, 13))
+        ann_a = sum(c[m] for m in range(1, 13) if not _fut(m))
+        grp_order, grp_label = _work_store_group(s['name'])
+        rows.append({'name': s['name'], 'group': grp_label, 'group_order': grp_order,
+                     'months': months, 'annual_target': ann_t, 'ytd_actual': ann_a,
+                     'annual_rate': _rate(ann_a, ann_t)})
+    rows.sort(key=lambda r: (r['group_order'], r['name']))
+
+    groups = []
+    for order, label in [(0, '베이비하우스'), (1, '링크맘'), (2, '기타매장')]:
+        members = [r for r in rows if r['group_order'] == order]
+        if not members: continue
+        groups.append({'label': label, 'stores': members})
+    return {'ok': True, 'year': year, 'groups': groups,
+            'basis': f'{year-1}년 동월 실적 × 1.05 (전년 동기 대비 5% 성장) · 베이비하우스 → 링크맘 → 기타매장 순'}
+
+
+@app.route("/api/work/store-monthly-targets")
+@login_required
+def api_work_store_monthly_targets():
+    year = int(request.args.get('year', datetime.now().year))
+    manager = request.args.get('manager', '').strip()
+    return jsonify(_work_store_grid(year, manager))
+
+
 @app.route("/api/work/monthly-targets")
 @login_required
 def api_work_monthly_targets():
@@ -10740,7 +10808,9 @@ def api_export_gift_xlsx():
 @app.route("/api/export/xlsx/work")
 @login_required
 def api_export_work_xlsx():
-    """업무 탭 엑셀 — 월간 목표vs실적 / 연간 목표 실적(브랜드·제품별) / 월별 목표 실적(브랜드·제품별)"""
+    """업무 탭 엑셀 — 월간 목표vs실적 / 연간 목표 실적 / 월별 목표 실적 / 매장별 목표 실적.
+    달성률 칸은 전부 수식(=실적/목표)으로 넣어서, 목표나 실적 숫자를 엑셀에서 직접 고치면
+    달성률이 자동으로 다시 계산된다."""
     from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
     from openpyxl.utils import get_column_letter
 
@@ -10783,10 +10853,21 @@ def api_export_work_xlsx():
         if fill: c.fill = fill
         return c
 
-    def _pct(ws, row, col, rate, bold=False, fill=None):
-        c = ws.cell(row=row, column=col, value=(rate / 100.0) if rate is not None else None)
+    def _pct_formula(ws, row, col, target_col, actual_col, rate_for_color, bold=False, fill=None):
+        """달성률 셀에 '=실적/목표' 수식을 넣는다 — 목표·실적 셀을 고치면 자동으로 다시 계산된다."""
+        t_ref = f"{get_column_letter(target_col)}{row}"; a_ref = f"{get_column_letter(actual_col)}{row}"
+        c = ws.cell(row=row, column=col, value=f"=IFERROR({a_ref}/{t_ref},0)")
         c.number_format = '0.0%'; c.border = bdr; c.alignment = ctr
-        c.font = _rate_font(rate or 0, bold) if rate is not None else Font(size=9, name=FNAME)
+        c.font = _rate_font(rate_for_color or 0, bold) if rate_for_color is not None else Font(size=9, name=FNAME)
+        if fill: c.fill = fill
+        return c
+
+    def _sum_formula(ws, row, col, row_refs, bold=False, fill=None):
+        """합계 셀에 개별 행들을 더하는 수식을 넣는다(=SUM(D4,D9,...)) — 개별 목표·실적을 고치면 합계도 같이 바뀐다."""
+        letter = get_column_letter(col)
+        refs = ','.join(f"{letter}{r}" for r in row_refs)
+        c = ws.cell(row=row, column=col, value=(f"=SUM({refs})" if row_refs else 0))
+        c.number_format = '#,##0'; c.font = Font(size=9, name=FNAME, bold=bold); c.border = bdr; c.alignment = rgt
         if fill: c.fill = fill
         return c
 
@@ -10799,16 +10880,17 @@ def api_export_work_xlsx():
     kpi_data = _work_kpi_data(year, month, manager)
     ri = 4
     for it in kpi_data['items']:
-        vals = [it['label'], f"{it['target']}{it['unit']}", f"{it['actual']}{it['unit']}",
-                f"{it['rate']}%", f"{'+' if it['delta']>=0 else ''}{it['delta']}" if it['delta'] else '-']
-        for ci, v in enumerate(vals, 2):
-            c = ws1.cell(row=ri, column=ci, value=v); c.font = Font(size=9, name=FNAME); c.border = bdr
-            c.alignment = left if ci == 2 else ctr
+        c = ws1.cell(row=ri, column=2, value=it['label']); c.font = Font(size=9, name=FNAME); c.border = bdr; c.alignment = left
+        c = ws1.cell(row=ri, column=3, value=it['target']); c.font = Font(size=9, name=FNAME); c.border = bdr; c.alignment = ctr; c.number_format = f'#,##0"{it["unit"]}"'
+        c = ws1.cell(row=ri, column=4, value=it['actual']); c.font = Font(size=9, name=FNAME); c.border = bdr; c.alignment = ctr; c.number_format = f'#,##0"{it["unit"]}"'
+        _pct_formula(ws1, ri, 5, 3, 4, it['rate'])
+        c = ws1.cell(row=ri, column=6, value=(f"{'+' if it['delta']>=0 else ''}{it['delta']}" if it['delta'] else '-'))
+        c.font = Font(size=9, name=FNAME); c.border = bdr; c.alignment = ctr
         ri += 1
     for ci, w in zip(range(2, 7), [20, 14, 14, 12, 12]):
         ws1.column_dimensions[get_column_letter(ci)].width = w
 
-    # ── 시트2: 연간 목표 실적 (브랜드 아래 제품별) ──
+    # ── 시트2: 연간 목표 실적 (브랜드 아래 제품별) — 달성률·누적달성률 수식 ──
     ws2 = wb.create_sheet('연간 목표 실적')
     _title(ws2, f'연간 목표 실적  ({year}년 · {mgr_label})  · 목표 = 전년 동월 실적 × 1.05 · 누적실적 = 1~{month}월', 8)
     heads = ['구분 (브랜드 / 제품)', f'{year-1}년 연간 실적', f'{year}년 연간 목표', f'{year}년 누적 실적(1~{month}월)',
@@ -10818,33 +10900,35 @@ def api_export_work_xlsx():
     ws2.row_dimensions[3].height = 32
     data = _work_target_data(year, manager)
     ri = 4
-    grand = {'prev': 0, 'target': 0, 'actual': 0, 'cum_target': 0}
+    brand_rows2 = []
     def _annual_vals(arrs):
         prev_total = sum(arrs['prev'][1:13]); target = sum(arrs['target'][1:13])
         actual = sum(arrs['cur'][1:month + 1]); cum_t = sum(arrs['target'][1:month + 1])
         return prev_total, target, actual, cum_t
     for b in data:
         pt, tg, ac, ct = _annual_vals(b)
-        for k, v in zip(('prev', 'target', 'actual', 'cum_target'), (pt, tg, ac, ct)): grand[k] += v
         c = ws2.cell(row=ri, column=2, value=b['brand']); c.font = Font(size=10, name=FNAME, bold=True); c.fill = BRAND_FILL; c.border = bdr; c.alignment = left
         _num(ws2, ri, 3, pt, True, BRAND_FILL); _num(ws2, ri, 4, tg, True, BRAND_FILL); _num(ws2, ri, 5, ac, True, BRAND_FILL)
-        _pct(ws2, ri, 6, _rate(ac, tg), True, BRAND_FILL); _num(ws2, ri, 7, ct, True, BRAND_FILL); _pct(ws2, ri, 8, _rate(ac, ct), True, BRAND_FILL)
-        ri += 1
+        _pct_formula(ws2, ri, 6, 4, 5, _rate(ac, tg), True, BRAND_FILL)
+        _num(ws2, ri, 7, ct, True, BRAND_FILL); _pct_formula(ws2, ri, 8, 7, 5, _rate(ac, ct), True, BRAND_FILL)
+        brand_rows2.append(ri); ri += 1
         for p in b['products']:
             pt, tg, ac, ct = _annual_vals(p)
             c = ws2.cell(row=ri, column=2, value=f"   └ {p['name']}"); c.font = Font(size=9, name=FNAME); c.border = bdr; c.alignment = left
             _num(ws2, ri, 3, pt); _num(ws2, ri, 4, tg); _num(ws2, ri, 5, ac)
-            _pct(ws2, ri, 6, _rate(ac, tg)); _num(ws2, ri, 7, ct); _pct(ws2, ri, 8, _rate(ac, ct))
+            _pct_formula(ws2, ri, 6, 4, 5, _rate(ac, tg)); _num(ws2, ri, 7, ct); _pct_formula(ws2, ri, 8, 7, 5, _rate(ac, ct))
             ri += 1
     c = ws2.cell(row=ri, column=2, value='합계'); c.font = Font(size=10, name=FNAME, bold=True); c.fill = TOTAL_FILL; c.border = bdr
-    _num(ws2, ri, 3, grand['prev'], True, TOTAL_FILL); _num(ws2, ri, 4, grand['target'], True, TOTAL_FILL)
-    _num(ws2, ri, 5, grand['actual'], True, TOTAL_FILL); _pct(ws2, ri, 6, _rate(grand['actual'], grand['target']), True, TOTAL_FILL)
-    _num(ws2, ri, 7, grand['cum_target'], True, TOTAL_FILL); _pct(ws2, ri, 8, _rate(grand['actual'], grand['cum_target']), True, TOTAL_FILL)
+    _sum_formula(ws2, ri, 3, brand_rows2, True, TOTAL_FILL); _sum_formula(ws2, ri, 4, brand_rows2, True, TOTAL_FILL)
+    _sum_formula(ws2, ri, 5, brand_rows2, True, TOTAL_FILL)
+    grand_ac = sum(_annual_vals(b)[2] for b in data); grand_tg = sum(_annual_vals(b)[1] for b in data); grand_ct = sum(_annual_vals(b)[3] for b in data)
+    _pct_formula(ws2, ri, 6, 4, 5, _rate(grand_ac, grand_tg), True, TOTAL_FILL)
+    _sum_formula(ws2, ri, 7, brand_rows2, True, TOTAL_FILL); _pct_formula(ws2, ri, 8, 7, 5, _rate(grand_ac, grand_ct), True, TOTAL_FILL)
     ws2.column_dimensions['B'].width = 34
     for ci in range(3, 9): ws2.column_dimensions[get_column_letter(ci)].width = 17
     ws2.freeze_panes = 'C4'
 
-    # ── 시트3: 월별 목표 실적 (브랜드 아래 제품별, 1~12월) ──
+    # ── 시트3: 월별 목표 실적 (브랜드 아래 제품별, 1~12월) — 달성률 전부 수식 ──
     ws3 = wb.create_sheet('월별 목표 실적')
     grid = _work_monthly_grid(year, manager)
     last_col = 2 + 12 * 3 + 3
@@ -10866,7 +10950,10 @@ def api_export_work_xlsx():
         _hdr(ws3, 4, tc + k, h)
     ws3.row_dimensions[3].height = 20; ws3.row_dimensions[4].height = 20
 
-    def _write_row(ri, row, is_brand):
+    now = datetime.now()
+    def _fut(m): return (year > now.year) or (year == now.year and m > now.month)
+
+    def _write_row3(ri, row, is_brand):
         fill = BRAND_FILL if is_brand else None
         c = ws3.cell(row=ri, column=2, value=row['name'] if is_brand else f"   └ {row['name']}")
         c.font = Font(size=10 if is_brand else 9, name=FNAME, bold=is_brand); c.border = bdr; c.alignment = left
@@ -10875,32 +10962,105 @@ def api_export_work_xlsx():
             c0 = 3 + (md['month'] - 1) * 3
             _num(ws3, ri, c0, md['target'], is_brand, fill)
             _num(ws3, ri, c0 + 1, md['actual'], is_brand, fill)
-            _pct(ws3, ri, c0 + 2, md['rate'], is_brand, fill)
+            if md['actual'] is None:
+                c = ws3.cell(row=ri, column=c0 + 2, value=None); c.border = bdr; c.fill = fill or PatternFill(fill_type=None)
+            else:
+                _pct_formula(ws3, ri, c0 + 2, c0, c0 + 1, md['rate'], is_brand, fill)
         _num(ws3, ri, tc, row['annual_target'], is_brand, fill); _num(ws3, ri, tc + 1, row['ytd_actual'], is_brand, fill)
-        _pct(ws3, ri, tc + 2, row['annual_rate'], is_brand, fill)
+        _pct_formula(ws3, ri, tc + 2, tc, tc + 1, row['annual_rate'], is_brand, fill)
 
     ri = 5
-    tot_t = [0] * 13; tot_a = [0] * 13
+    brand_rows3 = []
     for br in grid['brands']:
-        _write_row(ri, br, True); ri += 1
-        for md in br['months']:
-            tot_t[md['month']] += md['target']; tot_a[md['month']] += (md['actual'] or 0)
+        _write_row3(ri, br, True); brand_rows3.append(ri); ri += 1
         for pr in br['products']:
-            _write_row(ri, pr, False); ri += 1
-    # 합계 행
+            _write_row3(ri, pr, False); ri += 1
     c = ws3.cell(row=ri, column=2, value='합계'); c.font = Font(size=10, name=FNAME, bold=True); c.fill = TOTAL_FILL; c.border = bdr
-    now = datetime.now()
-    def _fut(m): return (year > now.year) or (year == now.year and m > now.month)
     for m in range(1, 13):
         c0 = 3 + (m - 1) * 3
-        _num(ws3, ri, c0, tot_t[m], True, TOTAL_FILL)
-        _num(ws3, ri, c0 + 1, None if _fut(m) else tot_a[m], True, TOTAL_FILL)
-        _pct(ws3, ri, c0 + 2, None if _fut(m) else _rate(tot_a[m], tot_t[m]), True, TOTAL_FILL)
-    ann_t = sum(tot_t[1:13]); ann_a = sum(tot_a[m] for m in range(1, 13) if not _fut(m))
-    _num(ws3, ri, tc, ann_t, True, TOTAL_FILL); _num(ws3, ri, tc + 1, ann_a, True, TOTAL_FILL); _pct(ws3, ri, tc + 2, _rate(ann_a, ann_t), True, TOTAL_FILL)
+        _sum_formula(ws3, ri, c0, brand_rows3, True, TOTAL_FILL)
+        if _fut(m):
+            c = ws3.cell(row=ri, column=c0 + 1, value=None); c.border = bdr; c.fill = TOTAL_FILL
+            c = ws3.cell(row=ri, column=c0 + 2, value=None); c.border = bdr; c.fill = TOTAL_FILL
+        else:
+            _sum_formula(ws3, ri, c0 + 1, brand_rows3, True, TOTAL_FILL)
+            tot_t_m = sum(md['target'] for br in grid['brands'] for md in br['months'] if md['month'] == m)
+            tot_a_m = sum((md['actual'] or 0) for br in grid['brands'] for md in br['months'] if md['month'] == m)
+            _pct_formula(ws3, ri, c0 + 2, c0, c0 + 1, _rate(tot_a_m, tot_t_m), True, TOTAL_FILL)
+    _sum_formula(ws3, ri, tc, brand_rows3, True, TOTAL_FILL); _sum_formula(ws3, ri, tc + 1, brand_rows3, True, TOTAL_FILL)
+    ann_t = sum(br['annual_target'] for br in grid['brands']); ann_a = sum(br['ytd_actual'] for br in grid['brands'])
+    _pct_formula(ws3, ri, tc + 2, tc, tc + 1, _rate(ann_a, ann_t), True, TOTAL_FILL)
     ws3.column_dimensions['B'].width = 34
     for ci in range(3, last_col + 1): ws3.column_dimensions[get_column_letter(ci)].width = 12
     ws3.freeze_panes = 'C5'
+
+    # ── 시트4: 매장별 목표 실적 (베이비하우스 → 링크맘 → 기타매장 순, 1~12월) — 달성률 전부 수식 ──
+    ws4 = wb.create_sheet('매장별 목표 실적')
+    store_grid = _work_store_grid(year, manager)
+    _title(ws4, f'매장별 목표 실적  ({year}년 · {mgr_label})  · 월 목표 = 전년 동월 실적 × 1.05  · 베이비하우스 → 링크맘 → 기타매장 순', last_col)
+    ws4.merge_cells(start_row=3, start_column=2, end_row=4, end_column=2)
+    _hdr(ws4, 3, 2, '구분 (그룹 / 매장)'); ws4.cell(row=4, column=2).border = bdr; ws4.cell(row=4, column=2).fill = HDR
+    for m in range(1, 13):
+        c0 = 3 + (m - 1) * 3
+        ws4.merge_cells(start_row=3, start_column=c0, end_row=3, end_column=c0 + 2)
+        _hdr(ws4, 3, c0, f'{m}월')
+        for k in (1, 2): ws4.cell(row=3, column=c0 + k).border = bdr; ws4.cell(row=3, column=c0 + k).fill = HDR
+        for k, h in enumerate(['목표', '실적', '달성률']):
+            _hdr(ws4, 4, c0 + k, h)
+    ws4.merge_cells(start_row=3, start_column=tc, end_row=3, end_column=tc + 2)
+    _hdr(ws4, 3, tc, '연간 합계')
+    for k in (1, 2): ws4.cell(row=3, column=tc + k).border = bdr; ws4.cell(row=3, column=tc + k).fill = HDR
+    for k, h in enumerate(['연간 목표', '누적 실적', '달성률']):
+        _hdr(ws4, 4, tc + k, h)
+    ws4.row_dimensions[3].height = 20; ws4.row_dimensions[4].height = 20
+
+    def _write_row4(ri, name, months, ann_t, ann_a, is_group):
+        fill = BRAND_FILL if is_group else None
+        c = ws4.cell(row=ri, column=2, value=name if is_group else f"   └ {name}")
+        c.font = Font(size=10 if is_group else 9, name=FNAME, bold=is_group); c.border = bdr; c.alignment = left
+        if fill: c.fill = fill
+        for md in months:
+            c0 = 3 + (md['month'] - 1) * 3
+            _num(ws4, ri, c0, md['target'], is_group, fill)
+            if md['actual'] is None:
+                _num(ws4, ri, c0 + 1, None, is_group, fill)
+                c = ws4.cell(row=ri, column=c0 + 2, value=None); c.border = bdr; c.fill = fill or PatternFill(fill_type=None)
+            else:
+                _num(ws4, ri, c0 + 1, md['actual'], is_group, fill)
+                _pct_formula(ws4, ri, c0 + 2, c0, c0 + 1, md['rate'], is_group, fill)
+        _num(ws4, ri, tc, ann_t, is_group, fill); _num(ws4, ri, tc + 1, ann_a, is_group, fill)
+        _pct_formula(ws4, ri, tc + 2, tc, tc + 1, _rate(ann_a, ann_t), is_group, fill)
+
+    ri = 5
+    group_rows4 = []
+    for grp in store_grid['groups']:
+        grp_months = [{'month': m, 'target': sum(s['months'][m-1]['target'] for s in grp['stores']),
+                       'actual': None if _fut(m) else sum((s['months'][m-1]['actual'] or 0) for s in grp['stores']),
+                       'rate': None} for m in range(1, 13)]
+        for md in grp_months:
+            if md['actual'] is not None:
+                md['rate'] = _rate(md['actual'], md['target'])
+        grp_ann_t = sum(s['annual_target'] for s in grp['stores']); grp_ann_a = sum(s['ytd_actual'] for s in grp['stores'])
+        _write_row4(ri, grp['label'], grp_months, grp_ann_t, grp_ann_a, True)
+        group_rows4.append(ri); ri += 1
+        for s in grp['stores']:
+            _write_row4(ri, s['name'], s['months'], s['annual_target'], s['ytd_actual'], False)
+            ri += 1
+    c = ws4.cell(row=ri, column=2, value='총 합계'); c.font = Font(size=10, name=FNAME, bold=True); c.fill = TOTAL_FILL; c.border = bdr
+    for m in range(1, 13):
+        c0 = 3 + (m - 1) * 3
+        _sum_formula(ws4, ri, c0, group_rows4, True, TOTAL_FILL)
+        if _fut(m):
+            cc = ws4.cell(row=ri, column=c0 + 1, value=None); cc.border = bdr; cc.fill = TOTAL_FILL
+            cc = ws4.cell(row=ri, column=c0 + 2, value=None); cc.border = bdr; cc.fill = TOTAL_FILL
+        else:
+            _sum_formula(ws4, ri, c0 + 1, group_rows4, True, TOTAL_FILL)
+            _pct_formula(ws4, ri, c0 + 2, c0, c0 + 1, 0, True, TOTAL_FILL)
+    _sum_formula(ws4, ri, tc, group_rows4, True, TOTAL_FILL); _sum_formula(ws4, ri, tc + 1, group_rows4, True, TOTAL_FILL)
+    _pct_formula(ws4, ri, tc + 2, tc, tc + 1, 0, True, TOTAL_FILL)
+    ws4.column_dimensions['B'].width = 34
+    for ci in range(3, last_col + 1): ws4.column_dimensions[get_column_letter(ci)].width = 12
+    ws4.freeze_panes = 'C5'
 
     buf = io.BytesIO(); wb.save(buf); buf.seek(0)
     fname = f'업무_{year}년{month}월_{mgr_label}.xlsx'
