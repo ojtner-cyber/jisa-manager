@@ -433,6 +433,18 @@ def init_db():
         UNIQUE(year, month, manager, item_key)
     )""")
 
+    # 목표 성장률(%) — 연도·담당자 단위로 기본값(month=0)을 두고, 특정 월만 다르게 쓰고 싶으면
+    # 그 월(1~12)에 따로 저장한다. 목표 = 전년 동월 실적 × (1 + rate_pct/100)
+    conn.execute("""CREATE TABLE IF NOT EXISTS work_growth_rate (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        year INTEGER NOT NULL,
+        manager TEXT NOT NULL,
+        month INTEGER NOT NULL DEFAULT 0,
+        rate_pct REAL NOT NULL DEFAULT 5.0,
+        updated_at TEXT DEFAULT '',
+        UNIQUE(year, manager, month)
+    )""")
+
     # 수정1: 판매실적 업로드 시 원본 엑셀 파일을 그대로 보관 (기초데이터 시트 재현용)
     conn.execute("""CREATE TABLE IF NOT EXISTS sales_upload_file (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -8862,17 +8874,17 @@ def _work_managed_stores(conn, manager, year=None):
     · 이름은 대표 매장명으로 통일하고, 표기가 달라도 같은 매장이면 한 줄로 합친다
     · 담당자를 고르지 않은 '전체'일 때는 올해 실제 판매가 있는데 판매처 관리에 없는 오프라인 매장도 포함
       (그래야 매출이 어느 매장에도 안 잡히고 사라지는 일이 없다)"""
-    q = "SELECT name, region FROM branches WHERE status='운영중'"
+    q = "SELECT name, region, manager FROM branches WHERE status='운영중'"
     params = []
     if manager:
         q += " AND manager=?"; params.append(manager)
     stores = {}
-    for name, region in conn.execute(q, params).fetchall():
+    for name, region, mgr in conn.execute(q, params).fetchall():
         cn = canon_store(name)
         if not cn: continue
         k = _store_loose_key(cn)
         if k not in stores:
-            stores[k] = {'name': cn, 'region': region or '', 'key': k}
+            stores[k] = {'name': cn, 'region': region or '', 'key': k, 'manager': mgr or ''}
     if not manager and year:
         for (rs,) in conn.execute(
                 "SELECT DISTINCT real_seller FROM sales_data WHERE real_seller!='' AND sale_date LIKE ? AND channel='오프라인'",
@@ -8882,7 +8894,7 @@ def _work_managed_stores(conn, manager, year=None):
             if not cn: continue
             k = _store_loose_key(cn)
             if k not in stores:
-                stores[k] = {'name': cn, 'region': '', 'key': k}
+                stores[k] = {'name': cn, 'region': '', 'key': k, 'manager': ''}
     return list(stores.values())
 
 
@@ -9072,8 +9084,61 @@ def _work_sales_matrix(conn, year, keyset):
     return out
 
 
+def _get_growth_rates(year, manager):
+    """성장률(%) 설정 조회 — {월(1~12): 배율(예:1.05)} 딕셔너리로 반환.
+    특정 월에 저장된 값이 있으면 그 값을, 없으면 해당 연도·담당자의 기본값(month=0)을,
+    그것도 없으면 5%를 쓴다. 전월대비 성장률 비교와는 무관하고, 목표 산정에만 쓰인다."""
+    mgr = manager or '전체'
+    conn = get_db()
+    rows = conn.execute("SELECT month, rate_pct FROM work_growth_rate WHERE year=? AND manager=?", (year, mgr)).fetchall()
+    conn.close()
+    default = 5.0
+    month_pct = {}
+    for m, pct in rows:
+        if m == 0: default = pct
+        else: month_pct[m] = pct
+    multipliers = {m: 1.0 + month_pct.get(m, default) / 100.0 for m in range(1, 13)}
+    return {'multipliers': multipliers, 'default_pct': default, 'month_pct': month_pct}
+
+
+@app.route("/api/work/growth-rate")
+@login_required
+def api_work_growth_rate_get():
+    year = int(request.args.get('year', datetime.now().year))
+    manager = request.args.get('manager', '').strip()
+    g = _get_growth_rates(year, manager)
+    return jsonify({'ok': True, 'year': year, 'manager': manager or '전체',
+                     'default_pct': g['default_pct'], 'month_pct': g['month_pct']})
+
+
+@app.route("/api/work/growth-rate", methods=["POST"])
+@login_required
+def api_work_growth_rate_save():
+    """성장률(%) 저장 — month=0(또는 생략)이면 해당 연도·담당자의 기본값, 1~12면 그 달만 별도 지정.
+    body: {year, manager, month(선택, 없으면 기본값), rate_pct} 또는 {year, manager, apply_all: true, rate_pct}
+    (일괄 적용을 원하면 apply_all=true로 보내면 1~12월 개별 지정을 모두 지우고 기본값 하나로 통일한다)"""
+    d = request.json or {}
+    year = int(d.get('year', datetime.now().year))
+    manager = (d.get('manager') or '전체').strip() or '전체'
+    rate_pct = float(d.get('rate_pct', 5.0))
+    now = datetime.now().strftime('%Y-%m-%d %H:%M')
+    conn = get_db()
+    if d.get('apply_all'):
+        conn.execute("DELETE FROM work_growth_rate WHERE year=? AND manager=? AND month!=0", (year, manager))
+        conn.execute("""INSERT INTO work_growth_rate (year, manager, month, rate_pct, updated_at) VALUES(?,?,0,?,?)
+            ON CONFLICT(year, manager, month) DO UPDATE SET rate_pct=excluded.rate_pct, updated_at=excluded.updated_at""",
+            (year, manager, rate_pct, now))
+    else:
+        month = int(d.get('month', 0) or 0)
+        conn.execute("""INSERT INTO work_growth_rate (year, manager, month, rate_pct, updated_at) VALUES(?,?,?,?,?)
+            ON CONFLICT(year, manager, month) DO UPDATE SET rate_pct=excluded.rate_pct, updated_at=excluded.updated_at""",
+            (year, manager, month, rate_pct, now))
+    conn.commit(); conn.close()
+    return jsonify({'ok': True})
+
+
 def _work_target_data(year, manager):
-    """브랜드 → 제품별 월별 목표/실적. 목표 = 전년 동월 실적 × 1.05 (제품 단위로 산정해 브랜드로 합산)"""
+    """브랜드 → 제품별 월별 목표/실적. 목표 = 전년 동월 실적 × (1+성장률%) — 성장률은 월별로 설정 가능 (제품 단위로 산정해 브랜드로 합산)"""
     conn = get_db()
     keyset = None
     if manager:
@@ -9081,6 +9146,7 @@ def _work_target_data(year, manager):
     cur = _work_sales_matrix(conn, year, keyset)
     prev = _work_sales_matrix(conn, year - 1, keyset)
     conn.close()
+    mult = _get_growth_rates(year, manager)['multipliers']
     brands = {}
     for key in set(cur) | set(prev):
         brand, prod = key
@@ -9088,7 +9154,7 @@ def _work_target_data(year, manager):
         if not any(p) and not any(c):
             continue
         disp = re.sub(r'^\[[^\]]+\]\s*', '', prod).strip() or prod
-        tm = [0] + [round(p[m] * 1.05) for m in range(1, 13)]
+        tm = [0] + [round(p[m] * mult[m]) for m in range(1, 13)]
         brands.setdefault(brand, []).append({'name': disp, 'prev': p, 'cur': c, 'target': tm})
     ordered = [b for b in BRAND_ORDER if b in brands] + sorted(b for b in brands if b not in BRAND_ORDER)
     result = []
@@ -9105,9 +9171,10 @@ def _rate(actual, target):
 
 def _work_brand_perf_data(year, month, manager, mode='month'):
     """브랜드별 실적 — 브랜드 아래 제품별 목표/실적/달성률까지 (API/엑셀 export 공용).
-    mode='month': 선택한 달 (목표 = 전년 동월 × 1.05)
-    mode='year' : 연간 (연간 목표 = 전년 각 월 × 1.05의 합, 실적 = 1월~선택월 누적)"""
+    mode='month': 선택한 달 (목표 = 전년 동월 × 성장률)
+    mode='year' : 연간 (연간 목표 = 전년 각 월 × 성장률의 합, 실적 = 1월~선택월 누적)"""
     data = _work_target_data(year, manager)
+    g = _get_growth_rates(year, manager)
 
     def _pack(name, arrs):
         if mode == 'year':
@@ -9125,15 +9192,19 @@ def _work_brand_perf_data(year, month, manager, mode='month'):
         it = _pack(b['brand'], b); it['brand'] = it.pop('name')
         it['products'] = [_pack(p['name'], p) for p in b['products']]
         items.append(it)
-    basis = (f'{year-1}년 각 월 실적 × 1.05 (전년 동기 대비 5% 성장 목표) — 연간 목표 대비 {month}월까지 누적 실적'
-             if mode == 'year' else f'{year-1}년 {month}월 실적 × 1.05 (전년 동기 대비 5% 성장 목표)')
-    return {'ok': True, 'items': items, 'basis': basis, 'mode': mode}
+    if mode == 'year':
+        basis = _growth_basis_text(year, g) + f' — 연간 목표 대비 {month}월까지 누적 실적'
+    else:
+        m_pct = g['month_pct'].get(month, g['default_pct'])
+        basis = f"{year-1}년 {month}월 실적 × {m_pct}% 성장 목표"
+    return {'ok': True, 'items': items, 'basis': basis, 'mode': mode, 'growth': g}
 
 
 def _work_monthly_grid(year, manager):
-    """월별 목표 실적 — 브랜드/제품별 1~12월 목표(전년 동월×1.05)·실적·달성률"""
+    """월별 목표 실적 — 브랜드/제품별 1~12월 목표(전년 동월×성장률)·실적·달성률"""
     now = datetime.now()
     data = _work_target_data(year, manager)
+    g = _get_growth_rates(year, manager)
     def _is_future(m): return (year > now.year) or (year == now.year and m > now.month)
     brands = []
     for b in data:
@@ -9149,8 +9220,15 @@ def _work_monthly_grid(year, manager):
         row = _row(b['brand'], b)
         row['products'] = [_row(p['name'], p) for p in b['products']]
         brands.append(row)
-    return {'ok': True, 'year': year, 'brands': brands,
-            'basis': f'{year-1}년 동월 실적 × 1.05 (전년 동기 대비 5% 성장)'}
+    return {'ok': True, 'year': year, 'brands': brands, 'growth': g,
+            'basis': _growth_basis_text(year, g)}
+
+
+def _growth_basis_text(year, g):
+    if g['month_pct']:
+        detail = ', '.join(f"{m}월 {g['month_pct'][m]}%" for m in sorted(g['month_pct']))
+        return f"{year-1}년 동월 실적 대비 성장률로 목표 산정 (기본 {g['default_pct']}%, 월별 지정: {detail})"
+    return f"{year-1}년 동월 실적 × {g['default_pct']}% 성장 목표"
 
 
 def _work_store_month_totals(conn, year):
@@ -9175,13 +9253,39 @@ def _work_store_group(name):
     return (2, '기타매장')
 
 
+def _work_raw_summary(year, manager):
+    """업무 탭 엑셀의 '기초데이터(요약)' — 연월×매장×브랜드 단위로 뭉쳐서, 전년~올해 전체를 담아도
+    파일이 무겁지 않게 만든다 (거래 건별 원본 전체가 아니라 요약치)."""
+    conn = get_db()
+    keyset = None
+    if manager:
+        keyset = {s['key'] for s in _work_managed_stores(conn, manager, year)}
+    rows = conn.execute("""SELECT substr(sale_date,1,7) ym, real_seller, item_group, item_name,
+                                   SUM(quantity) qty, SUM(total) total, COUNT(*) cnt
+                            FROM sales_data WHERE (sale_date LIKE ? OR sale_date LIKE ?) AND real_seller!=''
+                            GROUP BY ym, real_seller, item_group, item_name""",
+                         (f"{year-1}%", f"{year}%")).fetchall()
+    conn.close()
+    agg = {}
+    for ym, seller, grp, iname, qty, total, cnt in rows:
+        if not ym or is_hidden_seller(seller): continue
+        k = _store_loose_key(seller)
+        if keyset is not None and k not in keyset: continue
+        brand = remap_group(grp, iname) or '(미분류)'
+        key = (ym, k, brand)
+        e = agg.setdefault(key, {'ym': ym, 'store': canon_store(seller) or seller, 'brand': brand, 'qty': 0, 'total': 0, 'cnt': 0})
+        e['qty'] += qty or 0; e['total'] += total or 0; e['cnt'] += cnt or 0
+    return sorted(agg.values(), key=lambda x: (x['ym'], x['store'], x['brand']))
+
+
 def _work_store_grid(year, manager):
-    """매장별 월별 목표 실적 — 목표 = 전년 동월 실적 × 1.05, 베이비하우스/링크맘/기타 순 정렬"""
+    """매장별 월별 목표 실적 — 목표 = 전년 동월 실적 × 성장률(월별 설정 가능), 베이비하우스/링크맘/기타 순 정렬"""
     conn = get_db()
     stores = _work_managed_stores(conn, manager, year)
     cur = _work_store_month_totals(conn, year)
     prev = _work_store_month_totals(conn, year - 1)
     conn.close()
+    mult = _get_growth_rates(year, manager)['multipliers']
 
     now = datetime.now()
     def _fut(m): return (year > now.year) or (year == now.year and m > now.month)
@@ -9193,13 +9297,13 @@ def _work_store_grid(year, manager):
             continue
         months = []
         for m in range(1, 13):
-            t = round(p[m] * 1.05); a = c[m]; fut = _fut(m)
+            t = round(p[m] * mult[m]); a = c[m]; fut = _fut(m)
             months.append({'month': m, 'target': t, 'actual': None if fut else a,
                            'rate': None if fut else _rate(a, t)})
-        ann_t = sum(round(p[m] * 1.05) for m in range(1, 13))
+        ann_t = sum(round(p[m] * mult[m]) for m in range(1, 13))
         ann_a = sum(c[m] for m in range(1, 13) if not _fut(m))
         grp_order, grp_label = _work_store_group(s['name'])
-        rows.append({'name': s['name'], 'group': grp_label, 'group_order': grp_order,
+        rows.append({'name': s['name'], 'manager': s.get('manager', ''), 'group': grp_label, 'group_order': grp_order,
                      'months': months, 'annual_target': ann_t, 'ytd_actual': ann_a,
                      'annual_rate': _rate(ann_a, ann_t)})
     rows.sort(key=lambda r: (r['group_order'], r['name']))
@@ -9209,8 +9313,9 @@ def _work_store_grid(year, manager):
         members = [r for r in rows if r['group_order'] == order]
         if not members: continue
         groups.append({'label': label, 'stores': members})
-    return {'ok': True, 'year': year, 'groups': groups,
-            'basis': f'{year-1}년 동월 실적 × 1.05 (전년 동기 대비 5% 성장) · 베이비하우스 → 링크맘 → 기타매장 순'}
+    g = _get_growth_rates(year, manager)
+    return {'ok': True, 'year': year, 'groups': groups, 'growth': g,
+            'basis': _growth_basis_text(year, g) + ' · 베이비하우스 → 링크맘 → 기타매장 순'}
 
 
 @app.route("/api/work/store-monthly-targets")
@@ -10932,7 +11037,7 @@ def api_export_work_xlsx():
     ws3 = wb.create_sheet('월별 목표 실적')
     grid = _work_monthly_grid(year, manager)
     last_col = 2 + 12 * 3 + 3
-    _title(ws3, f'월별 목표 실적  ({year}년 · {mgr_label})  · 월 목표 = 전년 동월 실적 × 1.05', last_col)
+    _title(ws3, f"월별 목표 실적  ({year}년 · {mgr_label})  · {grid['basis']}", last_col)
     ws3.merge_cells(start_row=3, start_column=2, end_row=4, end_column=2)
     _hdr(ws3, 3, 2, '구분 (브랜드 / 제품)'); ws3.cell(row=4, column=2).border = bdr; ws3.cell(row=4, column=2).fill = HDR
     for m in range(1, 13):
@@ -10994,33 +11099,39 @@ def api_export_work_xlsx():
     for ci in range(3, last_col + 1): ws3.column_dimensions[get_column_letter(ci)].width = 12
     ws3.freeze_panes = 'C5'
 
-    # ── 시트4: 매장별 목표 실적 (베이비하우스 → 링크맘 → 기타매장 순, 1~12월) — 달성률 전부 수식 ──
+    # ── 시트4: 매장별 목표 실적 (베이비하우스 → 링크맘 → 기타매장 순, 담당자 포함, 1~12월) — 달성률 전부 수식 ──
     ws4 = wb.create_sheet('매장별 목표 실적')
     store_grid = _work_store_grid(year, manager)
-    _title(ws4, f'매장별 목표 실적  ({year}년 · {mgr_label})  · 월 목표 = 전년 동월 실적 × 1.05  · 베이비하우스 → 링크맘 → 기타매장 순', last_col)
+    tc4 = tc + 1       # 담당자 컬럼 1개가 끼어들어서 연간 합계 블록 시작 위치가 한 칸 밀림
+    last_col4 = last_col + 1
+    _title(ws4, f"매장별 목표 실적  ({year}년 · {mgr_label})  · {store_grid['basis']}", last_col4)
     ws4.merge_cells(start_row=3, start_column=2, end_row=4, end_column=2)
     _hdr(ws4, 3, 2, '구분 (그룹 / 매장)'); ws4.cell(row=4, column=2).border = bdr; ws4.cell(row=4, column=2).fill = HDR
+    ws4.merge_cells(start_row=3, start_column=3, end_row=4, end_column=3)
+    _hdr(ws4, 3, 3, '영업담당자'); ws4.cell(row=4, column=3).border = bdr; ws4.cell(row=4, column=3).fill = HDR
     for m in range(1, 13):
-        c0 = 3 + (m - 1) * 3
+        c0 = 4 + (m - 1) * 3
         ws4.merge_cells(start_row=3, start_column=c0, end_row=3, end_column=c0 + 2)
         _hdr(ws4, 3, c0, f'{m}월')
         for k in (1, 2): ws4.cell(row=3, column=c0 + k).border = bdr; ws4.cell(row=3, column=c0 + k).fill = HDR
         for k, h in enumerate(['목표', '실적', '달성률']):
             _hdr(ws4, 4, c0 + k, h)
-    ws4.merge_cells(start_row=3, start_column=tc, end_row=3, end_column=tc + 2)
-    _hdr(ws4, 3, tc, '연간 합계')
-    for k in (1, 2): ws4.cell(row=3, column=tc + k).border = bdr; ws4.cell(row=3, column=tc + k).fill = HDR
+    ws4.merge_cells(start_row=3, start_column=tc4, end_row=3, end_column=tc4 + 2)
+    _hdr(ws4, 3, tc4, '연간 합계')
+    for k in (1, 2): ws4.cell(row=3, column=tc4 + k).border = bdr; ws4.cell(row=3, column=tc4 + k).fill = HDR
     for k, h in enumerate(['연간 목표', '누적 실적', '달성률']):
-        _hdr(ws4, 4, tc + k, h)
+        _hdr(ws4, 4, tc4 + k, h)
     ws4.row_dimensions[3].height = 20; ws4.row_dimensions[4].height = 20
 
-    def _write_row4(ri, name, months, ann_t, ann_a, is_group):
+    def _write_row4(ri, name, mgr_name, months, ann_t, ann_a, is_group):
         fill = BRAND_FILL if is_group else None
         c = ws4.cell(row=ri, column=2, value=name if is_group else f"   └ {name}")
         c.font = Font(size=10 if is_group else 9, name=FNAME, bold=is_group); c.border = bdr; c.alignment = left
         if fill: c.fill = fill
+        c = ws4.cell(row=ri, column=3, value=mgr_name or ''); c.font = Font(size=9, name=FNAME); c.border = bdr; c.alignment = ctr
+        if fill: c.fill = fill
         for md in months:
-            c0 = 3 + (md['month'] - 1) * 3
+            c0 = 4 + (md['month'] - 1) * 3
             _num(ws4, ri, c0, md['target'], is_group, fill)
             if md['actual'] is None:
                 _num(ws4, ri, c0 + 1, None, is_group, fill)
@@ -11028,8 +11139,8 @@ def api_export_work_xlsx():
             else:
                 _num(ws4, ri, c0 + 1, md['actual'], is_group, fill)
                 _pct_formula(ws4, ri, c0 + 2, c0, c0 + 1, md['rate'], is_group, fill)
-        _num(ws4, ri, tc, ann_t, is_group, fill); _num(ws4, ri, tc + 1, ann_a, is_group, fill)
-        _pct_formula(ws4, ri, tc + 2, tc, tc + 1, _rate(ann_a, ann_t), is_group, fill)
+        _num(ws4, ri, tc4, ann_t, is_group, fill); _num(ws4, ri, tc4 + 1, ann_a, is_group, fill)
+        _pct_formula(ws4, ri, tc4 + 2, tc4, tc4 + 1, _rate(ann_a, ann_t), is_group, fill)
 
     ri = 5
     group_rows4 = []
@@ -11041,14 +11152,15 @@ def api_export_work_xlsx():
             if md['actual'] is not None:
                 md['rate'] = _rate(md['actual'], md['target'])
         grp_ann_t = sum(s['annual_target'] for s in grp['stores']); grp_ann_a = sum(s['ytd_actual'] for s in grp['stores'])
-        _write_row4(ri, grp['label'], grp_months, grp_ann_t, grp_ann_a, True)
+        _write_row4(ri, grp['label'], '', grp_months, grp_ann_t, grp_ann_a, True)
         group_rows4.append(ri); ri += 1
         for s in grp['stores']:
-            _write_row4(ri, s['name'], s['months'], s['annual_target'], s['ytd_actual'], False)
+            _write_row4(ri, s['name'], s.get('manager', ''), s['months'], s['annual_target'], s['ytd_actual'], False)
             ri += 1
     c = ws4.cell(row=ri, column=2, value='총 합계'); c.font = Font(size=10, name=FNAME, bold=True); c.fill = TOTAL_FILL; c.border = bdr
+    c = ws4.cell(row=ri, column=3, value=''); c.border = bdr; c.fill = TOTAL_FILL
     for m in range(1, 13):
-        c0 = 3 + (m - 1) * 3
+        c0 = 4 + (m - 1) * 3
         _sum_formula(ws4, ri, c0, group_rows4, True, TOTAL_FILL)
         if _fut(m):
             cc = ws4.cell(row=ri, column=c0 + 1, value=None); cc.border = bdr; cc.fill = TOTAL_FILL
@@ -11056,11 +11168,34 @@ def api_export_work_xlsx():
         else:
             _sum_formula(ws4, ri, c0 + 1, group_rows4, True, TOTAL_FILL)
             _pct_formula(ws4, ri, c0 + 2, c0, c0 + 1, 0, True, TOTAL_FILL)
-    _sum_formula(ws4, ri, tc, group_rows4, True, TOTAL_FILL); _sum_formula(ws4, ri, tc + 1, group_rows4, True, TOTAL_FILL)
-    _pct_formula(ws4, ri, tc + 2, tc, tc + 1, 0, True, TOTAL_FILL)
+    _sum_formula(ws4, ri, tc4, group_rows4, True, TOTAL_FILL); _sum_formula(ws4, ri, tc4 + 1, group_rows4, True, TOTAL_FILL)
+    _pct_formula(ws4, ri, tc4 + 2, tc4, tc4 + 1, 0, True, TOTAL_FILL)
     ws4.column_dimensions['B'].width = 34
-    for ci in range(3, last_col + 1): ws4.column_dimensions[get_column_letter(ci)].width = 12
-    ws4.freeze_panes = 'C5'
+    ws4.column_dimensions['C'].width = 12
+    for ci in range(4, last_col4 + 1): ws4.column_dimensions[get_column_letter(ci)].width = 12
+    ws4.freeze_panes = 'D5'
+
+    # ── 시트5: 기초데이터(요약) — 전년~올해 전체를 연월×매장×브랜드 단위로 뭉쳐서 담는다 (원본 전체는 너무 커서 생략) ──
+    ws5 = wb.create_sheet('기초데이터(요약)')
+    _title(ws5, f'기초데이터 요약  ({year-1}~{year}년 · {mgr_label})  · 연월×매장×브랜드 단위로 합산한 값이에요', 7)
+    c = ws5.cell(row=2, column=2, value='※ 거래 건별 원본 전체는 용량이 너무 커서, 검증에 필요한 수준으로 연월·매장·브랜드별 합계만 담았어요.')
+    c.font = Font(size=9, name=FNAME, color='9CA3AF'); ws5.merge_cells('B2:G2')
+    for ci, h in enumerate(['연월', '매장명', '브랜드', '거래건수', '판매수량', '매출액(원)'], 2):
+        _hdr(ws5, 4, ci, h)
+    ws5.row_dimensions[4].height = 20
+    raw_rows = _work_raw_summary(year, manager)
+    ri = 5
+    for r in raw_rows:
+        c = ws5.cell(row=ri, column=2, value=r['ym']); c.font = Font(size=9, name=FNAME); c.border = bdr; c.alignment = ctr
+        c = ws5.cell(row=ri, column=3, value=r['store']); c.font = Font(size=9, name=FNAME); c.border = bdr; c.alignment = left
+        c = ws5.cell(row=ri, column=4, value=r['brand']); c.font = Font(size=9, name=FNAME); c.border = bdr; c.alignment = ctr
+        _num(ws5, ri, 5, r['cnt']); _num(ws5, ri, 6, r['qty']); _num(ws5, ri, 7, r['total'])
+        ri += 1
+    ws5.column_dimensions['B'].width = 10
+    ws5.column_dimensions['C'].width = 26
+    for ci, w in zip(range(4, 8), [12, 10, 10, 14]):
+        ws5.column_dimensions[get_column_letter(ci)].width = w
+    ws5.freeze_panes = 'B5'
 
     buf = io.BytesIO(); wb.save(buf); buf.seek(0)
     fname = f'업무_{year}년{month}월_{mgr_label}.xlsx'

@@ -935,7 +935,29 @@ td.center{text-align:center}
             <option value="7">7월</option><option value="8">8월</option><option value="9">9월</option>
             <option value="10">10월</option><option value="11">11월</option><option value="12">12월</option>
           </select>
+          <button class="btn btn-ghost btn-sm" onclick="openWorkGrowthModal()">🎯 목표 성장률 설정</button>
           <button class="btn btn-ghost btn-sm" onclick="downloadWorkXlsx()">📥 엑셀 다운로드</button>
+        </div>
+      </div>
+
+      <div id="work-growth-modal" style="display:none;position:fixed;inset:0;background:rgba(15,23,42,.5);z-index:1000;align-items:center;justify-content:center;padding:20px">
+        <div style="background:var(--paper);border-radius:14px;width:520px;max-width:100%;max-height:85vh;overflow-y:auto;box-shadow:0 20px 50px rgba(0,0,0,.3)">
+          <div style="padding:16px 20px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center">
+            <div style="font-size:14px;font-weight:800">목표 성장률 설정</div>
+            <button onclick="document.getElementById('work-growth-modal').style.display='none'" style="background:none;border:none;font-size:16px;color:var(--t-400);cursor:pointer">✕</button>
+          </div>
+          <div style="padding:16px 20px">
+            <div style="font-size:11.5px;color:var(--t-400);margin-bottom:14px">목표 = 전년 동월 실적 × (1 + 성장률%). 전월대비 성장률과는 별개예요. 기본값을 바꾸면 월별로 따로 지정하지 않은 달에 적용되고, 특정 달만 다르게 하고 싶으면 아래에서 그 달만 따로 넣어주세요.</div>
+            <div style="display:flex;align-items:center;gap:8px;margin-bottom:16px;padding-bottom:16px;border-bottom:1px solid var(--border)">
+              <span style="font-size:12.5px;font-weight:700;color:var(--t-700);white-space:nowrap">기본 성장률</span>
+              <input type="number" step="0.1" id="work-growth-default" style="width:80px;border:1px solid var(--border-md);border-radius:6px;padding:6px 8px;font-size:12.5px;text-align:right">
+              <span style="font-size:12.5px;color:var(--t-500)">%</span>
+              <button class="btn btn-dark btn-sm" style="margin-left:auto" onclick="saveWorkGrowthDefault(true)">전체 월 일괄 적용</button>
+              <button class="btn btn-ghost btn-sm" onclick="saveWorkGrowthDefault(false)">기본값만 저장</button>
+            </div>
+            <div style="font-size:12px;font-weight:700;color:var(--t-700);margin-bottom:8px">월별로 다르게 (선택 입력)</div>
+            <div id="work-growth-months" style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px"></div>
+          </div>
         </div>
       </div>
 
@@ -974,7 +996,7 @@ td.center{text-align:center}
         <div style="font-size:13px;font-weight:700;color:var(--t-700);margin-bottom:10px;display:flex;align-items:center;gap:6px">
           <span style="width:20px;height:20px;border-radius:6px;background:var(--p);color:#fff;display:inline-flex;align-items:center;justify-content:center;font-size:11px">2-2</span>
           월별 목표 실적
-          <span style="font-size:11px;font-weight:500;color:var(--t-300)">— 월 목표 = 전년 동월 실적 × 1.05 · 칸에는 달성률과 (실적/목표)가 표시돼요</span>
+          <span id="work-monthly-basis" style="font-size:11px;font-weight:500;color:var(--t-300)">— 칸에는 달성률과 (실적/목표)가 표시돼요</span>
         </div>
         <div style="background:var(--paper);border:1px solid var(--border);border-radius:12px;overflow-x:auto">
           <table style="width:100%;border-collapse:collapse;white-space:nowrap">
@@ -2966,6 +2988,56 @@ function downloadWorkXlsx(){
   toast('업무 보고서 엑셀 다운로드 중...');
 }
 
+async function openWorkGrowthModal(){
+  const year = document.getElementById('work-year').value;
+  const manager = document.getElementById('work-manager').value;
+  const r = await api(`/api/work/growth-rate?year=${year}&manager=${encodeURIComponent(manager)}`);
+  if(!r?.ok) return;
+  document.getElementById('work-growth-default').value = r.default_pct;
+  const grid = document.getElementById('work-growth-months');
+  grid.innerHTML = Array.from({length:12}, (_,i)=>i+1).map(m=>{
+    const v = (r.month_pct && r.month_pct[m] !== undefined) ? r.month_pct[m] : '';
+    return `<div style="display:flex;align-items:center;gap:6px">
+      <span style="font-size:11.5px;color:var(--t-500);width:32px">${m}월</span>
+      <input type="number" step="0.1" id="work-growth-m${m}" value="${v}" placeholder="기본"
+        style="width:60px;border:1px solid var(--border-md);border-radius:6px;padding:5px 6px;font-size:11.5px;text-align:right">
+      <span style="font-size:11px;color:var(--t-400)">%</span>
+      <button onclick="saveWorkGrowthMonth(${m})" style="background:none;border:none;color:var(--p);cursor:pointer;font-size:11px;text-decoration:underline">저장</button>
+    </div>`;
+  }).join('');
+  document.getElementById('work-growth-modal').style.display = 'flex';
+}
+
+async function saveWorkGrowthDefault(applyAll){
+  const year = document.getElementById('work-year').value;
+  const manager = document.getElementById('work-manager').value;
+  const rate_pct = parseFloat(document.getElementById('work-growth-default').value);
+  if(isNaN(rate_pct)){ toast('성장률 숫자를 입력해주세요', false); return; }
+  const body = {year: parseInt(year), manager: manager || '전체', rate_pct};
+  if(applyAll) body.apply_all = true;
+  const r = await api('/api/work/growth-rate', {method:'POST', body});
+  if(r?.ok){
+    toast(applyAll ? `모든 달에 ${rate_pct}% 성장률을 적용했어요` : `기본 성장률을 ${rate_pct}%로 저장했어요`);
+    document.getElementById('work-growth-modal').style.display = 'none';
+    loadWorkPage();
+  }
+}
+
+async function saveWorkGrowthMonth(m){
+  const year = document.getElementById('work-year').value;
+  const manager = document.getElementById('work-manager').value;
+  const el = document.getElementById(`work-growth-m${m}`);
+  const raw = el.value.trim();
+  if(raw === ''){ toast(`${m}월 성장률을 입력해주세요`, false); return; }
+  const rate_pct = parseFloat(raw);
+  if(isNaN(rate_pct)){ toast('숫자를 입력해주세요', false); return; }
+  const r = await api('/api/work/growth-rate', {method:'POST', body:{year: parseInt(year), manager: manager || '전체', month: m, rate_pct}});
+  if(r?.ok){
+    toast(`${m}월 성장률을 ${rate_pct}%로 저장했어요`);
+    loadWorkPage();
+  }
+}
+
 async function loadWorkKPI(year, month, manager){
   const r = await api(`/api/work/kpi?year=${year}&month=${month}&manager=${encodeURIComponent(manager)}`);
   if(!r?.ok) return;
@@ -3060,6 +3132,8 @@ async function loadWorkMonthlyGrid(year, manager){
   const r = await api(`/api/work/monthly-targets?year=${year}&manager=${encodeURIComponent(manager)}`);
   const thead = document.getElementById('work-monthly-thead');
   const tbody = document.getElementById('work-monthly-tbody');
+  const basisEl = document.getElementById('work-monthly-basis');
+  if(basisEl) basisEl.textContent = r?.basis ? '— ' + r.basis : '';
   const th = (t,al,extra='')=>`<th style="padding:8px 10px;text-align:${al};font-size:10.5px;font-weight:700;color:var(--t-500);border-bottom:1.5px solid var(--border);${extra}">${t}</th>`;
   thead.innerHTML = `<tr style="background:var(--bg)">${th('브랜드 / 제품','left','position:sticky;left:0;background:var(--bg)')}${[1,2,3,4,5,6,7,8,9,10,11,12].map(m=>th(m+'월','center')).join('')}${th('연간','center')}</tr>`;
   if(!r?.ok || !r.brands.length){
