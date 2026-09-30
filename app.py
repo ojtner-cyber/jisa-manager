@@ -518,6 +518,7 @@ def init_db():
             ('레카로', '제논1', 62, 62, 607600, 607600, '행사 할인 없음(기존과 동일 공급율)'),
             ('레카로', '벨릭스', 62, 60, 483600, 468000, ''),
             ('레카로', '액시언1', 62, 62, 359600, 359600, '행사 할인 없음(기존과 동일 공급율)'),
+            ('레카로', '페피타 한정판', 65, 65, 468000, 468000, '소비자가 720,000원·판매가 630,000원 기준 65% 공급조건(행사 할인 여부 별도 확인 안 됨)'),
             ('원더폴드', '엘리트프로 2인승', 65, 65, 643500, 643500, '행사 할인 없음(기존과 동일 공급율)'),
             ('원더폴드', '엘리트프로 4인승', 65, 65, 838500, 838500, '행사 할인 없음(기존과 동일 공급율)'),
             ('원더폴드', '슈퍼맨 2인승', 68, 65, 945200, 903500, ''),
@@ -3673,17 +3674,25 @@ def export_xlsx_monthly():
                      as_attachment=True,download_name=fname)
 
 
+def _display_product_name(item_name):
+    """화면/엑셀에 보여줄 제품명 — [브랜드] 태그와 '검수必' 같은 내부 표시는 어디에 있든 걷어내고
+    순수 제품명만 남긴다. 예: '검수必[레카로]토론1' → '토론1', '[줄즈]에어2' → '에어2'."""
+    base = normalize_item_name(item_name or '') or (item_name or '') or '(품목미상)'
+    base = re.sub(r'검수必\s*', '', base)
+    base = re.sub(r'\[[^\]]+\]', '', base).strip()
+    return base or '(품목미상)'
+
+
 def _promo_product_key(item_name):
-    """제품명을 공급율표와 비교할 수 있는 키로 정규화 — 대괄호 브랜드태그·색상 제거하고 공백도 없앤다.
-    예: '[줄즈]에어2_모기장&썬커버' → '에어2', '[ABC디자인]태그_단델리온골드' → '태그단델리온골드'.
+    """제품명을 공급율표와 비교할 수 있는 키로 정규화 — 브랜드태그·내부표시·색상 제거하고 공백도 없앤다.
+    예: '[줄즈]에어2_모기장&썬커버' → '에어2', '검수必[레카로]토론1' → '토론1'.
     단, '한정판'처럼 소비자가 자체가 다른 특별 변형은 색상 변형과 똑같이 취급하면 안 된다 —
     (예: 에어2_카밍베이지_한정판은 소비자가 960,000원으로 일반 에어2(840,000원)와 다르다)
     그래서 원본 이름에 '한정판' 표시가 있으면 정규화된 키에 그대로 남겨서 별도 제품으로 구분한다."""
-    raw_no_bracket = re.sub(r'^\[[^\]]+\]', '', (item_name or '')).strip()
-    base = normalize_item_name(item_name or '') or raw_no_bracket
-    base = re.sub(r'^\[[^\]]+\]', '', base).strip()
-    key = base.replace(' ', '')
-    if '한정판' in raw_no_bracket and '한정판' not in key:
+    raw_clean = re.sub(r'검수必\s*', '', (item_name or ''))
+    raw_clean = re.sub(r'\[[^\]]+\]', '', raw_clean).strip()
+    key = _display_product_name(item_name).replace(' ', '')
+    if '한정판' in raw_clean and '한정판' not in key:
         key += '한정판'
     return key
 
@@ -4040,7 +4049,7 @@ def api_sales_event_search():
     product_map = {}
     for r in rows:
         b = remap_group(r.get('item_group') or '', r.get('item_name') or '') or '(미분류)'
-        pname = normalize_item_name(r.get('item_name') or '') or r.get('item_name') or '(품목미상)'
+        pname = _display_product_name(r.get('item_name'))
         key = (b, pname)
         g = product_map.setdefault(key, {'brand': b, 'item_name': pname, 'qty': 0, 'amount': 0, 'cnt': 0})
         g['qty'] += r['quantity'] or 0
@@ -4094,7 +4103,7 @@ def export_xlsx_event_report():
     def _brand_of(r):
         return remap_group(r.get('item_group') or '', r.get('item_name') or '') or '(미분류)'
     def _prod_of(r):
-        return normalize_item_name(r.get('item_name') or '') or r.get('item_name') or '(품목미상)'
+        return _display_product_name(r.get('item_name'))
 
     brand_map = {}
     for r in rows:
@@ -4227,7 +4236,7 @@ def export_xlsx_event_report():
     for s in store_rows:
         pct = round(s['amount']/total_amt*100, 1) if total_amt else 0
         margin = s.get('extra_margin') or 0
-        vals = [s['store'], s['qty'], s['amount'], (f"+{margin:,}" if margin else '—'), f"{pct}%"]
+        vals = [s['store'], s['qty'], s['amount'], (f"+{margin:,}" if margin else ''), f"{pct}%"]
         for ci, v in enumerate(vals, 2):
             c = ws.cell(row=ri, column=ci, value=v); c.font=Font(size=9,name=FNAME); c.border=bdr
             c.alignment = left_a if ci==2 else right_a if ci<=5 else ctr
@@ -4244,7 +4253,7 @@ def export_xlsx_event_report():
     # 총합계 행
     total_margin_all = sum(s.get('extra_margin') or 0 for s in store_rows)
     c = ws.cell(row=ri, column=2, value='총합계'); c.font=Font(bold=True,size=9,name=FNAME); c.fill=mf(LGRAY); c.border=bdr; c.alignment=left_a
-    tot_vals = [total_qty, total_amt, (f"+{total_margin_all:,}" if total_margin_all else '—'), '100.0%']
+    tot_vals = [total_qty, total_amt, (f"+{total_margin_all:,}" if total_margin_all else ''), '100.0%']
     for ci, v in enumerate(tot_vals, 3):
         c = ws.cell(row=ri, column=ci, value=v); c.font=Font(bold=True,size=9,name=FNAME); c.fill=mf(LGRAY); c.border=bdr
         c.alignment = right_a if ci<=5 else ctr
@@ -4264,7 +4273,6 @@ def export_xlsx_event_report():
     ws.column_dimensions['F'].width = 10
     for ci in range(7, last_col_matrix+1):
         ws.column_dimensions[get_column_letter(ci)].width = 11
-    ws.freeze_panes = f'B{store_start_row+2}'
 
     # 브랜드별 제품상세 시트 — 브랜드 아래 어떤 제품이 얼마나 나갔는지 (월별/주별 실적의 '제품별 상세'와 동일 방식)
     ws_prod = wb.create_sheet('브랜드별 제품상세')
