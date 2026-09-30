@@ -624,28 +624,59 @@ td.center{text-align:center}
             <input class="fi" type="date" id="event-date-to">
             <button class="btn btn-dark btn-sm" onclick="loadEventSales()">검색</button>
             <button class="btn btn-ghost btn-sm" onclick="downloadEventReport()">📊 보고서 다운로드</button>
-            <button class="btn btn-ghost btn-sm" onclick="openPromoRateModal()">⚙️ 공급율 기준표</button>
+            <button class="btn btn-ghost btn-sm" onclick="openPromoEventModal()">⚙️ 행사 관리</button>
           </div>
         </div>
         <div id="event-sales-result"></div>
       </div>
     </div>
 
-    <div id="promo-rate-modal" style="display:none;position:fixed;inset:0;background:rgba(15,23,42,.5);z-index:1000;align-items:center;justify-content:center;padding:20px">
-      <div style="background:var(--paper);border-radius:14px;width:620px;max-width:100%;max-height:85vh;overflow-y:auto;box-shadow:0 20px 50px rgba(0,0,0,.3)">
+    <div id="promo-event-modal" style="display:none;position:fixed;inset:0;background:rgba(15,23,42,.5);z-index:1000;align-items:center;justify-content:center;padding:20px">
+      <div style="background:var(--paper);border-radius:14px;width:760px;max-width:100%;max-height:88vh;overflow-y:auto;box-shadow:0 20px 50px rgba(0,0,0,.3)">
         <div style="padding:16px 20px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center">
           <div>
-            <div style="font-size:14px;font-weight:800">브랜드별 공급율 기준표</div>
-            <div style="font-size:11px;color:var(--t-400);margin-top:2px">추가마진 = 매출액 × (정상 공급율 − 행사 공급율). 연월을 바꿔서 그 달 기준을 확인·수정할 수 있어요.</div>
+            <div style="font-size:14px;font-weight:800">행사(프로모션) 관리</div>
+            <div style="font-size:11px;color:var(--t-400);margin-top:2px">추가마진 = 매출액 × (정상 공급율 − 행사 공급율). 행사는 기간을 가지고, 그 안에서 브랜드·제품별로 공급율이 각각 다를 수 있어요(같은 브랜드도 할인되는 제품/안되는 제품이 섞여있어요).</div>
           </div>
-          <button onclick="document.getElementById('promo-rate-modal').style.display='none'" style="background:none;border:none;font-size:16px;color:var(--t-400);cursor:pointer">✕</button>
+          <button onclick="document.getElementById('promo-event-modal').style.display='none'" style="background:none;border:none;font-size:16px;color:var(--t-400);cursor:pointer">✕</button>
         </div>
         <div style="padding:16px 20px">
-          <div style="display:flex;align-items:center;gap:8px;margin-bottom:14px">
-            <span style="font-size:12px;color:var(--t-500)">기준 연월</span>
-            <input type="month" id="promo-rate-ym" style="border:1px solid var(--border-md);border-radius:6px;padding:5px 8px;font-size:12px" onchange="loadPromoRateCard()">
+          <div id="promo-event-list-view">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+              <div style="font-size:12.5px;font-weight:700;color:var(--t-700)">등록된 행사</div>
+              <button class="btn btn-dark btn-sm" onclick="openPromoEventNewForm()">+ 새 행사 만들기</button>
+            </div>
+            <div id="promo-event-list" style="display:flex;flex-direction:column;gap:6px"></div>
           </div>
-          <div id="promo-rate-list" style="display:flex;flex-direction:column;gap:8px"></div>
+          <div id="promo-event-new-form" style="display:none;background:var(--bg);border-radius:10px;padding:14px;margin-bottom:16px">
+            <div style="font-size:12px;font-weight:700;color:var(--t-700);margin-bottom:8px">새 행사</div>
+            <div style="display:grid;grid-template-columns:2fr 1fr 1fr;gap:8px;margin-bottom:8px">
+              <input type="text" id="pe-new-name" placeholder="행사명 (예: 추석위크)" style="border:1px solid var(--border-md);border-radius:6px;padding:6px 8px;font-size:12px">
+              <input type="date" id="pe-new-start" style="border:1px solid var(--border-md);border-radius:6px;padding:6px 8px;font-size:12px">
+              <input type="date" id="pe-new-end" style="border:1px solid var(--border-md);border-radius:6px;padding:6px 8px;font-size:12px">
+            </div>
+            <div style="display:flex;gap:8px">
+              <button class="btn btn-dark btn-sm" onclick="createPromoEvent()">만들기</button>
+              <button class="btn btn-ghost btn-sm" onclick="document.getElementById('promo-event-new-form').style.display='none';document.getElementById('promo-event-list-view').style.display='block'">취소</button>
+            </div>
+          </div>
+          <div id="promo-event-detail-view" style="display:none">
+            <button class="btn btn-ghost btn-sm" onclick="closePromoEventDetail()" style="margin-bottom:10px">← 목록으로</button>
+            <div id="promo-event-detail-header" style="margin-bottom:12px"></div>
+            <div style="display:flex;gap:8px;align-items:center;margin-bottom:12px;flex-wrap:wrap">
+              <label class="btn btn-ghost btn-sm" style="cursor:pointer">
+                📎 엑셀/PDF로 일괄 업로드
+                <input type="file" id="promo-rate-file" accept=".xlsx,.xls,.pdf" style="display:none" onchange="uploadPromoRateFile()">
+              </label>
+              <input type="text" id="promo-rate-upload-brand" placeholder="브랜드 (업로드 파일에 브랜드 열이 없을 때)" style="border:1px solid var(--border-md);border-radius:6px;padding:6px 8px;font-size:11.5px;width:220px">
+            </div>
+            <div style="font-size:10.5px;color:var(--t-300);margin-bottom:10px">엑셀은 "브랜드/제품명/정상공급율/행사공급율/비고" 헤더가 있는 표를 그대로 인식해요. PDF는 서버에 파싱 라이브러리가 설치된 경우에만 자동 인식되고, 안 되면 아래에서 직접 한 줄씩 추가해주세요.</div>
+            <div style="display:grid;grid-template-columns:1.2fr 1.6fr 1fr 1fr 1.6fr 50px;gap:6px;font-size:10px;font-weight:700;color:var(--t-400);padding:0 4px;margin-bottom:4px">
+              <span>브랜드</span><span>제품명</span><span>정상%</span><span>행사%</span><span>비고</span><span></span>
+            </div>
+            <div id="promo-rate-rows" style="display:flex;flex-direction:column;gap:6px;margin-bottom:10px"></div>
+            <button class="btn btn-ghost btn-sm" onclick="addPromoRateRow()">+ 제품 한 줄 추가</button>
+          </div>
         </div>
       </div>
     </div>
@@ -5137,11 +5168,12 @@ async function loadEventSales(){
       <div style="background:var(--paper);border:1px solid var(--border);border-radius:12px;padding:16px">
         <div style="font-size:12.5px;font-weight:700;color:var(--t-700);margin-bottom:10px">매장별 실적 (상위 10개)</div>
         <table style="width:100%;border-collapse:collapse;font-size:11.5px">
-          <thead><tr style="background:var(--bg)"><th style="padding:6px 8px;text-align:left;font-size:10px;color:var(--t-500)">매장명</th><th style="padding:6px 8px;text-align:right;font-size:10px;color:var(--t-500)">수량</th><th style="padding:6px 8px;text-align:right;font-size:10px;color:var(--t-500)">금액</th></tr></thead>
-          <tbody>${r.store_breakdown.slice(0,10).map(st=>`<tr><td style="padding:6px 8px;border-bottom:1px solid var(--border);font-weight:600">${st.store}</td><td style="padding:6px 8px;text-align:right;border-bottom:1px solid var(--border)">${st.qty.toLocaleString()}</td><td style="padding:6px 8px;text-align:right;border-bottom:1px solid var(--border)">${st.amount.toLocaleString()}</td></tr>`).join('')}</tbody>
+          <thead><tr style="background:var(--bg)"><th style="padding:6px 8px;text-align:left;font-size:10px;color:var(--t-500)">매장명</th><th style="padding:6px 8px;text-align:right;font-size:10px;color:var(--t-500)">수량</th><th style="padding:6px 8px;text-align:right;font-size:10px;color:var(--t-500)">금액</th><th style="padding:6px 8px;text-align:right;font-size:10px;color:var(--t-500)">추가 마진</th></tr></thead>
+          <tbody>${r.store_breakdown.slice(0,10).map(st=>`<tr><td style="padding:6px 8px;border-bottom:1px solid var(--border);font-weight:600">${st.store}</td><td style="padding:6px 8px;text-align:right;border-bottom:1px solid var(--border)">${st.qty.toLocaleString()}</td><td style="padding:6px 8px;text-align:right;border-bottom:1px solid var(--border)">${st.amount.toLocaleString()}</td><td style="padding:6px 8px;text-align:right;border-bottom:1px solid var(--border);font-weight:700;color:${st.extra_margin?'#DC2626':'var(--t-300)'}">${st.extra_margin?'+'+st.extra_margin.toLocaleString():'—'}</td></tr>`).join('')}</tbody>
         </table>
       </div>
     </div>
+    ${r.matched_events && r.matched_events.length ? `<div style="font-size:11px;color:var(--t-400);margin-top:10px">적용된 행사: ${r.matched_events.map(e=>`${e.name}(${e.date_start}~${e.date_end})`).join(', ')}</div>` : ''}
     <div style="background:var(--paper);border:1px solid var(--border);border-radius:12px;padding:16px;margin-top:16px">
       <div style="font-size:12.5px;font-weight:700;color:var(--t-700);margin-bottom:10px">브랜드별 제품상세 — 어떤 제품이 얼마나 나갔는지</div>
       <table style="width:100%;border-collapse:collapse;font-size:11.5px">
@@ -5166,69 +5198,170 @@ async function loadEventSales(){
     </div>
     <div style="background:var(--paper);border:1px solid var(--border);border-radius:12px;padding:16px;margin-top:16px">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;flex-wrap:wrap;gap:6px">
-        <div style="font-size:12.5px;font-weight:700;color:var(--t-700)">매장별 추가마진 및 공급율 할인 <span style="font-weight:400;color:var(--t-400)">— 기준 연월 ${r.margin_year_month}</span></div>
-        <div style="font-size:11.5px;color:var(--t-500)">총 추가마진 <b style="color:var(--t-900)">${(r.total_extra_margin||0).toLocaleString()}원</b></div>
+        <div style="font-size:12.5px;font-weight:700;color:var(--t-700)">매장별 추가마진 상세 (제품별)</div>
+        <div style="font-size:11.5px;color:var(--t-500)">총 추가마진 <b style="color:#DC2626">${(r.total_extra_margin||0).toLocaleString()}원</b></div>
       </div>
-      <div style="font-size:10.5px;color:var(--t-300);margin-bottom:8px">추가마진 ≈ 매출액 × (정상 공급율 − 행사 공급율). 기준표에 없는 브랜드는 계산이 안 돼요 — 우측 상단 "⚙️ 공급율 기준표"에서 등록해주세요.</div>
+      <div style="font-size:10.5px;color:var(--t-300);margin-bottom:8px">추가마진 ≈ 매출액 × (정상 공급율 − 행사 공급율). 제품이 행사 기준표에 없으면 계산이 안 돼요 — 우측 상단 "⚙️ 행사 관리"에서 등록해주세요.</div>
       <table style="width:100%;border-collapse:collapse;font-size:11.5px">
         <thead><tr style="background:var(--bg)">
           <th style="padding:6px 8px;text-align:left;font-size:10px;color:var(--t-500)">매장명</th>
+          <th style="padding:6px 8px;text-align:left;font-size:10px;color:var(--t-500)">행사명</th>
           <th style="padding:6px 8px;text-align:left;font-size:10px;color:var(--t-500)">브랜드</th>
+          <th style="padding:6px 8px;text-align:left;font-size:10px;color:var(--t-500)">제품명</th>
           <th style="padding:6px 8px;text-align:right;font-size:10px;color:var(--t-500)">수량</th>
           <th style="padding:6px 8px;text-align:right;font-size:10px;color:var(--t-500)">매출액</th>
-          <th style="padding:6px 8px;text-align:center;font-size:10px;color:var(--t-500)">공급율 할인</th>
+          <th style="padding:6px 8px;text-align:center;font-size:10px;color:var(--t-500)">정상%→행사%</th>
           <th style="padding:6px 8px;text-align:right;font-size:10px;color:var(--t-500)">추가마진</th>
         </tr></thead>
         <tbody>${(r.margin_breakdown||[]).map(m=>`<tr title="${m.note||''}">
           <td style="padding:6px 8px;border-bottom:1px solid var(--border);font-weight:600">${m.store}</td>
+          <td style="padding:6px 8px;border-bottom:1px solid var(--border);color:var(--t-500)">${m.event_name}</td>
           <td style="padding:6px 8px;border-bottom:1px solid var(--border)">${m.brand}</td>
+          <td style="padding:6px 8px;border-bottom:1px solid var(--border)">${m.product}</td>
           <td style="padding:6px 8px;text-align:right;border-bottom:1px solid var(--border)">${m.qty.toLocaleString()}</td>
           <td style="padding:6px 8px;text-align:right;border-bottom:1px solid var(--border)">${m.amount.toLocaleString()}</td>
-          <td style="padding:6px 8px;text-align:center;border-bottom:1px solid var(--border);color:${m.discount_pct!=null?'#16A34A':'var(--t-300)'}">${m.discount_pct!=null?m.discount_pct+'%p':'기준표 없음'}</td>
-          <td style="padding:6px 8px;text-align:right;border-bottom:1px solid var(--border);font-weight:700;color:${m.extra_margin?'#16A34A':'var(--t-300)'}">${m.extra_margin!=null?m.extra_margin.toLocaleString()+'원':'—'}</td>
+          <td style="padding:6px 8px;text-align:center;border-bottom:1px solid var(--border);color:${m.discount_pct!=null?'#16A34A':'var(--t-300)'}">${m.normal_rate!=null?m.normal_rate+'%→'+m.event_rate+'%':'기준표 없음'}</td>
+          <td style="padding:6px 8px;text-align:right;border-bottom:1px solid var(--border);font-weight:700;color:${m.extra_margin?'#DC2626':'var(--t-300)'}">${m.extra_margin!=null?'+'+m.extra_margin.toLocaleString()+'원':'—'}</td>
         </tr>`).join('')}</tbody>
       </table>
     </div>`;
 }
 
-async function openPromoRateModal(){
-  const el = document.getElementById('promo-rate-ym');
-  if(!el.value) el.value = new Date().toISOString().slice(0,7);
-  document.getElementById('promo-rate-modal').style.display = 'flex';
-  loadPromoRateCard();
+let promoCurrentEventId = null;
+let promoRateRowSeq = 0;
+
+async function openPromoEventModal(){
+  document.getElementById('promo-event-modal').style.display = 'flex';
+  document.getElementById('promo-event-list-view').style.display = 'block';
+  document.getElementById('promo-event-new-form').style.display = 'none';
+  document.getElementById('promo-event-detail-view').style.display = 'none';
+  loadPromoEventList();
 }
 
-async function loadPromoRateCard(){
-  const ym = document.getElementById('promo-rate-ym').value;
-  if(!ym) return;
-  const r = await api(`/api/promo-rate-card?year_month=${ym}`);
-  const list = document.getElementById('promo-rate-list');
-  if(!r?.ok){ list.innerHTML = ''; return; }
-  list.innerHTML = r.rates.map((rt,i)=>`
-    <div style="display:grid;grid-template-columns:80px 1fr 1fr 2fr;gap:8px;align-items:center;padding:8px;background:var(--bg);border-radius:8px">
-      <div style="font-size:12px;font-weight:700;color:var(--t-700)">${rt.brand}</div>
-      <div style="display:flex;align-items:center;gap:4px">
-        <input type="number" step="0.1" id="pr-normal-${i}" value="${rt.normal_rate ?? ''}" placeholder="정상%" style="width:60px;border:1px solid var(--border-md);border-radius:5px;padding:4px 6px;font-size:11px;text-align:right">
-        <span style="font-size:10px;color:var(--t-400)">% 정상</span>
+function openPromoEventNewForm(){
+  document.getElementById('promo-event-list-view').style.display = 'none';
+  document.getElementById('promo-event-new-form').style.display = 'block';
+  document.getElementById('pe-new-name').value = '';
+  document.getElementById('pe-new-start').value = '';
+  document.getElementById('pe-new-end').value = '';
+}
+
+async function loadPromoEventList(){
+  const r = await api('/api/promo-events');
+  const list = document.getElementById('promo-event-list');
+  if(!r?.ok || !r.events.length){
+    list.innerHTML = `<div style="text-align:center;padding:20px;color:var(--t-300);font-size:12px">등록된 행사가 없어요. "+ 새 행사 만들기"로 시작해보세요.</div>`;
+    return;
+  }
+  list.innerHTML = r.events.map(e=>`
+    <div onclick="openPromoEventDetail(${e.id}, '${e.name.replace(/'/g,"\\'")}', '${e.date_start}', '${e.date_end}')"
+      style="display:flex;justify-content:space-between;align-items:center;padding:10px 12px;background:var(--bg);border-radius:8px;cursor:pointer">
+      <div>
+        <div style="font-size:12.5px;font-weight:700;color:var(--t-800)">${e.name}</div>
+        <div style="font-size:11px;color:var(--t-400)">${e.date_start} ~ ${e.date_end} · 제품 ${e.product_count}개 등록됨</div>
       </div>
-      <div style="display:flex;align-items:center;gap:4px">
-        <input type="number" step="0.1" id="pr-event-${i}" value="${rt.event_rate ?? ''}" placeholder="행사%" style="width:60px;border:1px solid var(--border-md);border-radius:5px;padding:4px 6px;font-size:11px;text-align:right">
-        <span style="font-size:10px;color:var(--t-400)">% 행사</span>
-      </div>
-      <div style="display:flex;align-items:center;gap:6px">
-        <input type="text" id="pr-note-${i}" value="${(rt.note||'').replace(/"/g,'&quot;')}" placeholder="비고" style="flex:1;border:1px solid var(--border-md);border-radius:5px;padding:4px 6px;font-size:10.5px">
-        <button onclick="savePromoRate('${rt.brand}', ${i})" style="background:none;border:none;color:var(--p);cursor:pointer;font-size:11px;text-decoration:underline;white-space:nowrap">저장</button>
-      </div>
+      <button onclick="event.stopPropagation();deletePromoEvent(${e.id})" style="background:none;border:none;color:var(--red);cursor:pointer;font-size:11px">삭제</button>
     </div>`).join('');
 }
 
-async function savePromoRate(brand, i){
-  const ym = document.getElementById('promo-rate-ym').value;
-  const normal_rate = document.getElementById(`pr-normal-${i}`).value;
-  const event_rate = document.getElementById(`pr-event-${i}`).value;
-  const note = document.getElementById(`pr-note-${i}`).value;
-  const r = await api('/api/promo-rate-card', {method:'POST', body:{year_month: ym, brand, normal_rate, event_rate, note}});
-  if(r?.ok){ toast(`${brand} 공급율 기준을 저장했어요`); }
+async function createPromoEvent(){
+  const name = document.getElementById('pe-new-name').value.trim();
+  const date_start = document.getElementById('pe-new-start').value;
+  const date_end = document.getElementById('pe-new-end').value;
+  if(!name || !date_start || !date_end){ toast('행사명과 기간을 모두 입력해주세요', false); return; }
+  const r = await api('/api/promo-events', {method:'POST', body:{name, date_start, date_end}});
+  if(r?.ok){
+    toast(`"${name}" 행사를 만들었어요`);
+    openPromoEventDetail(r.id, name, date_start, date_end);
+  }
+}
+
+async function deletePromoEvent(id){
+  if(!confirm('이 행사와 등록된 공급율을 모두 삭제할까요?')) return;
+  const r = await api(`/api/promo-events/${id}`, {method:'DELETE'});
+  if(r?.ok){ toast('삭제했어요'); loadPromoEventList(); }
+}
+
+function closePromoEventDetail(){
+  document.getElementById('promo-event-detail-view').style.display = 'none';
+  document.getElementById('promo-event-list-view').style.display = 'block';
+  promoCurrentEventId = null;
+  loadPromoEventList();
+}
+
+async function openPromoEventDetail(id, name, dateStart, dateEnd){
+  promoCurrentEventId = id;
+  document.getElementById('promo-event-list-view').style.display = 'none';
+  document.getElementById('promo-event-new-form').style.display = 'none';
+  document.getElementById('promo-event-detail-view').style.display = 'block';
+  document.getElementById('promo-event-detail-header').innerHTML =
+    `<div style="font-size:13px;font-weight:800;color:var(--t-800)">${name}</div><div style="font-size:11px;color:var(--t-400)">${dateStart} ~ ${dateEnd}</div>`;
+  await loadPromoRateRows();
+}
+
+async function loadPromoRateRows(){
+  const r = await api(`/api/promo-events/${promoCurrentEventId}/rates`);
+  const container = document.getElementById('promo-rate-rows');
+  container.innerHTML = '';
+  if(r?.ok){
+    r.rates.forEach(rt => addPromoRateRow(rt));
+  }
+}
+
+function addPromoRateRow(rt){
+  rt = rt || {};
+  const rowId = 'pr-row-' + (promoRateRowSeq++);
+  const container = document.getElementById('promo-rate-rows');
+  const div = document.createElement('div');
+  div.id = rowId;
+  div.style.cssText = 'display:grid;grid-template-columns:1.2fr 1.6fr 1fr 1fr 1.6fr 50px;gap:6px;align-items:center';
+  div.innerHTML = `
+    <input type="text" class="pr-brand" value="${(rt.brand||'').replace(/"/g,'&quot;')}" placeholder="브랜드" style="border:1px solid var(--border-md);border-radius:5px;padding:5px 6px;font-size:11.5px">
+    <input type="text" class="pr-product" value="${(rt.product_name||'').replace(/"/g,'&quot;')}" placeholder="제품명" style="border:1px solid var(--border-md);border-radius:5px;padding:5px 6px;font-size:11.5px">
+    <input type="number" step="0.1" class="pr-normal" value="${rt.normal_rate ?? ''}" placeholder="정상%" style="border:1px solid var(--border-md);border-radius:5px;padding:5px 6px;font-size:11.5px;text-align:right">
+    <input type="number" step="0.1" class="pr-event" value="${rt.event_rate ?? ''}" placeholder="행사%" style="border:1px solid var(--border-md);border-radius:5px;padding:5px 6px;font-size:11.5px;text-align:right">
+    <input type="text" class="pr-note" value="${(rt.note||'').replace(/"/g,'&quot;')}" placeholder="비고" style="border:1px solid var(--border-md);border-radius:5px;padding:5px 6px;font-size:10.5px">
+    <div style="display:flex;gap:4px">
+      <button onclick="savePromoRateRow('${rowId}')" style="background:none;border:none;color:var(--p);cursor:pointer;font-size:11px">저장</button>
+      <button onclick="document.getElementById('${rowId}').remove()" style="background:none;border:none;color:var(--red);cursor:pointer;font-size:11px">✕</button>
+    </div>`;
+  container.appendChild(div);
+}
+
+async function savePromoRateRow(rowId){
+  const div = document.getElementById(rowId);
+  const brand = div.querySelector('.pr-brand').value.trim();
+  const product_name = div.querySelector('.pr-product').value.trim();
+  const normal_rate = div.querySelector('.pr-normal').value;
+  const event_rate = div.querySelector('.pr-event').value;
+  const note = div.querySelector('.pr-note').value.trim();
+  if(!brand || !product_name){ toast('브랜드와 제품명을 입력해주세요', false); return; }
+  const r = await api(`/api/promo-events/${promoCurrentEventId}/rates`, {method:'POST', body:{brand, product_name, normal_rate, event_rate, note}});
+  if(r?.ok) toast(`${brand} · ${product_name} 저장했어요`);
+}
+
+async function uploadPromoRateFile(){
+  const fileInput = document.getElementById('promo-rate-file');
+  const file = fileInput.files[0];
+  if(!file) return;
+  const brand = document.getElementById('promo-rate-upload-brand').value.trim();
+  const formData = new FormData();
+  formData.append('file', file);
+  if(brand) formData.append('brand', brand);
+  toast('파일을 분석하고 있어요...');
+  try{
+    const resp = await fetch(`/api/promo-events/${promoCurrentEventId}/upload-rates`, {method:'POST', body:formData});
+    const r = await resp.json();
+    if(r.ok){
+      toast(r.msg || `${r.inserted}개 제품을 반영했어요`);
+      loadPromoRateRows();
+    } else {
+      toast(r.msg || '업로드에 실패했습니다', false);
+    }
+  } catch(err){
+    toast('업로드 중 오류가 발생했습니다', false);
+  }
+  fileInput.value = '';
 }
 
 function downloadEventReport(){

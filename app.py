@@ -445,9 +445,8 @@ def init_db():
         UNIQUE(year, manager, month)
     )""")
 
-    # 행사(프로모션) 기간 동안 매장에 적용되는 공급율 기준표 — 브랜드별 '정상 공급율' vs '행사(진열) 공급율'을
-    # 저장해두면, 행사별 실적에서 매장이 행사 참여로 얼마나 더 마진을 얻었는지 역산할 수 있다.
-    # 공급가 = 소비자가 × 공급율 이므로, 마진 증가분 ≈ 매출액 × (정상공급율 − 행사공급율)/100
+    # (구) 브랜드×월 단위 공급율표는 제품별로 할인율이 다르고 행사마다 기간이 다른 실제 운영 방식과
+    # 맞지 않아 폐기 — 아래 행사(이벤트) 단위 + 제품별 공급율 구조로 대체한다.
     conn.execute("""CREATE TABLE IF NOT EXISTS promo_rate_card (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         year_month TEXT NOT NULL,
@@ -458,22 +457,68 @@ def init_db():
         updated_at TEXT DEFAULT '',
         UNIQUE(year_month, brand)
     )""")
-    # 2026-10월 엔픽스 공급조건 PDF를 근거로 한 초기값 — 브랜드마다 표에 나온 '진열' vs '정상' 공급율 중
-    # 가장 흔한 조합을 대표값으로 넣어뒀다. 제품마다 소폭 다를 수 있어서(예: 줄즈 손잡이 커버류는 58%/62%),
-    # 정확한 매장별 계산을 원하면 이 값을 실제 발주 건에 맞게 화면에서 고쳐서 써야 한다.
-    _PROMO_SEED_2026_10 = [
-        ('줄즈', 62, 55, '진열 55% vs 정상 62% (에어2/지오3/데이5/허브2 기준 · 손잡이 커버류는 58%/62%로 상이)'),
-        ('레카로', 62, 57, '진열 57% vs 정상 62% (액시언/벨릭스/토론/제논 공통)'),
-        ('ABC디자인', 62, 57, '진열 57~58% vs 정상 62% (루프트는 58%/62%)'),
-        ('카오스', 65, 62, '진열 62% vs 정상 65% (전 제품 공통)'),
-        ('엔픽스', None, None, '이번 달은 진열/정상이 아니라 발주 수량 구간별 할인 구조(예: 5대 발주 시 50.8%) — 대수 기준으로 별도 확인 필요'),
-        ('원더폴드', None, None, '이번 달은 진열 할인이 아니라 매장 등급(일반/프리미엄/슈퍼프리미엄)별 고정 공급율 구조'),
-        ('타프토이즈', None, None, '이번 달 공급조건표에 진열/정상 구분 없이 단일 공급율만 안내됨'),
-    ]
+
+    # 행사(이벤트) 단위로 관리 — 하나의 행사는 이름+기간을 갖고, 그 안에서 브랜드×제품별로
+    # '정상 공급율' vs '행사 공급율'이 따로 있다(같은 브랜드 안에서도 할인이 되는 제품과 안 되는
+    # 제품이 섞여 있음). 공급가 = 소비자가 × 공급율이므로, 매장이 얻는 추가마진 ≈ 매출액 × (정상율−행사율)/100.
+    conn.execute("""CREATE TABLE IF NOT EXISTS promo_event (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL,
+        date_start TEXT NOT NULL,
+        date_end TEXT NOT NULL,
+        note TEXT DEFAULT '',
+        created_at TEXT DEFAULT ''
+    )""")
+    conn.execute("""CREATE TABLE IF NOT EXISTS promo_event_rate (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        event_id INTEGER NOT NULL,
+        brand TEXT NOT NULL,
+        product_name TEXT NOT NULL,
+        normal_rate REAL,
+        event_rate REAL,
+        note TEXT DEFAULT '',
+        updated_at TEXT DEFAULT '',
+        UNIQUE(event_id, brand, product_name),
+        FOREIGN KEY(event_id) REFERENCES promo_event(id)
+    )""")
+
+    # '추석위크'(2026-09-18~27) 행사 4개 브랜드 공급조건 PDF를 근거로 한 초기값 —
+    # 같은 브랜드라도 할인이 적용된 제품과 안 된 제품이 섞여 있어 제품 단위로 넣었다.
     try:
-        for brand, normal_rate, event_rate, note in _PROMO_SEED_2026_10:
-            conn.execute("""INSERT OR IGNORE INTO promo_rate_card (year_month, brand, normal_rate, event_rate, note, updated_at)
-                VALUES('2026-10', ?, ?, ?, ?, ?)""", (brand, normal_rate, event_rate, note, datetime.now().strftime('%Y-%m-%d %H:%M')))
+        now_ts = datetime.now().strftime('%Y-%m-%d %H:%M')
+        ev = conn.execute("SELECT id FROM promo_event WHERE name=? AND date_start=?", ('추석위크', '2026-09-18')).fetchone()
+        if not ev:
+            conn.execute("INSERT INTO promo_event (name, date_start, date_end, note, created_at) VALUES (?,?,?,?,?)",
+                         ('추석위크', '2026-09-18', '2026-09-27', '엔픽스 추석위크 행사 (줄즈/레카로/원더폴드/ABC디자인)', now_ts))
+            ev_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+        else:
+            ev_id = ev[0]
+        _CHUSEOK_SEED = [
+            ('줄즈', '데이5', 62, 60, ''),
+            ('줄즈', '허브2', 62, 60, ''),
+            ('줄즈', '에어2', 62, 62, '행사 할인 없음(기존과 동일 공급율)'),
+            ('줄즈', '에어2 한정판', 62, 62, '행사 할인 없음(기존과 동일 공급율)'),
+            ('줄즈', '에어2 네스트 투 시트', 62, 62, '행사 할인 없음(기존과 동일 공급율)'),
+            ('레카로', '토론', 62, 60, ''),
+            ('레카로', '제논', 62, 62, '행사 할인 없음(기존과 동일 공급율)'),
+            ('레카로', '벨릭스', 62, 60, ''),
+            ('레카로', '액시언', 62, 62, '행사 할인 없음(기존과 동일 공급율)'),
+            ('원더폴드', '엘리트프로 2인승', 65, 65, '행사 할인 없음(기존과 동일 공급율)'),
+            ('원더폴드', '엘리트프로 4인승', 65, 65, '행사 할인 없음(기존과 동일 공급율)'),
+            ('원더폴드', '슈퍼맨 2인승', 68, 65, ''),
+            ('원더폴드', '슈퍼맨 4인승', 68, 65, ''),
+            ('원더폴드', '폭스바겐 2인승', 68, 65, ''),
+            ('원더폴드', '폭스바겐 4인승', 68, 65, ''),
+            ('원더폴드', 'L2', 65, 65, '행사 할인 없음(기존과 동일 공급율)'),
+            ('원더폴드', 'L4', 65, 65, '행사 할인 없음(기존과 동일 공급율)'),
+            ('ABC디자인', '태그', 62, 50, '절충형 유모차'),
+            ('ABC디자인', '태그 단델리온골드', 62, 50, ''),
+            ('ABC디자인', '슈타트듀오', 62, 55, ''),
+            ('ABC디자인', '루프트', 62, 55, ''),
+        ]
+        for brand, product, normal_rate, event_rate, note in _CHUSEOK_SEED:
+            conn.execute("""INSERT OR IGNORE INTO promo_event_rate (event_id, brand, product_name, normal_rate, event_rate, note, updated_at)
+                VALUES (?,?,?,?,?,?,?)""", (ev_id, brand, product, normal_rate, event_rate, note, now_ts))
     except Exception:
         pass
 
@@ -3599,79 +3644,251 @@ def export_xlsx_monthly():
                      as_attachment=True,download_name=fname)
 
 
-def _get_promo_rate_card(year_month):
-    """해당 연월의 브랜드별 정상/행사 공급율 기준표 조회 — {브랜드: {'normal':.., 'event':.., 'note':..}}"""
+def _promo_product_key(item_name):
+    """제품명을 공급율표와 비교할 수 있는 키로 정규화 — 대괄호 브랜드태그·색상 제거하고 공백도 없앤다.
+    예: '[줄즈]에어2_모기장&썬커버' → '에어2', '[ABC디자인]태그_단델리온골드' → '태그단델리온골드'"""
+    base = normalize_item_name(item_name or '') or (item_name or '')
+    base = re.sub(r'^\[[^\]]+\]', '', base).strip()
+    return base.replace(' ', '')
+
+
+def _find_promo_events(date_from='', date_to=''):
+    """검색 기간과 겹치는 행사(이벤트) 목록 — 기간을 안 주면 전체 행사를 반환"""
     conn = get_db()
-    rows = conn.execute("SELECT brand, normal_rate, event_rate, note FROM promo_rate_card WHERE year_month=?", (year_month,)).fetchall()
+    q = "SELECT id, name, date_start, date_end, note FROM promo_event"
+    params = []
+    if date_from or date_to:
+        q += " WHERE date_start<=? AND date_end>=?"
+        params = [date_to or '9999-12-31', date_from or '0000-01-01']
+    q += " ORDER BY date_start"
+    rows = [dict(r) for r in conn.execute(q, params).fetchall()]
     conn.close()
-    return {r[0]: {'normal': r[1], 'event': r[2], 'note': r[3] or ''} for r in rows}
+    return rows
 
 
-def _promo_margin_by_store_brand(rows, year_month):
-    """매장×브랜드별 매출을 기준표(정상 공급율 − 행사 공급율)에 대입해 추가마진을 역산한다.
-    기준표에 정상/행사 공급율이 둘 다 있는 브랜드만 계산되고, 없는 브랜드는 '기준표 없음'으로 표시된다."""
-    rate_card = _get_promo_rate_card(year_month)
-    agg = {}
+def _load_event_rate_map(event_ids):
+    """이벤트ID 목록에 속한 공급율 행 전체를 {(event_id, brand, product_key): {...}} 로 로드"""
+    if not event_ids: return {}
+    conn = get_db()
+    placeholders = ','.join('?' * len(event_ids))
+    rows = conn.execute(
+        f"SELECT event_id, brand, product_name, normal_rate, event_rate, note FROM promo_event_rate WHERE event_id IN ({placeholders})",
+        event_ids).fetchall()
+    conn.close()
+    out = {}
+    for event_id, brand, product_name, normal_rate, event_rate, note in rows:
+        out[(event_id, brand, _promo_product_key(product_name))] = {
+            'product_name': product_name, 'normal': normal_rate, 'event': event_rate, 'note': note or ''}
+    return out
+
+
+def _compute_promo_margins(rows, date_from='', date_to=''):
+    """매출 행들에 대해 행별로 딱 맞는 행사(기간이 겹치는)·브랜드·제품의 공급율을 찾아
+    추가마진을 역산한다. 반환: (매장별 합계 dict, 매장×브랜드×제품 상세 리스트, 사용된 이벤트 목록)"""
+    events = _find_promo_events(date_from, date_to)
+    event_ids = [e['id'] for e in events]
+    rate_map = _load_event_rate_map(event_ids)
+
+    detail = {}   # (store, event_id, brand, product_key) -> {..}
     for r in rows:
+        sale_date = r.get('sale_date') or ''
         store = r.get('real_seller') or '(미상)'
         brand = remap_group(r.get('item_group') or '', r.get('item_name') or '') or '(미분류)'
-        key = (store, brand)
-        g = agg.setdefault(key, {'store': store, 'brand': brand, 'qty': 0, 'amount': 0})
-        g['qty'] += r.get('quantity') or 0
-        g['amount'] += r.get('total') or 0
-    result = []
-    for (store, brand), g in agg.items():
-        rc = rate_card.get(brand)
-        if rc and rc['normal'] is not None and rc['event'] is not None:
-            gap_pct = round(rc['normal'] - rc['event'], 1)
-            extra_margin = round(g['amount'] * gap_pct / 100)
-            note = ''
+        pkey = _promo_product_key(r.get('item_name'))
+        # 이 매출 건의 날짜를 실제로 포함하는 행사만 대상으로 한다 (검색 기간과 행사 기간이 달라도 안전)
+        matching_events = [e for e in events if e['date_start'] <= sale_date <= e['date_end']]
+        if not matching_events:
+            continue
+        for ev in matching_events:
+            rc = rate_map.get((ev['id'], brand, pkey))
+            key = (store, ev['id'], brand, pkey)
+            g = detail.setdefault(key, {'store': store, 'event_id': ev['id'], 'event_name': ev['name'],
+                                          'brand': brand, 'product': (rc['product_name'] if rc else pkey),
+                                          'qty': 0, 'amount': 0, 'normal_rate': rc['normal'] if rc else None,
+                                          'event_rate': rc['event'] if rc else None,
+                                          'note': (rc['note'] if rc else '이 행사의 공급율 기준표에 없는 제품(등록 필요)')})
+            g['qty'] += r.get('quantity') or 0
+            g['amount'] += r.get('total') or 0
+
+    detail_list = []
+    store_totals = {}
+    for g in detail.values():
+        if g['normal_rate'] is not None and g['event_rate'] is not None:
+            gap = round(g['normal_rate'] - g['event_rate'], 1)
+            margin = round(g['amount'] * gap / 100)
         else:
-            gap_pct = None; extra_margin = None
-            note = (rc['note'] if rc else f"{year_month} 기준표에 {brand} 브랜드가 없음 — 공급율 기준표에서 등록해주세요")
-        result.append({'store': store, 'brand': brand, 'qty': g['qty'], 'amount': g['amount'],
-                        'discount_pct': gap_pct, 'extra_margin': extra_margin, 'note': note})
-    result.sort(key=lambda x: (-(x['extra_margin'] or 0), x['store'], x['brand']))
-    return result
+            gap = None; margin = None
+        g2 = dict(g); g2['discount_pct'] = gap; g2['extra_margin'] = margin
+        detail_list.append(g2)
+        if margin:
+            store_totals[g['store']] = store_totals.get(g['store'], 0) + margin
+    detail_list.sort(key=lambda x: (-(x['extra_margin'] or 0), x['store'], x['brand']))
+    return store_totals, detail_list, events
 
 
-@app.route("/api/promo-rate-card")
+@app.route("/api/promo-events")
 @login_required
-def api_promo_rate_card_list():
-    """행사 공급율 기준표 조회 — 없는 브랜드는 빈 값으로라도 함께 내려줘서 화면에서 바로 입력할 수 있게 한다"""
-    year_month = request.args.get('year_month', '').strip() or datetime.now().strftime('%Y-%m')
-    existing = _get_promo_rate_card(year_month)
-    rows = []
-    for b in BRAND_ORDER:
-        rc = existing.get(b, {'normal': None, 'event': None, 'note': ''})
-        rows.append({'brand': b, 'normal_rate': rc['normal'], 'event_rate': rc['event'], 'note': rc['note']})
-    for b, rc in existing.items():
-        if b not in BRAND_ORDER:
-            rows.append({'brand': b, 'normal_rate': rc['normal'], 'event_rate': rc['event'], 'note': rc['note']})
-    return jsonify({'ok': True, 'year_month': year_month, 'rates': rows})
+def api_promo_events_list():
+    """행사 목록 — 각 행사에 등록된 제품 수도 함께 내려준다"""
+    conn = get_db()
+    rows = conn.execute("""SELECT e.id, e.name, e.date_start, e.date_end, e.note,
+                                  (SELECT COUNT(*) FROM promo_event_rate WHERE event_id=e.id) product_count
+                           FROM promo_event e ORDER BY e.date_start DESC""").fetchall()
+    conn.close()
+    return jsonify({'ok': True, 'events': [dict(r) for r in rows]})
 
 
-@app.route("/api/promo-rate-card", methods=["POST"])
+@app.route("/api/promo-events", methods=["POST"])
 @login_required
-def api_promo_rate_card_save():
-    """행사 공급율 기준표 저장 — body: {year_month, brand, normal_rate, event_rate, note}"""
+def api_promo_events_create():
+    """행사 생성 — body: {name, date_start, date_end, note}"""
     d = request.json or {}
-    year_month = (d.get('year_month') or '').strip()
+    name = (d.get('name') or '').strip()
+    date_start = (d.get('date_start') or '').strip()
+    date_end = (d.get('date_end') or '').strip()
+    if not name or not date_start or not date_end:
+        return jsonify({'ok': False, 'msg': '행사명과 기간(시작~종료)이 필요합니다'}), 400
+    conn = get_db()
+    conn.execute("INSERT INTO promo_event (name, date_start, date_end, note, created_at) VALUES (?,?,?,?,?)",
+                 (name, date_start, date_end, (d.get('note') or '').strip(), datetime.now().strftime('%Y-%m-%d %H:%M')))
+    eid = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+    conn.commit(); conn.close()
+    return jsonify({'ok': True, 'id': eid})
+
+
+@app.route("/api/promo-events/<int:event_id>", methods=["DELETE"])
+@login_required
+def api_promo_events_delete(event_id):
+    conn = get_db()
+    conn.execute("DELETE FROM promo_event_rate WHERE event_id=?", (event_id,))
+    conn.execute("DELETE FROM promo_event WHERE id=?", (event_id,))
+    conn.commit(); conn.close()
+    return jsonify({'ok': True})
+
+
+@app.route("/api/promo-events/<int:event_id>/rates")
+@login_required
+def api_promo_event_rates_list(event_id):
+    conn = get_db()
+    rows = conn.execute("""SELECT id, brand, product_name, normal_rate, event_rate, note FROM promo_event_rate
+                            WHERE event_id=? ORDER BY brand, product_name""", (event_id,)).fetchall()
+    conn.close()
+    return jsonify({'ok': True, 'rates': [dict(r) for r in rows]})
+
+
+@app.route("/api/promo-events/<int:event_id>/rates", methods=["POST"])
+@login_required
+def api_promo_event_rates_save(event_id):
+    """제품별 공급율 한 줄 추가/수정 — body: {brand, product_name, normal_rate, event_rate, note}"""
+    d = request.json or {}
     brand = (d.get('brand') or '').strip()
-    if not year_month or not brand:
-        return jsonify({'ok': False, 'msg': '연월과 브랜드가 필요합니다'}), 400
+    product_name = (d.get('product_name') or '').strip()
+    if not brand or not product_name:
+        return jsonify({'ok': False, 'msg': '브랜드와 제품명이 필요합니다'}), 400
     def _f(v):
         try: return float(v) if v not in (None, '') else None
         except Exception: return None
-    normal_rate = _f(d.get('normal_rate')); event_rate = _f(d.get('event_rate'))
-    note = (d.get('note') or '').strip()
     now = datetime.now().strftime('%Y-%m-%d %H:%M')
     conn = get_db()
-    conn.execute("""INSERT INTO promo_rate_card (year_month, brand, normal_rate, event_rate, note, updated_at) VALUES(?,?,?,?,?,?)
-        ON CONFLICT(year_month, brand) DO UPDATE SET normal_rate=excluded.normal_rate, event_rate=excluded.event_rate,
-        note=excluded.note, updated_at=excluded.updated_at""", (year_month, brand, normal_rate, event_rate, note, now))
+    conn.execute("""INSERT INTO promo_event_rate (event_id, brand, product_name, normal_rate, event_rate, note, updated_at)
+        VALUES (?,?,?,?,?,?,?)
+        ON CONFLICT(event_id, brand, product_name) DO UPDATE SET
+        normal_rate=excluded.normal_rate, event_rate=excluded.event_rate, note=excluded.note, updated_at=excluded.updated_at""",
+        (event_id, brand, product_name, _f(d.get('normal_rate')), _f(d.get('event_rate')), (d.get('note') or '').strip(), now))
     conn.commit(); conn.close()
     return jsonify({'ok': True})
+
+
+@app.route("/api/promo-events/<int:event_id>/rates/<int:rate_id>", methods=["DELETE"])
+@login_required
+def api_promo_event_rate_delete(event_id, rate_id):
+    conn = get_db()
+    conn.execute("DELETE FROM promo_event_rate WHERE id=? AND event_id=?", (rate_id, event_id))
+    conn.commit(); conn.close()
+    return jsonify({'ok': True})
+
+
+@app.route("/api/promo-events/<int:event_id>/upload-rates", methods=["POST"])
+@login_required
+def api_promo_event_rates_upload(event_id):
+    """제품별 공급율표를 엑셀 또는 PDF로 일괄 업로드.
+    엑셀: 브랜드/제품명/정상공급율/행사공급율/비고 헤더가 있는 표라면 그대로 인식한다.
+    PDF: 이 화면들처럼 '상품명 ... 공급율% 공급가 공급율% 공급가' 형태로 정상/행사 조건이 나란히
+    적힌 표라면 수치를 추출해본다 — 서버에 PDF 파싱 라이브러리가 없으면 안내 메시지를 보여준다."""
+    if 'file' not in request.files:
+        return jsonify({'ok': False, 'msg': '파일이 없습니다'}), 400
+    f = request.files['file']
+    filename = (f.filename or '').lower()
+    data = f.read()
+    default_brand = (request.form.get('brand') or '').strip()
+    now = datetime.now().strftime('%Y-%m-%d %H:%M')
+    inserted = 0
+
+    def _save(brand, product_name, normal_rate, event_rate, note=''):
+        nonlocal inserted
+        if not brand or not product_name: return
+        conn2 = get_db()
+        conn2.execute("""INSERT INTO promo_event_rate (event_id, brand, product_name, normal_rate, event_rate, note, updated_at)
+            VALUES (?,?,?,?,?,?,?)
+            ON CONFLICT(event_id, brand, product_name) DO UPDATE SET
+            normal_rate=excluded.normal_rate, event_rate=excluded.event_rate, updated_at=excluded.updated_at""",
+            (event_id, brand, product_name, normal_rate, event_rate, note, now))
+        conn2.commit(); conn2.close()
+        inserted += 1
+
+    if filename.endswith(('.xlsx', '.xls')):
+        wb = _load_workbook_resilient(data)
+        if wb is None:
+            return jsonify({'ok': False, 'msg': '엑셀 파일을 읽을 수 없습니다'}), 400
+        ws = wb[wb.sheetnames[0]]
+        header_row = None; col_map = {}
+        for ri in range(1, min(6, ws.max_row + 1)):
+            vals = {str(ws.cell(ri, ci).value).strip(): ci for ci in range(1, ws.max_column + 1) if ws.cell(ri, ci).value}
+            if any(k in vals for k in ('제품명', '상품명')):
+                header_row = ri
+                col_map = {'brand': vals.get('브랜드'), 'product': vals.get('제품명') or vals.get('상품명'),
+                           'normal': vals.get('정상공급율') or vals.get('정상 공급율'),
+                           'event': vals.get('행사공급율') or vals.get('행사 공급율'),
+                           'note': vals.get('비고')}
+                break
+        if not header_row or not col_map.get('product'):
+            return jsonify({'ok': False, 'msg': '엑셀에서 "제품명"(또는 "상품명") 헤더를 찾을 수 없어요. 브랜드/제품명/정상공급율/행사공급율/비고 형식으로 올려주세요.'}), 400
+        for ri in range(header_row + 1, ws.max_row + 1):
+            product = ws.cell(ri, col_map['product']).value
+            if not product: continue
+            brand = str(ws.cell(ri, col_map['brand']).value or '').strip() if col_map.get('brand') else default_brand
+            def _cell_f(ci):
+                if not ci: return None
+                v = ws.cell(ri, ci).value
+                try: return float(str(v).replace('%', '').strip()) if v not in (None, '') else None
+                except Exception: return None
+            _save(brand or default_brand, str(product).strip(), _cell_f(col_map.get('normal')), _cell_f(col_map.get('event')),
+                  str(ws.cell(ri, col_map['note']).value or '').strip() if col_map.get('note') else '')
+        return jsonify({'ok': True, 'inserted': inserted})
+
+    if filename.endswith('.pdf'):
+        try:
+            import pdfplumber
+        except ImportError:
+            return jsonify({'ok': False, 'msg': 'PDF 자동 인식 기능을 쓰려면 서버에 pdfplumber 라이브러리 설치가 필요해요(requirements.txt에 pdfplumber 추가). 엑셀(브랜드/제품명/정상공급율/행사공급율)로 올려주시거나, 화면에서 직접 입력해주세요.'}), 400
+        try:
+            text = ''
+            with pdfplumber.open(io.BytesIO(data)) as pdf:
+                for page in pdf.pages:
+                    text += (page.extract_text() or '') + '\n'
+        except Exception as e:
+            return jsonify({'ok': False, 'msg': f'PDF를 읽는 중 오류가 났어요: {e}'}), 400
+        # "상품명 ... 62% 824,600 60% 798,000" 형태의 줄에서 상품명 + 정상율 + 행사율을 뽑아낸다
+        pattern = re.compile(r'^([가-힣A-Za-z0-9_\s]+?)\s+[\d,]+\s+[\d,]+\s+[\d,]+\s+(\d{2,3})%\s+[\d,]+\s+(\d{2,3})%\s+[\d,]+', re.M)
+        for m in pattern.finditer(text):
+            product = m.group(1).strip()
+            if len(product) < 2 or product in ('상품명', '제품명'): continue
+            _save(default_brand, product, float(m.group(2)), float(m.group(3)))
+        if inserted == 0:
+            return jsonify({'ok': False, 'msg': 'PDF에서 표를 자동으로 읽지 못했어요. 화면에서 직접 입력하거나 엑셀로 정리해서 올려주세요.'}), 400
+        return jsonify({'ok': True, 'inserted': inserted, 'msg': f'{inserted}개 제품을 인식했어요 — 브랜드/수치가 맞는지 꼭 확인해주세요.'})
+
+    return jsonify({'ok': False, 'msg': '엑셀(.xlsx) 또는 PDF 파일만 지원해요'}), 400
 
 
 @app.route("/api/sales/event-search")
@@ -3726,21 +3943,20 @@ def api_sales_event_search():
         g['cnt'] += 1
     product_breakdown = sorted(product_map.values(), key=lambda x: (x['brand'], -x['amount']))
 
-    # 매장별 추가마진 및 공급율 할인 — 행사 기간의 대표 연월 기준으로 공급율 기준표를 대입해서 역산
-    ym_counts = {}
-    for r in rows:
-        ym = (r.get('sale_date') or '')[:7]
-        if ym: ym_counts[ym] = ym_counts.get(ym, 0) + 1
-    event_ym = max(ym_counts, key=ym_counts.get) if ym_counts else (date_from[:7] if date_from else datetime.now().strftime('%Y-%m'))
-    margin_breakdown = _promo_margin_by_store_brand(rows, event_ym)
-    total_extra_margin = sum(m['extra_margin'] or 0 for m in margin_breakdown)
+    # 매장별 추가마진 — 매출 건별로 그 날짜를 포함하는 행사·브랜드·제품의 공급율을 찾아서 역산.
+    # 매장별 실적표에 바로 붙일 수 있도록 store_breakdown 각 행에 extra_margin을 함께 넣어준다.
+    store_totals, margin_breakdown, matched_events = _compute_promo_margins(rows, date_from, date_to)
+    for s in store_breakdown:
+        s['extra_margin'] = store_totals.get(s['store'], 0)
+    total_extra_margin = sum(store_totals.values())
 
     return jsonify({
         'ok': True, 'keyword': keyword, 'date_from': date_from, 'date_to': date_to,
         'summary': {'total_qty': total_qty, 'total_amount': total_amt, 'store_count': len(stores), 'row_count': len(rows)},
         'brand_breakdown': brand_breakdown, 'store_breakdown': store_breakdown,
         'product_breakdown': product_breakdown, 'rows': rows,
-        'margin_breakdown': margin_breakdown, 'margin_year_month': event_ym, 'total_extra_margin': total_extra_margin,
+        'margin_breakdown': margin_breakdown, 'total_extra_margin': total_extra_margin,
+        'matched_events': [{'name': e['name'], 'date_start': e['date_start'], 'date_end': e['date_end']} for e in matched_events],
     })
 
 
@@ -3822,7 +4038,12 @@ def export_xlsx_event_report():
     ws.column_dimensions['A'].width = 2
 
     last_col_main = 5  # B~E
-    last_col_matrix = 5 + sum(len(v) for v in brand_products.values())
+    # 매장별 매출을 넣은 뒤에 계산 — 매장 추가 마진(행사 공급율 할인분)을 매장별 실적표에 바로 붙인다
+    _store_margin_totals, _margin_detail, _matched_events = _compute_promo_margins(rows, date_from, date_to)
+    for s in store_rows:
+        s['extra_margin'] = _store_margin_totals.get(s['store'], 0)
+
+    last_col_matrix = 6 + sum(len(v) for v in brand_products.values())
 
     period_label = f"{date_from or '전체'} ~ {date_to or '전체'}"
     ws.merge_cells(start_row=2, start_column=2, end_row=2, end_column=last_col_main)
@@ -3872,11 +4093,11 @@ def export_xlsx_event_report():
 
     # 매장별 실적 (+ 옆으로 브랜드별 제품 판매수량 매트릭스)
     store_start_row = ri
-    ws.merge_cells(start_row=ri, start_column=2, end_row=ri, end_column=5)
+    ws.merge_cells(start_row=ri, start_column=2, end_row=ri, end_column=6)
     c = ws.cell(row=ri, column=2, value="매장별 실적"); c.font = Font(bold=True, size=12, name=FNAME, color='1F2937'); c.alignment=left_a
-    for ci in range(2, 6): ws.cell(row=ri, column=ci).border = bdr
+    for ci in range(2, 7): ws.cell(row=ri, column=ci).border = bdr
     # 브랜드 그룹 헤더 (제품 서브컬럼들을 병합해서 브랜드명 표시)
-    mci = 6
+    mci = 7
     brand_col_start = {}
     for b in ordered_brands:
         prods = brand_products[b]
@@ -3890,7 +4111,7 @@ def export_xlsx_event_report():
     ws.row_dimensions[ri].height = 17.25
     ri += 1
 
-    for ci, h in enumerate(['매장명','판매수량','판매금액','비중'], 2):
+    for ci, h in enumerate(['매장명','판매수량','판매금액','매장 추가 마진','비중'], 2):
         c = ws.cell(row=ri, column=ci, value=h); c.font=Font(bold=True,size=9,name=FNAME); c.fill=mf(LGRAY); c.border=bdr; c.alignment=ctr
     for b in ordered_brands:
         for j, prod in enumerate(brand_products[b]):
@@ -3900,11 +4121,14 @@ def export_xlsx_event_report():
 
     for s in store_rows:
         pct = round(s['amount']/total_amt*100, 1) if total_amt else 0
-        vals = [s['store'], s['qty'], s['amount'], f"{pct}%"]
+        margin = s.get('extra_margin') or 0
+        vals = [s['store'], s['qty'], s['amount'], (f"+{margin:,}" if margin else '—'), f"{pct}%"]
         for ci, v in enumerate(vals, 2):
             c = ws.cell(row=ri, column=ci, value=v); c.font=Font(size=9,name=FNAME); c.border=bdr
-            c.alignment = left_a if ci==2 else right_a if ci<=4 else ctr
+            c.alignment = left_a if ci==2 else right_a if ci<=5 else ctr
             if ci in (3,4): c.number_format='#,##0'
+            if ci == 5 and margin:
+                c.font = Font(size=9, name=FNAME, bold=True, color='DC2626')
         for b in ordered_brands:
             for j, prod in enumerate(brand_products[b]):
                 qty = store_product_qty.get((s['store'], b, prod), 0)
@@ -3913,10 +4137,11 @@ def export_xlsx_event_report():
         ri += 1
 
     ws.column_dimensions['B'].width = 24
-    ws.column_dimensions['C'].width = 23.75
+    ws.column_dimensions['C'].width = 14
     ws.column_dimensions['D'].width = 15
-    ws.column_dimensions['E'].width = 10
-    for ci in range(6, last_col_matrix+1):
+    ws.column_dimensions['E'].width = 15
+    ws.column_dimensions['F'].width = 10
+    for ci in range(7, last_col_matrix+1):
         ws.column_dimensions[get_column_letter(ci)].width = 11
     ws.freeze_panes = f'B{store_start_row+2}'
 
@@ -3991,58 +4216,39 @@ def export_xlsx_event_report():
                     continue
     conn.close()
 
-    # 매장별 추가마진 및 공급율 할인 — 행사(진열) 참여로 매장이 정상 대비 얼마나 더 낮은 공급율을 받았는지,
-    # 그 차이만큼 매출액에 대입해서 추가로 얻은 마진(원)을 역산한다. 기준표에 정상/행사 공급율이 둘 다
-    # 등록된 브랜드만 계산되고, 없는 브랜드는 비고에 사유가 안내된다.
-    ym_counts = {}
-    for r in rows:
-        ym = (r.get('sale_date') or '')[:7]
-        if ym: ym_counts[ym] = ym_counts.get(ym, 0) + 1
-    event_ym = max(ym_counts, key=ym_counts.get) if ym_counts else (date_from[:7] if date_from else datetime.now().strftime('%Y-%m'))
-    margin_rows = _promo_margin_by_store_brand(rows, event_ym)
-    rate_card = _get_promo_rate_card(event_ym)
-
+    # 매장별 추가마진 상세 — 매장×행사×브랜드×제품 단위로, 각 제품에 실제 적용된 정상/행사 공급율과
+    # 그 차이로 얻은 추가마진을 그대로 보여준다. 이미 위에서 계산해둔 _margin_detail/_matched_events를 쓴다.
     ws3 = wb.create_sheet('매장별 추가마진')
     ws3.column_dimensions['A'].width = 2
-    ws3.merge_cells('B2:G2')
-    c = ws3.cell(row=2, column=2, value=f"※ 매장별 추가마진 및 공급율 할인 — 기준 연월: {event_ym}")
+    ws3.merge_cells('B2:I2')
+    ev_label = ', '.join(f"{e['name']}({e['date_start']}~{e['date_end']})" for e in _matched_events) or '해당 기간에 등록된 행사 없음'
+    c = ws3.cell(row=2, column=2, value=f"※ 매장별 추가마진 및 공급율 할인 — 적용 행사: {ev_label}")
     c.font = Font(bold=True, size=13, name=FNAME); c.alignment = left_a
-    ws3.merge_cells('B3:G3')
-    c = ws3.cell(row=3, column=2, value="※ 추가마진 ≈ 매출액 × (정상 공급율 − 행사 공급율). 정상/행사 공급율 기준표에 없는 브랜드는 계산되지 않아요(비고 참고).")
+    ws3.merge_cells('B3:I3')
+    c = ws3.cell(row=3, column=2, value="※ 추가마진 ≈ 매출액 × (정상 공급율 − 행사 공급율). 제품별로 기준표에 등록된 경우만 계산되고, 없으면 비고에 안내돼요.")
     c.font = Font(size=9, name=FNAME, color='9CA3AF'); c.alignment = left_a
-    hdrs3 = ['매장명', '브랜드', '판매수량', '매출액', '공급율 할인(%p)', '추가마진(원)', '비고']
+    hdrs3 = ['매장명', '행사명', '브랜드', '제품명', '판매수량', '매출액', '정상 공급율', '행사 공급율', '추가마진(원)', '비고']
     for ci, h in enumerate(hdrs3, 2):
         c = ws3.cell(row=5, column=ci, value=h); c.font = Font(bold=True, size=9, name=FNAME); c.fill = mf(LGRAY); c.border = bdr; c.alignment = ctr
     ri3 = 6
     total_margin = 0
-    for m in margin_rows:
-        vals = [m['store'], m['brand'], m['qty'], m['amount'],
-                (f"{m['discount_pct']}%p" if m['discount_pct'] is not None else '—'),
+    for m in _margin_detail:
+        vals = [m['store'], m['event_name'], m['brand'], m['product'], m['qty'], m['amount'],
+                (f"{m['normal_rate']}%" if m['normal_rate'] is not None else '—'),
+                (f"{m['event_rate']}%" if m['event_rate'] is not None else '—'),
                 (m['extra_margin'] if m['extra_margin'] is not None else 0), m['note']]
         for ci, v in enumerate(vals, 2):
             c = ws3.cell(row=ri3, column=ci, value=v); c.font = Font(size=9, name=FNAME); c.border = bdr
-            c.alignment = left_a if ci in (2, 3, 8) else right_a if ci in (4, 5, 7) else ctr
-            if ci in (4, 7): c.number_format = '#,##0'
+            c.alignment = left_a if ci in (2, 3, 4, 5, 11) else right_a if ci in (7, 10) else ctr
+            if ci in (7, 10): c.number_format = '#,##0'
+            if ci == 10 and m['extra_margin']:
+                c.font = Font(size=9, name=FNAME, bold=True, color='DC2626')
         if m['extra_margin']: total_margin += m['extra_margin']
         ri3 += 1
     c = ws3.cell(row=ri3, column=2, value='합계'); c.font = Font(bold=True, size=9, name=FNAME); c.fill = mf(LGRAY); c.border = bdr
-    ws3.merge_cells(start_row=ri3, start_column=2, end_row=ri3, end_column=5)
-    c = ws3.cell(row=ri3, column=7, value=total_margin); c.font = Font(bold=True, size=9, name=FNAME); c.number_format = '#,##0'; c.border = bdr; c.alignment = right_a
-    ri3 += 2
-    ws3.cell(row=ri3, column=2, value='브랜드별 공급율 기준표').font = Font(bold=True, size=10, name=FNAME)
-    ri3 += 1
-    for ci, h in enumerate(['브랜드', '정상 공급율', '행사 공급율', '비고'], 2):
-        c = ws3.cell(row=ri3, column=ci, value=h); c.font = Font(bold=True, size=9, name=FNAME); c.fill = mf(LGRAY); c.border = bdr; c.alignment = ctr
-    ri3 += 1
-    for b in BRAND_ORDER:
-        rc = rate_card.get(b, {})
-        vals = [b, (f"{rc.get('normal')}%" if rc.get('normal') is not None else '—'),
-                (f"{rc.get('event')}%" if rc.get('event') is not None else '—'), rc.get('note', '')]
-        for ci, v in enumerate(vals, 2):
-            c = ws3.cell(row=ri3, column=ci, value=v); c.font = Font(size=9, name=FNAME); c.border = bdr
-            c.alignment = ctr if ci <= 4 else left_a
-        ri3 += 1
-    for ci, w in zip(range(2, 9), [22, 12, 10, 14, 14, 14, 40]):
+    ws3.merge_cells(start_row=ri3, start_column=2, end_row=ri3, end_column=9)
+    c = ws3.cell(row=ri3, column=10, value=total_margin); c.font = Font(bold=True, size=9, name=FNAME, color='DC2626'); c.number_format = '#,##0'; c.border = bdr; c.alignment = right_a
+    for ci, w in zip(range(2, 12), [22, 16, 12, 20, 10, 13, 11, 11, 13, 38]):
         ws3.column_dimensions[get_column_letter(ci)].width = w
 
     wb._sheets = [wb['보고서'], wb['매장별 추가마진'], wb['브랜드별 제품상세'], wb['검색결과(필터링)']] + [wb[n] for n in raw_sheet_names if n in wb.sheetnames]
