@@ -3733,12 +3733,15 @@ def _lookup_promo_rate(rate_map, by_brand_keys, event_id, brand, pkey):
 
 
 def _compute_promo_margins(rows, date_from='', date_to=''):
-    """매출 행별로 '실제로 얼마에 공급됐는지'(iCOUNT 단가=공급단가)를 정상 공급가격과 직접 비교해서
-    추가마진을 계산한다 — 표준 행사 공급가만 쓰지 않고, 실제 판매금액 기준으로 계산하기 때문에
-    행사 공급율보다 매장이 더 할인을 받은 경우(추가 할인)까지 자동으로 잡아낸다.
+    """매출 행별로 '실제로 얼마에 공급됐는지'를 정상 공급가격과 직접 비교해서 추가마진을 계산한다.
+    행사에 등록된 공급율(%)이나 행사 기준가는 참고용일 뿐, 계산 자체는 오직
+    '수량 × (정상 공급가 − 실제 공급단가)' 하나로만 한다 — 이렇게 해야 행사 조건 그대로든,
+    매장이 별도로 더(혹은 다르게) 협의받은 단가든 실제로 얼마나 이득을 봤는지 그대로 잡힌다.
+    실제 공급단가는 반드시 부가세 포함 금액(판매현황의 '합계'÷수량)으로 계산한다 — iCOUNT의
+    '단가' 컬럼은 부가세가 빠진 값이라 그대로 쓰면 정상/행사 공급가(부가세 포함 기준)보다
+    통째로 10% 낮게 나와서, 할인이 전혀 없는 제품까지 할인된 것처럼 보이는 문제가 있었다.
     행사 매칭은 우선 그 매출 건의 비고에 행사명이 들어있는지로 판단하고(검색 자체가 이미 비고
-    키워드로 걸러진 건들이라 이게 가장 정확함), 비고에 이름이 없으면 행사 기간으로 보조 판단한다
-    (그래야 발주·출고 타이밍이 하루이틀 밀려서 비고에는 찍혔지만 등록된 기간을 살짝 벗어난 건도 놓치지 않는다).
+    키워드로 걸러진 건들이라 이게 가장 정확함), 비고에 이름이 없으면 행사 기간으로 보조 판단한다.
     반환: (매장별 합계 dict, 매장×브랜드×제품 상세 리스트, 사용된 이벤트 목록)"""
     events = _find_promo_events(date_from, date_to)
     event_ids = [e['id'] for e in events]
@@ -3752,10 +3755,7 @@ def _compute_promo_margins(rows, date_from='', date_to=''):
         brand = remap_group(r.get('item_group') or '', r.get('item_name') or '') or '(미분류)'
         pkey = _promo_product_key(r.get('item_name'))
         qty = r.get('quantity') or 0
-        # 단가(iCOUNT 공급단가)를 우선 쓰고, 없으면 합계/수량으로 대신 계산한다
-        unit_price = r.get('unit_price')
-        if not unit_price and qty:
-            unit_price = (r.get('total') or 0) / qty
+        total_incl_vat = r.get('total') or 0   # 부가세 포함 합계 — 정상/행사 공급가(부가세 포함)와 같은 기준
 
         by_name = [e for e in events if e['name'] and e['name'] in note_text]
         matching_events = by_name if by_name else [e for e in events if e['date_start'] <= sale_date <= e['date_end']]
@@ -3766,45 +3766,32 @@ def _compute_promo_margins(rows, date_from='', date_to=''):
             key = (store, ev['id'], brand, pkey)
             g = detail.setdefault(key, {'store': store, 'event_id': ev['id'], 'event_name': ev['name'],
                                           'brand': brand, 'product': (rc['product_name'] if rc else pkey),
-                                          'qty': 0, 'amount': 0, 'paid_total': 0,
-                                          'normal_rate': rc['normal'] if rc else None,
-                                          'event_rate': rc['event'] if rc else None,
+                                          'qty': 0, 'paid_total': 0,
                                           'normal_price': rc.get('normal_price') if rc else None,
                                           'event_price': rc.get('event_price') if rc else None,
-                                          'note': (rc['note'] if rc else '이 행사의 공급율 기준표에 없는 제품(등록 필요)')})
+                                          'note': (rc['note'] if rc else '이 행사의 정상 공급가가 등록돼 있지 않음(등록 필요)')})
             g['qty'] += qty
-            g['amount'] += r.get('total') or 0
-            g['paid_total'] += unit_price * qty  # 실제로 공급된 금액 합 — 매장별 실제 단가 산출용
+            g['paid_total'] += total_incl_vat   # 부가세 포함 실제 공급 금액 합 — 매장별 실제 단가 산출용
 
     detail_list = []
     store_totals = {}
     for g in detail.values():
-        margin = None; gap = None; extra_note = ''
+        margin = None
         actual_unit_price = (g['paid_total'] / g['qty']) if g['qty'] else None
+        note = g['note']
         if g['normal_price'] is not None and actual_unit_price is not None:
-            # 핵심 방식: 실제로 공급된 단가를 정상 공급가와 직접 비교 — 표준 행사가만 쓰지 않고
-            # 실제 얼마에 들어갔는지를 보기 때문에, 행사 기준보다 더 할인된 경우까지 자동으로 잡힌다
             per_unit = g['normal_price'] - actual_unit_price
             margin = round(per_unit * g['qty'])
-            if g['normal_rate'] is not None and g['event_rate'] is not None:
-                gap = round(g['normal_rate'] - g['event_rate'], 1)
-            if g['event_price'] is not None:
-                extra_per_unit = g['event_price'] - actual_unit_price
-                # 행사 기준가보다 실제 단가가 더(1,000원/개 이상) 낮으면 행사 조건 외 추가 할인으로 본다
-                if extra_per_unit > 1000:
-                    extra_pct = round(extra_per_unit / g['normal_price'] * 100, 1) if g['normal_price'] else None
-                    extra_note = f"행사 기준({g['event_price']:,.0f}원)보다 개당 {extra_per_unit:,.0f}원 더 할인됨 — 추가 할인 약 {extra_pct}%p"
-                elif extra_per_unit < -1000:
-                    # 반대로 행사 기준보다 덜 할인된 경우(행사가 그대로 안 들어간 경우)도 알려준다
-                    extra_note = f"행사 기준({g['event_price']:,.0f}원)보다 개당 {abs(extra_per_unit):,.0f}원 덜 할인됨 (실제 단가 {actual_unit_price:,.0f}원)"
-        elif g['normal_rate'] is not None and g['event_rate'] is not None:
-            gap = round(g['normal_rate'] - g['event_rate'], 1)
-            margin = round(g['amount'] * gap / 100)
-        g2 = dict(g); g2['discount_pct'] = gap; g2['extra_margin'] = margin
+            pct = round(per_unit / g['normal_price'] * 100, 1) if g['normal_price'] else 0
+            if margin > 0:
+                note = f"정상가 대비 개당 {per_unit:,.0f}원({pct}%) 할인된 단가로 공급됨"
+            elif margin < 0:
+                note = f"정상가보다 개당 {abs(per_unit):,.0f}원 더 비싸게 공급됨(확인 필요)"
+            else:
+                note = "정상가와 동일 — 할인 없음"
+        g2 = dict(g); g2['extra_margin'] = margin
         g2['actual_unit_price'] = round(actual_unit_price) if actual_unit_price is not None else None
-        g2['extra_discount_note'] = extra_note
-        if extra_note:
-            g2['note'] = (extra_note + (' · ' + g2['note'] if g2['note'] and '등록 필요' not in g2['note'] else ''))
+        g2['note'] = note
         detail_list.append(g2)
         if margin:
             store_totals[g['store']] = store_totals.get(g['store'], 0) + margin
@@ -4339,7 +4326,7 @@ def export_xlsx_event_report():
     c = ws3.cell(row=2, column=2, value=f"※ 매장별 추가마진 및 공급율 할인 — 적용 행사: {ev_label}")
     c.font = Font(bold=True, size=13, name=FNAME); c.alignment = left_a
     ws3.merge_cells('B3:K3')
-    c = ws3.cell(row=3, column=2, value="※ 추가마진 = 수량 × (정상 공급가 − 실제 공급단가). 실제 단가는 판매현황의 단가(공급단가) 기준이라, 행사 기준보다 더 할인받은 매장도 그대로 잡혀요.")
+    c = ws3.cell(row=3, column=2, value="※ 추가마진 = 수량 × (정상 공급가 − 실제 공급단가, 부가세 포함 금액 기준). 행사 표준가와 다르게 공급된 경우도 실제 단가 그대로 잡혀요.")
     c.font = Font(size=9, name=FNAME, color='9CA3AF'); c.alignment = left_a
     hdrs3 = ['매장명', '행사명', '브랜드', '제품명', '판매수량', '정상 공급가', '행사 기준가', '실제 공급단가', '추가마진(원)', '비고']
     for ci, h in enumerate(hdrs3, 2):
@@ -4358,8 +4345,6 @@ def export_xlsx_event_report():
             if ci in (7, 8, 9, 10): c.number_format = '#,##0'
             if ci == 10 and m['extra_margin']:
                 c.font = Font(size=9, name=FNAME, bold=True, color='DC2626')
-            if ci == 11 and m.get('extra_discount_note'):
-                c.font = Font(size=9, name=FNAME, color='D97706')
         if m['extra_margin']: total_margin += m['extra_margin']
         ri3 += 1
     c = ws3.cell(row=ri3, column=2, value='합계'); c.font = Font(bold=True, size=9, name=FNAME); c.fill = mf(LGRAY); c.border = bdr
