@@ -5166,11 +5166,14 @@ async function loadEventSales(){
         </table>
       </div>
       <div style="background:var(--paper);border:1px solid var(--border);border-radius:12px;padding:16px">
-        <div style="font-size:12.5px;font-weight:700;color:var(--t-700);margin-bottom:10px">매장별 실적 (상위 10개)</div>
+        <div style="font-size:12.5px;font-weight:700;color:var(--t-700);margin-bottom:10px">매장별 실적</div>
         <table style="width:100%;border-collapse:collapse;font-size:11.5px">
           <thead><tr style="background:var(--bg)"><th style="padding:6px 8px;text-align:left;font-size:10px;color:var(--t-500)">매장명</th><th style="padding:6px 8px;text-align:right;font-size:10px;color:var(--t-500)">수량</th><th style="padding:6px 8px;text-align:right;font-size:10px;color:var(--t-500)">금액</th><th style="padding:6px 8px;text-align:right;font-size:10px;color:var(--t-500)">추가 마진</th></tr></thead>
-          <tbody>${r.store_breakdown.slice(0,10).map(st=>`<tr><td style="padding:6px 8px;border-bottom:1px solid var(--border);font-weight:600">${st.store}</td><td style="padding:6px 8px;text-align:right;border-bottom:1px solid var(--border)">${st.qty.toLocaleString()}</td><td style="padding:6px 8px;text-align:right;border-bottom:1px solid var(--border)">${st.amount.toLocaleString()}</td><td style="padding:6px 8px;text-align:right;border-bottom:1px solid var(--border);font-weight:700;color:${st.extra_margin?'#DC2626':'var(--t-300)'}">${st.extra_margin?'+'+st.extra_margin.toLocaleString():'—'}</td></tr>`).join('')}</tbody>
+          <tbody>${r.store_breakdown.slice(0,10).map(st=>`<tr><td style="padding:6px 8px;border-bottom:1px solid var(--border);font-weight:600">${st.store}</td><td style="padding:6px 8px;text-align:right;border-bottom:1px solid var(--border)">${st.qty.toLocaleString()}</td><td style="padding:6px 8px;text-align:right;border-bottom:1px solid var(--border)">${st.amount.toLocaleString()}</td><td style="padding:6px 8px;text-align:right;border-bottom:1px solid var(--border);font-weight:700;color:${st.extra_margin?'#DC2626':'var(--t-300)'}">${st.extra_margin?'+'+st.extra_margin.toLocaleString():'—'}</td></tr>`).join('')}
+          <tr style="background:var(--bg)"><td style="padding:6px 8px;font-weight:800">총합계 (전체 ${r.store_breakdown.length}개 매장)</td><td style="padding:6px 8px;text-align:right;font-weight:800">${s.total_qty.toLocaleString()}</td><td style="padding:6px 8px;text-align:right;font-weight:800">${s.total_amount.toLocaleString()}</td><td style="padding:6px 8px;text-align:right;font-weight:800;color:#DC2626">${(r.total_extra_margin||0)?'+'+(r.total_extra_margin||0).toLocaleString():'—'}</td></tr>
+          </tbody>
         </table>
+        ${r.store_breakdown.length>10?`<div style="font-size:10.5px;color:var(--t-300);margin-top:6px">화면에는 상위 10개만 표시돼요 — 전체 매장은 엑셀 다운로드에서 확인하세요.</div>`:''}
       </div>
     </div>
     ${r.matched_events && r.matched_events.length ? `<div style="font-size:11px;color:var(--t-400);margin-top:10px">적용된 행사: ${r.matched_events.map(e=>`${e.name}(${e.date_start}~${e.date_end})`).join(', ')}</div>` : ''}
@@ -5201,7 +5204,7 @@ async function loadEventSales(){
         <div style="font-size:12.5px;font-weight:700;color:var(--t-700)">매장별 추가마진 상세 (제품별)</div>
         <div style="font-size:11.5px;color:var(--t-500)">총 추가마진 <b style="color:#DC2626">${(r.total_extra_margin||0).toLocaleString()}원</b></div>
       </div>
-      <div style="font-size:10.5px;color:var(--t-300);margin-bottom:8px">추가마진 ≈ 매출액 × (정상 공급율 − 행사 공급율). 제품이 행사 기준표에 없으면 계산이 안 돼요 — 우측 상단 "⚙️ 행사 관리"에서 등록해주세요.</div>
+      <div style="font-size:10.5px;color:var(--t-300);margin-bottom:8px">추가마진 = 수량 × (정상 공급가 − 실제 공급단가). 실제 단가는 판매현황의 단가(공급단가) 기준이라, 행사 기준보다 더 할인받은 매장(주황색 비고)도 그대로 잡혀요.</div>
       <table style="width:100%;border-collapse:collapse;font-size:11.5px">
         <thead><tr style="background:var(--bg)">
           <th style="padding:6px 8px;text-align:left;font-size:10px;color:var(--t-500)">매장명</th>
@@ -5209,19 +5212,19 @@ async function loadEventSales(){
           <th style="padding:6px 8px;text-align:left;font-size:10px;color:var(--t-500)">브랜드</th>
           <th style="padding:6px 8px;text-align:left;font-size:10px;color:var(--t-500)">제품명</th>
           <th style="padding:6px 8px;text-align:right;font-size:10px;color:var(--t-500)">수량</th>
-          <th style="padding:6px 8px;text-align:right;font-size:10px;color:var(--t-500)">매출액</th>
-          <th style="padding:6px 8px;text-align:center;font-size:10px;color:var(--t-500)">정상%→행사%</th>
+          <th style="padding:6px 8px;text-align:right;font-size:10px;color:var(--t-500)">정상가→실제단가</th>
           <th style="padding:6px 8px;text-align:right;font-size:10px;color:var(--t-500)">추가마진</th>
+          <th style="padding:6px 8px;text-align:left;font-size:10px;color:var(--t-500)">비고</th>
         </tr></thead>
-        <tbody>${(r.margin_breakdown||[]).map(m=>`<tr title="${m.note||''}">
+        <tbody>${(r.margin_breakdown||[]).map(m=>`<tr>
           <td style="padding:6px 8px;border-bottom:1px solid var(--border);font-weight:600">${m.store}</td>
           <td style="padding:6px 8px;border-bottom:1px solid var(--border);color:var(--t-500)">${m.event_name}</td>
           <td style="padding:6px 8px;border-bottom:1px solid var(--border)">${m.brand}</td>
           <td style="padding:6px 8px;border-bottom:1px solid var(--border)">${m.product}</td>
           <td style="padding:6px 8px;text-align:right;border-bottom:1px solid var(--border)">${m.qty.toLocaleString()}</td>
-          <td style="padding:6px 8px;text-align:right;border-bottom:1px solid var(--border)">${m.amount.toLocaleString()}</td>
-          <td style="padding:6px 8px;text-align:center;border-bottom:1px solid var(--border);color:${m.discount_pct!=null?'#16A34A':'var(--t-300)'}">${m.normal_rate!=null?m.normal_rate+'%→'+m.event_rate+'%':'기준표 없음'}</td>
+          <td style="padding:6px 8px;text-align:right;border-bottom:1px solid var(--border);color:${m.normal_price!=null?'var(--t-700)':'var(--t-300)'}">${m.normal_price!=null?m.normal_price.toLocaleString()+'→'+(m.actual_unit_price||0).toLocaleString():'기준표 없음'}</td>
           <td style="padding:6px 8px;text-align:right;border-bottom:1px solid var(--border);font-weight:700;color:${m.extra_margin?'#DC2626':'var(--t-300)'}">${m.extra_margin!=null?'+'+m.extra_margin.toLocaleString()+'원':'—'}</td>
+          <td style="padding:6px 8px;border-bottom:1px solid var(--border);font-size:10.5px;color:${m.extra_discount_note?'#D97706':'var(--t-400)'}">${m.note||''}</td>
         </tr>`).join('')}</tbody>
       </table>
     </div>`;
