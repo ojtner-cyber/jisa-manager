@@ -3675,10 +3675,17 @@ def export_xlsx_monthly():
 
 def _promo_product_key(item_name):
     """제품명을 공급율표와 비교할 수 있는 키로 정규화 — 대괄호 브랜드태그·색상 제거하고 공백도 없앤다.
-    예: '[줄즈]에어2_모기장&썬커버' → '에어2', '[ABC디자인]태그_단델리온골드' → '태그단델리온골드'"""
-    base = normalize_item_name(item_name or '') or (item_name or '')
+    예: '[줄즈]에어2_모기장&썬커버' → '에어2', '[ABC디자인]태그_단델리온골드' → '태그단델리온골드'.
+    단, '한정판'처럼 소비자가 자체가 다른 특별 변형은 색상 변형과 똑같이 취급하면 안 된다 —
+    (예: 에어2_카밍베이지_한정판은 소비자가 960,000원으로 일반 에어2(840,000원)와 다르다)
+    그래서 원본 이름에 '한정판' 표시가 있으면 정규화된 키에 그대로 남겨서 별도 제품으로 구분한다."""
+    raw_no_bracket = re.sub(r'^\[[^\]]+\]', '', (item_name or '')).strip()
+    base = normalize_item_name(item_name or '') or raw_no_bracket
     base = re.sub(r'^\[[^\]]+\]', '', base).strip()
-    return base.replace(' ', '')
+    key = base.replace(' ', '')
+    if '한정판' in raw_no_bracket and '한정판' not in key:
+        key += '한정판'
+    return key
 
 
 def _find_promo_events(date_from='', date_to=''):
@@ -3766,12 +3773,15 @@ def _compute_promo_margins(rows, date_from='', date_to=''):
             key = (store, ev['id'], brand, pkey)
             g = detail.setdefault(key, {'store': store, 'event_id': ev['id'], 'event_name': ev['name'],
                                           'brand': brand, 'product': (rc['product_name'] if rc else pkey),
-                                          'qty': 0, 'paid_total': 0,
+                                          'qty': 0, 'paid_total': 0, 'price_qty': {},
                                           'normal_price': rc.get('normal_price') if rc else None,
                                           'event_price': rc.get('event_price') if rc else None,
                                           'note': (rc['note'] if rc else '이 행사의 정상 공급가가 등록돼 있지 않음(등록 필요)')})
             g['qty'] += qty
             g['paid_total'] += total_incl_vat   # 부가세 포함 실제 공급 금액 합 — 매장별 실제 단가 산출용
+            if qty:
+                per_unit_this_row = round(total_incl_vat / qty)
+                g['price_qty'][per_unit_this_row] = g['price_qty'].get(per_unit_this_row, 0) + qty
 
     detail_list = []
     store_totals = {}
@@ -3779,16 +3789,24 @@ def _compute_promo_margins(rows, date_from='', date_to=''):
         margin = None
         actual_unit_price = (g['paid_total'] / g['qty']) if g['qty'] else None
         note = g['note']
+        # 매장이 같은 제품을 서로 다른 단가로 여러 건 받은 경우(예: 특가 20개 + 표준가 1개), 평균 하나만
+        # 보여주면 "왜 이 숫자냐"고 헷갈릴 수 있어서 실제 단가별 수량을 그대로 풀어서 비고에 적어준다
+        price_breakdown = sorted(g['price_qty'].items(), key=lambda x: -x[1])
+        mixed_price_note = ''
+        if len(price_breakdown) > 1:
+            mixed_price_note = ' / '.join(f"{p:,.0f}원×{q}개" for p, q in price_breakdown)
         if g['normal_price'] is not None and actual_unit_price is not None:
             per_unit = g['normal_price'] - actual_unit_price
             margin = round(per_unit * g['qty'])
             pct = round(per_unit / g['normal_price'] * 100, 1) if g['normal_price'] else 0
             if margin > 0:
-                note = f"정상가 대비 개당 {per_unit:,.0f}원({pct}%) 할인된 단가로 공급됨"
+                note = f"정상가 대비 개당 평균 {per_unit:,.0f}원({pct}%) 할인된 단가로 공급됨"
             elif margin < 0:
-                note = f"정상가보다 개당 {abs(per_unit):,.0f}원 더 비싸게 공급됨(확인 필요)"
+                note = f"정상가보다 개당 평균 {abs(per_unit):,.0f}원 더 비싸게 공급됨(확인 필요)"
             else:
                 note = "정상가와 동일 — 할인 없음"
+            if mixed_price_note:
+                note += f" (실제로는 단가가 섞여 있음: {mixed_price_note})"
         g2 = dict(g); g2['extra_margin'] = margin
         g2['actual_unit_price'] = round(actual_unit_price) if actual_unit_price is not None else None
         g2['note'] = note
