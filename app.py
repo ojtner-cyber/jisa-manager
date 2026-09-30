@@ -476,14 +476,28 @@ def init_db():
         product_name TEXT NOT NULL,
         normal_rate REAL,
         event_rate REAL,
+        normal_price REAL,
+        event_price REAL,
         note TEXT DEFAULT '',
         updated_at TEXT DEFAULT '',
         UNIQUE(event_id, brand, product_name),
         FOREIGN KEY(event_id) REFERENCES promo_event(id)
     )""")
+    try:
+        per_cols = [r[1] for r in conn.execute("PRAGMA table_info(promo_event_rate)").fetchall()]
+        if 'normal_price' not in per_cols:
+            conn.execute("ALTER TABLE promo_event_rate ADD COLUMN normal_price REAL")
+        if 'event_price' not in per_cols:
+            conn.execute("ALTER TABLE promo_event_rate ADD COLUMN event_price REAL")
+    except Exception:
+        pass
 
     # '추석위크'(2026-09-18~27) 행사 4개 브랜드 공급조건 PDF를 근거로 한 초기값 —
     # 같은 브랜드라도 할인이 적용된 제품과 안 된 제품이 섞여 있어 제품 단위로 넣었다.
+    # 제품명은 실제 판매현황에 찍히는 모델명 그대로 맞췄다(레카로는 '토론1'/'액시언1'/'제논1'처럼
+    # 세대 번호가 붙어서 찍힌다 — 처음엔 이 번호를 빼고 넣어서 매칭이 안 됐던 적이 있었다).
+    # 정상/행사 공급가격(원)도 함께 넣어서, 매출액에 %를 곱하는 대신 '수량 × (정상공급가−행사공급가)'로
+    # 더 정확하게(매장이 실제로 덜 낸 금액 그대로) 추가마진을 계산한다.
     try:
         now_ts = datetime.now().strftime('%Y-%m-%d %H:%M')
         ev = conn.execute("SELECT id FROM promo_event WHERE name=? AND date_start=?", ('추석위크', '2026-09-18')).fetchone()
@@ -493,32 +507,47 @@ def init_db():
             ev_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
         else:
             ev_id = ev[0]
+        # (브랜드, 제품명, 정상율, 행사율, 정상공급가, 행사공급가, 비고)
         _CHUSEOK_SEED = [
-            ('줄즈', '데이5', 62, 60, ''),
-            ('줄즈', '허브2', 62, 60, ''),
-            ('줄즈', '에어2', 62, 62, '행사 할인 없음(기존과 동일 공급율)'),
-            ('줄즈', '에어2 한정판', 62, 62, '행사 할인 없음(기존과 동일 공급율)'),
-            ('줄즈', '에어2 네스트 투 시트', 62, 62, '행사 할인 없음(기존과 동일 공급율)'),
-            ('레카로', '토론', 62, 60, ''),
-            ('레카로', '제논', 62, 62, '행사 할인 없음(기존과 동일 공급율)'),
-            ('레카로', '벨릭스', 62, 60, ''),
-            ('레카로', '액시언', 62, 62, '행사 할인 없음(기존과 동일 공급율)'),
-            ('원더폴드', '엘리트프로 2인승', 65, 65, '행사 할인 없음(기존과 동일 공급율)'),
-            ('원더폴드', '엘리트프로 4인승', 65, 65, '행사 할인 없음(기존과 동일 공급율)'),
-            ('원더폴드', '슈퍼맨 2인승', 68, 65, ''),
-            ('원더폴드', '슈퍼맨 4인승', 68, 65, ''),
-            ('원더폴드', '폭스바겐 2인승', 68, 65, ''),
-            ('원더폴드', '폭스바겐 4인승', 68, 65, ''),
-            ('원더폴드', 'L2', 65, 65, '행사 할인 없음(기존과 동일 공급율)'),
-            ('원더폴드', 'L4', 65, 65, '행사 할인 없음(기존과 동일 공급율)'),
-            ('ABC디자인', '태그', 62, 50, '절충형 유모차'),
-            ('ABC디자인', '태그 단델리온골드', 62, 50, ''),
-            ('ABC디자인', '슈타트듀오', 62, 55, ''),
-            ('ABC디자인', '루프트', 62, 55, ''),
+            ('줄즈', '데이5', 62, 60, 979600, 948000, ''),
+            ('줄즈', '허브2', 62, 60, 824600, 798000, ''),
+            ('줄즈', '에어2', 62, 62, 520800, 520800, '행사 할인 없음(기존과 동일 공급율)'),
+            ('줄즈', '에어2 한정판', 62, 62, 595200, 595200, '행사 할인 없음(기존과 동일 공급율)'),
+            ('줄즈', '에어2 네스트 투 시트', 62, 62, 744000, 744000, '행사 할인 없음(기존과 동일 공급율)'),
+            ('레카로', '토론1', 62, 60, 824600, 798000, ''),
+            ('레카로', '제논1', 62, 62, 607600, 607600, '행사 할인 없음(기존과 동일 공급율)'),
+            ('레카로', '벨릭스', 62, 60, 483600, 468000, ''),
+            ('레카로', '액시언1', 62, 62, 359600, 359600, '행사 할인 없음(기존과 동일 공급율)'),
+            ('원더폴드', '엘리트프로 2인승', 65, 65, 643500, 643500, '행사 할인 없음(기존과 동일 공급율)'),
+            ('원더폴드', '엘리트프로 4인승', 65, 65, 838500, 838500, '행사 할인 없음(기존과 동일 공급율)'),
+            ('원더폴드', '슈퍼맨 2인승', 68, 65, 945200, 903500, ''),
+            ('원더폴드', '슈퍼맨 4인승', 68, 65, 1149200, 1098500, ''),
+            ('원더폴드', '폭스바겐 2인승', 68, 65, 1421200, 1358500, ''),
+            ('원더폴드', '폭스바겐 4인승', 68, 65, 1829200, 1748500, ''),
+            ('원더폴드', 'L2', 65, 65, 903500, 903500, '행사 할인 없음(기존과 동일 공급율)'),
+            ('원더폴드', 'L4', 65, 65, 1098500, 1098500, '행사 할인 없음(기존과 동일 공급율)'),
+            ('ABC디자인', '태그', 62, 50, 545600, 440000, '절충형 유모차'),
+            ('ABC디자인', '태그 단델리온골드', 62, 50, 607600, 490000, ''),
+            ('ABC디자인', '슈타트듀오', 62, 55, 545600, 484000, ''),
+            ('ABC디자인', '루프트', 62, 55, 359600, 319000, ''),
         ]
-        for brand, product, normal_rate, event_rate, note in _CHUSEOK_SEED:
-            conn.execute("""INSERT OR IGNORE INTO promo_event_rate (event_id, brand, product_name, normal_rate, event_rate, note, updated_at)
-                VALUES (?,?,?,?,?,?,?)""", (ev_id, brand, product, normal_rate, event_rate, note, now_ts))
+        for brand, product, normal_rate, event_rate, normal_price, event_price, note in _CHUSEOK_SEED:
+            cur = conn.execute("""INSERT OR IGNORE INTO promo_event_rate
+                (event_id, brand, product_name, normal_rate, event_rate, normal_price, event_price, note, updated_at)
+                VALUES (?,?,?,?,?,?,?,?,?)""",
+                (ev_id, brand, product, normal_rate, event_rate, normal_price, event_price, note, now_ts))
+            # 이미 있던(예전 버전에서 제품명이 달라 들어간) 행이라도 가격 정보가 비어 있으면 채워준다
+            if cur.rowcount == 0:
+                conn.execute("""UPDATE promo_event_rate SET normal_price=COALESCE(normal_price,?), event_price=COALESCE(event_price,?)
+                    WHERE event_id=? AND brand=? AND product_name=?""", (normal_price, event_price, ev_id, brand, product))
+        # 예전 버전에서 '토론'/'액시언'/'제논'(세대번호 없이)으로 잘못 들어갔던 행은 실제 판매현황 표기(토론1 등)에
+        # 맞춰 이름을 바로잡는다 — 이미 '토론1' 등으로 등록된 게 있으면 중복을 피해 예전 행을 지운다
+        for old, new in [('토론', '토론1'), ('액시언', '액시언1'), ('제논', '제논1')]:
+            has_new = conn.execute("SELECT 1 FROM promo_event_rate WHERE event_id=? AND brand='레카로' AND product_name=?", (ev_id, new)).fetchone()
+            if has_new:
+                conn.execute("DELETE FROM promo_event_rate WHERE event_id=? AND brand='레카로' AND product_name=?", (ev_id, old))
+            else:
+                conn.execute("UPDATE promo_event_rate SET product_name=? WHERE event_id=? AND brand='레카로' AND product_name=?", (new, ev_id, old))
     except Exception:
         pass
 
@@ -3667,27 +3696,50 @@ def _find_promo_events(date_from='', date_to=''):
 
 
 def _load_event_rate_map(event_ids):
-    """이벤트ID 목록에 속한 공급율 행 전체를 {(event_id, brand, product_key): {...}} 로 로드"""
-    if not event_ids: return {}
+    """이벤트ID 목록에 속한 공급율 행 전체를 {(event_id, brand, product_key): {...}} 로 로드.
+    브랜드별로 등록된 product_key 목록도 같이 반환해서, 정확히 일치하는 게 없을 때
+    (예: 세대번호가 붙어 '토론1' vs '토론'처럼 표기가 살짝 다른 경우) 앞부분이 같은 제품으로
+    느슨하게 찾아볼 수 있게 한다."""
+    if not event_ids: return {}, {}
     conn = get_db()
     placeholders = ','.join('?' * len(event_ids))
     rows = conn.execute(
-        f"SELECT event_id, brand, product_name, normal_rate, event_rate, note FROM promo_event_rate WHERE event_id IN ({placeholders})",
-        event_ids).fetchall()
+        f"""SELECT event_id, brand, product_name, normal_rate, event_rate, normal_price, event_price, note
+            FROM promo_event_rate WHERE event_id IN ({placeholders})""", event_ids).fetchall()
     conn.close()
     out = {}
-    for event_id, brand, product_name, normal_rate, event_rate, note in rows:
-        out[(event_id, brand, _promo_product_key(product_name))] = {
-            'product_name': product_name, 'normal': normal_rate, 'event': event_rate, 'note': note or ''}
-    return out
+    by_brand_keys = {}   # (event_id, brand) -> [product_key, ...]
+    for event_id, brand, product_name, normal_rate, event_rate, normal_price, event_price, note in rows:
+        pkey = _promo_product_key(product_name)
+        out[(event_id, brand, pkey)] = {
+            'product_name': product_name, 'normal': normal_rate, 'event': event_rate,
+            'normal_price': normal_price, 'event_price': event_price, 'note': note or ''}
+        by_brand_keys.setdefault((event_id, brand), []).append(pkey)
+    return out, by_brand_keys
+
+
+def _lookup_promo_rate(rate_map, by_brand_keys, event_id, brand, pkey):
+    """제품 키로 공급율표를 찾는다 — 정확히 일치하는 게 없으면, 같은 브랜드 안에서 한쪽이 다른 쪽의
+    앞부분과 같은 제품키를 찾아본다(세대번호·표기 차이로 인한 '토론1' vs '토론' 같은 불일치 방지)."""
+    rc = rate_map.get((event_id, brand, pkey))
+    if rc: return rc
+    if not pkey: return None
+    for cand in by_brand_keys.get((event_id, brand), []):
+        if not cand: continue
+        if cand == pkey: continue
+        if pkey.startswith(cand) or cand.startswith(pkey):
+            return rate_map.get((event_id, brand, cand))
+    return None
 
 
 def _compute_promo_margins(rows, date_from='', date_to=''):
     """매출 행들에 대해 행별로 딱 맞는 행사(기간이 겹치는)·브랜드·제품의 공급율을 찾아
-    추가마진을 역산한다. 반환: (매장별 합계 dict, 매장×브랜드×제품 상세 리스트, 사용된 이벤트 목록)"""
+    추가마진을 역산한다. 제품에 정상/행사 '공급가격'이 등록돼 있으면 수량×(정상가−행사가)로
+    정확하게 계산하고(매장이 실제로 덜 낸 금액 그대로), 가격이 없고 %만 있으면 매출액×할인율로 대신한다.
+    반환: (매장별 합계 dict, 매장×브랜드×제품 상세 리스트, 사용된 이벤트 목록)"""
     events = _find_promo_events(date_from, date_to)
     event_ids = [e['id'] for e in events]
-    rate_map = _load_event_rate_map(event_ids)
+    rate_map, by_brand_keys = _load_event_rate_map(event_ids)
 
     detail = {}   # (store, event_id, brand, product_key) -> {..}
     for r in rows:
@@ -3700,12 +3752,15 @@ def _compute_promo_margins(rows, date_from='', date_to=''):
         if not matching_events:
             continue
         for ev in matching_events:
-            rc = rate_map.get((ev['id'], brand, pkey))
+            rc = _lookup_promo_rate(rate_map, by_brand_keys, ev['id'], brand, pkey)
             key = (store, ev['id'], brand, pkey)
             g = detail.setdefault(key, {'store': store, 'event_id': ev['id'], 'event_name': ev['name'],
                                           'brand': brand, 'product': (rc['product_name'] if rc else pkey),
-                                          'qty': 0, 'amount': 0, 'normal_rate': rc['normal'] if rc else None,
+                                          'qty': 0, 'amount': 0,
+                                          'normal_rate': rc['normal'] if rc else None,
                                           'event_rate': rc['event'] if rc else None,
+                                          'normal_price': rc.get('normal_price') if rc else None,
+                                          'event_price': rc.get('event_price') if rc else None,
                                           'note': (rc['note'] if rc else '이 행사의 공급율 기준표에 없는 제품(등록 필요)')})
             g['qty'] += r.get('quantity') or 0
             g['amount'] += r.get('total') or 0
@@ -3713,11 +3768,16 @@ def _compute_promo_margins(rows, date_from='', date_to=''):
     detail_list = []
     store_totals = {}
     for g in detail.values():
-        if g['normal_rate'] is not None and g['event_rate'] is not None:
+        margin = None; gap = None
+        if g['normal_price'] is not None and g['event_price'] is not None:
+            # 우선 방식: 수량 × (정상 공급가 − 행사 공급가) — 매출액과 무관하게 실제로 덜 낸 금액 그대로
+            per_unit = g['normal_price'] - g['event_price']
+            margin = round(per_unit * g['qty'])
+            if g['normal_rate'] is not None and g['event_rate'] is not None:
+                gap = round(g['normal_rate'] - g['event_rate'], 1)
+        elif g['normal_rate'] is not None and g['event_rate'] is not None:
             gap = round(g['normal_rate'] - g['event_rate'], 1)
             margin = round(g['amount'] * gap / 100)
-        else:
-            gap = None; margin = None
         g2 = dict(g); g2['discount_pct'] = gap; g2['extra_margin'] = margin
         detail_list.append(g2)
         if margin:
@@ -3770,7 +3830,7 @@ def api_promo_events_delete(event_id):
 @login_required
 def api_promo_event_rates_list(event_id):
     conn = get_db()
-    rows = conn.execute("""SELECT id, brand, product_name, normal_rate, event_rate, note FROM promo_event_rate
+    rows = conn.execute("""SELECT id, brand, product_name, normal_rate, event_rate, normal_price, event_price, note FROM promo_event_rate
                             WHERE event_id=? ORDER BY brand, product_name""", (event_id,)).fetchall()
     conn.close()
     return jsonify({'ok': True, 'rates': [dict(r) for r in rows]})
@@ -3779,22 +3839,27 @@ def api_promo_event_rates_list(event_id):
 @app.route("/api/promo-events/<int:event_id>/rates", methods=["POST"])
 @login_required
 def api_promo_event_rates_save(event_id):
-    """제품별 공급율 한 줄 추가/수정 — body: {brand, product_name, normal_rate, event_rate, note}"""
+    """제품별 공급율 한 줄 추가/수정 — body: {brand, product_name, normal_rate, event_rate, normal_price, event_price, note}.
+    공급가격(원)까지 넣어두면 매출액×%가 아니라 수량×(정상가−행사가)로 더 정확하게 추가마진을 계산한다."""
     d = request.json or {}
     brand = (d.get('brand') or '').strip()
     product_name = (d.get('product_name') or '').strip()
     if not brand or not product_name:
         return jsonify({'ok': False, 'msg': '브랜드와 제품명이 필요합니다'}), 400
     def _f(v):
-        try: return float(v) if v not in (None, '') else None
+        try: return float(str(v).replace(',', '')) if v not in (None, '') else None
         except Exception: return None
     now = datetime.now().strftime('%Y-%m-%d %H:%M')
     conn = get_db()
-    conn.execute("""INSERT INTO promo_event_rate (event_id, brand, product_name, normal_rate, event_rate, note, updated_at)
-        VALUES (?,?,?,?,?,?,?)
+    conn.execute("""INSERT INTO promo_event_rate
+        (event_id, brand, product_name, normal_rate, event_rate, normal_price, event_price, note, updated_at)
+        VALUES (?,?,?,?,?,?,?,?,?)
         ON CONFLICT(event_id, brand, product_name) DO UPDATE SET
-        normal_rate=excluded.normal_rate, event_rate=excluded.event_rate, note=excluded.note, updated_at=excluded.updated_at""",
-        (event_id, brand, product_name, _f(d.get('normal_rate')), _f(d.get('event_rate')), (d.get('note') or '').strip(), now))
+        normal_rate=excluded.normal_rate, event_rate=excluded.event_rate,
+        normal_price=excluded.normal_price, event_price=excluded.event_price,
+        note=excluded.note, updated_at=excluded.updated_at""",
+        (event_id, brand, product_name, _f(d.get('normal_rate')), _f(d.get('event_rate')),
+         _f(d.get('normal_price')), _f(d.get('event_price')), (d.get('note') or '').strip(), now))
     conn.commit(); conn.close()
     return jsonify({'ok': True})
 
@@ -3824,15 +3889,17 @@ def api_promo_event_rates_upload(event_id):
     now = datetime.now().strftime('%Y-%m-%d %H:%M')
     inserted = 0
 
-    def _save(brand, product_name, normal_rate, event_rate, note=''):
+    def _save(brand, product_name, normal_rate, event_rate, normal_price=None, event_price=None, note=''):
         nonlocal inserted
         if not brand or not product_name: return
         conn2 = get_db()
-        conn2.execute("""INSERT INTO promo_event_rate (event_id, brand, product_name, normal_rate, event_rate, note, updated_at)
-            VALUES (?,?,?,?,?,?,?)
+        conn2.execute("""INSERT INTO promo_event_rate
+            (event_id, brand, product_name, normal_rate, event_rate, normal_price, event_price, note, updated_at)
+            VALUES (?,?,?,?,?,?,?,?,?)
             ON CONFLICT(event_id, brand, product_name) DO UPDATE SET
-            normal_rate=excluded.normal_rate, event_rate=excluded.event_rate, updated_at=excluded.updated_at""",
-            (event_id, brand, product_name, normal_rate, event_rate, note, now))
+            normal_rate=excluded.normal_rate, event_rate=excluded.event_rate,
+            normal_price=excluded.normal_price, event_price=excluded.event_price, updated_at=excluded.updated_at""",
+            (event_id, brand, product_name, normal_rate, event_rate, normal_price, event_price, note, now))
         conn2.commit(); conn2.close()
         inserted += 1
 
@@ -3849,10 +3916,12 @@ def api_promo_event_rates_upload(event_id):
                 col_map = {'brand': vals.get('브랜드'), 'product': vals.get('제품명') or vals.get('상품명'),
                            'normal': vals.get('정상공급율') or vals.get('정상 공급율'),
                            'event': vals.get('행사공급율') or vals.get('행사 공급율'),
+                           'normal_price': vals.get('정상공급가') or vals.get('정상 공급가격') or vals.get('정상공급가격'),
+                           'event_price': vals.get('행사공급가') or vals.get('행사 공급가격') or vals.get('행사공급가격'),
                            'note': vals.get('비고')}
                 break
         if not header_row or not col_map.get('product'):
-            return jsonify({'ok': False, 'msg': '엑셀에서 "제품명"(또는 "상품명") 헤더를 찾을 수 없어요. 브랜드/제품명/정상공급율/행사공급율/비고 형식으로 올려주세요.'}), 400
+            return jsonify({'ok': False, 'msg': '엑셀에서 "제품명"(또는 "상품명") 헤더를 찾을 수 없어요. 브랜드/제품명/정상공급율/행사공급율/정상공급가격/행사공급가격/비고 형식으로 올려주세요.'}), 400
         for ri in range(header_row + 1, ws.max_row + 1):
             product = ws.cell(ri, col_map['product']).value
             if not product: continue
@@ -3860,9 +3929,10 @@ def api_promo_event_rates_upload(event_id):
             def _cell_f(ci):
                 if not ci: return None
                 v = ws.cell(ri, ci).value
-                try: return float(str(v).replace('%', '').strip()) if v not in (None, '') else None
+                try: return float(str(v).replace('%', '').replace(',', '').strip()) if v not in (None, '') else None
                 except Exception: return None
             _save(brand or default_brand, str(product).strip(), _cell_f(col_map.get('normal')), _cell_f(col_map.get('event')),
+                  _cell_f(col_map.get('normal_price')), _cell_f(col_map.get('event_price')),
                   str(ws.cell(ri, col_map['note']).value or '').strip() if col_map.get('note') else '')
         return jsonify({'ok': True, 'inserted': inserted})
 
@@ -3870,7 +3940,7 @@ def api_promo_event_rates_upload(event_id):
         try:
             import pdfplumber
         except ImportError:
-            return jsonify({'ok': False, 'msg': 'PDF 자동 인식 기능을 쓰려면 서버에 pdfplumber 라이브러리 설치가 필요해요(requirements.txt에 pdfplumber 추가). 엑셀(브랜드/제품명/정상공급율/행사공급율)로 올려주시거나, 화면에서 직접 입력해주세요.'}), 400
+            return jsonify({'ok': False, 'msg': 'PDF 자동 인식 기능을 쓰려면 서버에 pdfplumber 라이브러리 설치가 필요해요(requirements.txt에 pdfplumber 추가). 엑셀(브랜드/제품명/정상공급율/행사공급율/정상공급가격/행사공급가격)로 올려주시거나, 화면에서 직접 입력해주세요.'}), 400
         try:
             text = ''
             with pdfplumber.open(io.BytesIO(data)) as pdf:
@@ -3878,12 +3948,16 @@ def api_promo_event_rates_upload(event_id):
                     text += (page.extract_text() or '') + '\n'
         except Exception as e:
             return jsonify({'ok': False, 'msg': f'PDF를 읽는 중 오류가 났어요: {e}'}), 400
-        # "상품명 ... 62% 824,600 60% 798,000" 형태의 줄에서 상품명 + 정상율 + 행사율을 뽑아낸다
-        pattern = re.compile(r'^([가-힣A-Za-z0-9_\s]+?)\s+[\d,]+\s+[\d,]+\s+[\d,]+\s+(\d{2,3})%\s+[\d,]+\s+(\d{2,3})%\s+[\d,]+', re.M)
+        # "상품명 소비자가 판매가 행사판매가 정상율% 정상공급가 행사율% 행사공급가" 형태의 줄에서
+        # 상품명 + 정상율/행사율 + 정상/행사 공급가격까지 함께 뽑아낸다
+        pattern = re.compile(
+            r'^([가-힣A-Za-z0-9_\s]+?)\s+[\d,]+\s+[\d,]+\s+[\d,]+\s+(\d{2,3})%\s+([\d,]+)\s+(\d{2,3})%\s+([\d,]+)', re.M)
         for m in pattern.finditer(text):
             product = m.group(1).strip()
             if len(product) < 2 or product in ('상품명', '제품명'): continue
-            _save(default_brand, product, float(m.group(2)), float(m.group(3)))
+            normal_price = float(m.group(3).replace(',', ''))
+            event_price = float(m.group(5).replace(',', ''))
+            _save(default_brand, product, float(m.group(2)), float(m.group(4)), normal_price, event_price)
         if inserted == 0:
             return jsonify({'ok': False, 'msg': 'PDF에서 표를 자동으로 읽지 못했어요. 화면에서 직접 입력하거나 엑셀로 정리해서 올려주세요.'}), 400
         return jsonify({'ok': True, 'inserted': inserted, 'msg': f'{inserted}개 제품을 인식했어요 — 브랜드/수치가 맞는지 꼭 확인해주세요.'})

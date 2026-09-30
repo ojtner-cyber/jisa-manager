@@ -632,7 +632,7 @@ td.center{text-align:center}
     </div>
 
     <div id="promo-event-modal" style="display:none;position:fixed;inset:0;background:rgba(15,23,42,.5);z-index:1000;align-items:center;justify-content:center;padding:20px">
-      <div style="background:var(--paper);border-radius:14px;width:760px;max-width:100%;max-height:88vh;overflow-y:auto;box-shadow:0 20px 50px rgba(0,0,0,.3)">
+      <div style="background:var(--paper);border-radius:14px;width:920px;max-width:100%;max-height:88vh;overflow-y:auto;box-shadow:0 20px 50px rgba(0,0,0,.3)">
         <div style="padding:16px 20px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center">
           <div>
             <div style="font-size:14px;font-weight:800">행사(프로모션) 관리</div>
@@ -670,9 +670,9 @@ td.center{text-align:center}
               </label>
               <input type="text" id="promo-rate-upload-brand" placeholder="브랜드 (업로드 파일에 브랜드 열이 없을 때)" style="border:1px solid var(--border-md);border-radius:6px;padding:6px 8px;font-size:11.5px;width:220px">
             </div>
-            <div style="font-size:10.5px;color:var(--t-300);margin-bottom:10px">엑셀은 "브랜드/제품명/정상공급율/행사공급율/비고" 헤더가 있는 표를 그대로 인식해요. PDF는 서버에 파싱 라이브러리가 설치된 경우에만 자동 인식되고, 안 되면 아래에서 직접 한 줄씩 추가해주세요.</div>
-            <div style="display:grid;grid-template-columns:1.2fr 1.6fr 1fr 1fr 1.6fr 50px;gap:6px;font-size:10px;font-weight:700;color:var(--t-400);padding:0 4px;margin-bottom:4px">
-              <span>브랜드</span><span>제품명</span><span>정상%</span><span>행사%</span><span>비고</span><span></span>
+            <div style="font-size:10.5px;color:var(--t-300);margin-bottom:10px">엑셀은 "브랜드/제품명/정상공급율/행사공급율/정상공급가격/행사공급가격/비고" 헤더가 있는 표를 그대로 인식해요. 공급가격(원)을 넣으면 매출액×%가 아니라 수량×(정상가−행사가)로 더 정확하게 계산해요. PDF는 서버에 파싱 라이브러리가 설치된 경우에만 자동 인식되고, 안 되면 아래에서 직접 한 줄씩 추가해주세요.</div>
+            <div style="display:grid;grid-template-columns:1fr 1.3fr 0.7fr 0.7fr 1fr 1fr 1.3fr 50px;gap:6px;font-size:10px;font-weight:700;color:var(--t-400);padding:0 4px;margin-bottom:4px">
+              <span>브랜드</span><span>제품명</span><span>정상%</span><span>행사%</span><span>정상공급가</span><span>행사공급가</span><span>비고</span><span></span>
             </div>
             <div id="promo-rate-rows" style="display:flex;flex-direction:column;gap:6px;margin-bottom:10px"></div>
             <button class="btn btn-ghost btn-sm" onclick="addPromoRateRow()">+ 제품 한 줄 추가</button>
@@ -5314,12 +5314,14 @@ function addPromoRateRow(rt){
   const container = document.getElementById('promo-rate-rows');
   const div = document.createElement('div');
   div.id = rowId;
-  div.style.cssText = 'display:grid;grid-template-columns:1.2fr 1.6fr 1fr 1fr 1.6fr 50px;gap:6px;align-items:center';
+  div.style.cssText = 'display:grid;grid-template-columns:1fr 1.3fr 0.7fr 0.7fr 1fr 1fr 1.3fr 50px;gap:6px;align-items:center';
   div.innerHTML = `
     <input type="text" class="pr-brand" value="${(rt.brand||'').replace(/"/g,'&quot;')}" placeholder="브랜드" style="border:1px solid var(--border-md);border-radius:5px;padding:5px 6px;font-size:11.5px">
     <input type="text" class="pr-product" value="${(rt.product_name||'').replace(/"/g,'&quot;')}" placeholder="제품명" style="border:1px solid var(--border-md);border-radius:5px;padding:5px 6px;font-size:11.5px">
     <input type="number" step="0.1" class="pr-normal" value="${rt.normal_rate ?? ''}" placeholder="정상%" style="border:1px solid var(--border-md);border-radius:5px;padding:5px 6px;font-size:11.5px;text-align:right">
     <input type="number" step="0.1" class="pr-event" value="${rt.event_rate ?? ''}" placeholder="행사%" style="border:1px solid var(--border-md);border-radius:5px;padding:5px 6px;font-size:11.5px;text-align:right">
+    <input type="number" class="pr-normal-price" value="${rt.normal_price ?? ''}" placeholder="정상공급가" style="border:1px solid var(--border-md);border-radius:5px;padding:5px 6px;font-size:11.5px;text-align:right">
+    <input type="number" class="pr-event-price" value="${rt.event_price ?? ''}" placeholder="행사공급가" style="border:1px solid var(--border-md);border-radius:5px;padding:5px 6px;font-size:11.5px;text-align:right">
     <input type="text" class="pr-note" value="${(rt.note||'').replace(/"/g,'&quot;')}" placeholder="비고" style="border:1px solid var(--border-md);border-radius:5px;padding:5px 6px;font-size:10.5px">
     <div style="display:flex;gap:4px">
       <button onclick="savePromoRateRow('${rowId}')" style="background:none;border:none;color:var(--p);cursor:pointer;font-size:11px">저장</button>
@@ -5334,9 +5336,11 @@ async function savePromoRateRow(rowId){
   const product_name = div.querySelector('.pr-product').value.trim();
   const normal_rate = div.querySelector('.pr-normal').value;
   const event_rate = div.querySelector('.pr-event').value;
+  const normal_price = div.querySelector('.pr-normal-price').value;
+  const event_price = div.querySelector('.pr-event-price').value;
   const note = div.querySelector('.pr-note').value.trim();
   if(!brand || !product_name){ toast('브랜드와 제품명을 입력해주세요', false); return; }
-  const r = await api(`/api/promo-events/${promoCurrentEventId}/rates`, {method:'POST', body:{brand, product_name, normal_rate, event_rate, note}});
+  const r = await api(`/api/promo-events/${promoCurrentEventId}/rates`, {method:'POST', body:{brand, product_name, normal_rate, event_rate, normal_price, event_price, note}});
   if(r?.ok) toast(`${brand} · ${product_name} 저장했어요`);
 }
 
