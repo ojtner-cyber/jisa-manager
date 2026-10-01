@@ -663,13 +663,20 @@ td.center{text-align:center}
           <div id="promo-event-detail-view" style="display:none">
             <button class="btn btn-ghost btn-sm" onclick="closePromoEventDetail()" style="margin-bottom:10px">← 목록으로</button>
             <div id="promo-event-detail-header" style="margin-bottom:12px"></div>
+            <div id="promo-missing-box" style="display:none;background:#FFFBEB;border:1px solid #FDE68A;border-radius:10px;padding:12px 14px;margin-bottom:14px">
+              <div style="font-size:12px;font-weight:700;color:#B45309;margin-bottom:6px">⚠ 이 행사로 판매됐지만 아직 정상/행사 공급가가 등록 안 된 제품</div>
+              <div style="font-size:10.5px;color:#92400E;margin-bottom:8px">분명 파일을 올렸는데 반영이 안 된 것 같다면, 여기 나오는 제품들이 빠진 거예요 — 매출 많은 순으로 정렬돼요.</div>
+              <div id="promo-missing-list" style="display:flex;flex-direction:column;gap:4px"></div>
+            </div>
             <div style="display:flex;gap:8px;align-items:center;margin-bottom:12px;flex-wrap:wrap">
+              <button class="btn btn-dark btn-sm" onclick="importPromoFromPlatform()">📥 매장관리 플랫폼에 업로드된 프로모션에서 가져오기</button>
               <label class="btn btn-ghost btn-sm" style="cursor:pointer">
                 📎 엑셀/PDF로 일괄 업로드
                 <input type="file" id="promo-rate-file" accept=".xlsx,.xls,.pdf" style="display:none" onchange="uploadPromoRateFile()">
               </label>
               <input type="text" id="promo-rate-upload-brand" placeholder="브랜드 (업로드 파일에 브랜드 열이 없을 때)" style="border:1px solid var(--border-md);border-radius:6px;padding:6px 8px;font-size:11.5px;width:220px">
             </div>
+            <div style="font-size:10.5px;color:var(--t-300);margin-bottom:10px">먼저 "플랫폼에서 가져오기"를 눌러보세요 — 업무 탭 > 프로모션 캘린더에 이미 올려두신 엔픽스/카오스/원더폴드/ABC디자인 등 공급조건 파일들을 이 행사 기간에 맞춰 한 번에 가져와요.</div>
             <div style="font-size:10.5px;color:var(--t-300);margin-bottom:10px">엑셀은 "브랜드/제품명/정상공급율/행사공급율/정상공급가격/행사공급가격/비고" 헤더가 있는 표를 그대로 인식해요. 공급가격(원)을 넣으면 매출액×%가 아니라 수량×(정상가−행사가)로 더 정확하게 계산해요. PDF는 서버에 파싱 라이브러리가 설치된 경우에만 자동 인식되고, 안 되면 아래에서 직접 한 줄씩 추가해주세요.</div>
             <div style="display:grid;grid-template-columns:1fr 1.3fr 0.7fr 0.7fr 1fr 1fr 1.3fr 50px;gap:6px;font-size:10px;font-weight:700;color:var(--t-400);padding:0 4px;margin-bottom:4px">
               <span>브랜드</span><span>제품명</span><span>정상%</span><span>행사%</span><span>정상공급가</span><span>행사공급가</span><span>비고</span><span></span>
@@ -5300,6 +5307,25 @@ async function openPromoEventDetail(id, name, dateStart, dateEnd){
   document.getElementById('promo-event-detail-header').innerHTML =
     `<div style="font-size:13px;font-weight:800;color:var(--t-800)">${name}</div><div style="font-size:11px;color:var(--t-400)">${dateStart} ~ ${dateEnd}</div>`;
   await loadPromoRateRows();
+  await loadPromoMissingProducts();
+}
+
+async function loadPromoMissingProducts(){
+  const r = await api(`/api/promo-events/${promoCurrentEventId}/missing-products`);
+  const box = document.getElementById('promo-missing-box');
+  const list = document.getElementById('promo-missing-list');
+  if(!r?.ok || !r.missing.length){ box.style.display = 'none'; return; }
+  box.style.display = 'block';
+  list.innerHTML = r.missing.map(m => `
+    <div style="display:flex;justify-content:space-between;align-items:center;background:#fff;border-radius:6px;padding:6px 10px">
+      <div style="font-size:11.5px;color:#78350F"><b>${m.brand}</b> · ${m.product} <span style="color:#B45309">(수량 ${m.qty.toLocaleString()}개 · 매출 ${m.amount.toLocaleString()}원)</span></div>
+      <button onclick="quickAddPromoRate('${m.brand.replace(/'/g,"\\'")}', '${m.product.replace(/'/g,"\\'")}')" style="background:none;border:none;color:var(--p);cursor:pointer;font-size:11px;text-decoration:underline;white-space:nowrap">+ 공급가 입력</button>
+    </div>`).join('');
+}
+
+function quickAddPromoRate(brand, product){
+  addPromoRateRow({brand, product_name: product});
+  document.getElementById('promo-rate-rows').lastElementChild.scrollIntoView({behavior:'smooth', block:'center'});
 }
 
 async function loadPromoRateRows(){
@@ -5344,7 +5370,19 @@ async function savePromoRateRow(rowId){
   const note = div.querySelector('.pr-note').value.trim();
   if(!brand || !product_name){ toast('브랜드와 제품명을 입력해주세요', false); return; }
   const r = await api(`/api/promo-events/${promoCurrentEventId}/rates`, {method:'POST', body:{brand, product_name, normal_rate, event_rate, normal_price, event_price, note}});
-  if(r?.ok) toast(`${brand} · ${product_name} 저장했어요`);
+  if(r?.ok){ toast(`${brand} · ${product_name} 저장했어요`); loadPromoMissingProducts(); }
+}
+
+async function importPromoFromPlatform(){
+  if(!promoCurrentEventId) return;
+  toast('플랫폼에 업로드된 프로모션을 찾고 있어요...');
+  const r = await api(`/api/promo-events/${promoCurrentEventId}/import-from-platform`, {method:'POST'});
+  if(r?.ok){
+    toast(`${r.imported}개 제품의 공급가를 가져왔어요`);
+    loadPromoRateRows();
+  } else {
+    toast(r?.msg || '가져오기에 실패했습니다', false);
+  }
 }
 
 async function uploadPromoRateFile(){
@@ -5362,6 +5400,7 @@ async function uploadPromoRateFile(){
     if(r.ok){
       toast(r.msg || `${r.inserted}개 제품을 반영했어요`);
       loadPromoRateRows();
+      loadPromoMissingProducts();
     } else {
       toast(r.msg || '업로드에 실패했습니다', false);
     }

@@ -518,7 +518,10 @@ def init_db():
             ('레카로', '제논1', 62, 62, 607600, 607600, '행사 할인 없음(기존과 동일 공급율)'),
             ('레카로', '벨릭스', 62, 60, 483600, 468000, ''),
             ('레카로', '액시언1', 62, 62, 359600, 359600, '행사 할인 없음(기존과 동일 공급율)'),
-            ('레카로', '페피타 한정판', 65, 65, 468000, 468000, '소비자가 720,000원·판매가 630,000원 기준 65% 공급조건(행사 할인 여부 별도 확인 안 됨)'),
+            # 품명 및 규격에는 '액시언1_페피타_한정판'으로 찍히지만(_promo_product_key가 '페피타'를
+            # 감지하면 '페피타한정판'으로 고정 처리) 정규 액시언1(359,600원)과는 소비자가 자체가
+            # 달라서(720,000원 기준) 반드시 분리해서 관리해야 함
+            ('레카로', '페피타 한정판', 65, 65, 468000, 468000, '액시언1_페피타_한정판 — 소비자가 720,000원·판매가 630,000원 기준 65% 공급조건(행사 할인 여부 별도 확인 안 됨)'),
             ('원더폴드', '엘리트프로 2인승', 65, 65, 643500, 643500, '행사 할인 없음(기존과 동일 공급율)'),
             ('원더폴드', '엘리트프로 4인승', 65, 65, 838500, 838500, '행사 할인 없음(기존과 동일 공급율)'),
             ('원더폴드', '슈퍼맨 2인승', 68, 65, 945200, 903500, ''),
@@ -3676,7 +3679,13 @@ def export_xlsx_monthly():
 
 def _display_product_name(item_name):
     """화면/엑셀에 보여줄 제품명 — [브랜드] 태그와 '검수必' 같은 내부 표시는 어디에 있든 걷어내고
-    순수 제품명만 남긴다. 예: '검수必[레카로]토론1' → '토론1', '[줄즈]에어2' → '에어2'."""
+    순수 제품명만 남긴다. 예: '검수必[레카로]토론1' → '토론1', '[줄즈]에어2' → '에어2'.
+    '페피타'처럼 섀시 모델명(액시언1 등)이 앞에 붙어도 실제 상품명은 그 특별판 자체이므로
+    '페피타 한정판'으로 고정해서 보여준다."""
+    raw_clean = re.sub(r'검수必\s*', '', (item_name or ''))
+    raw_clean = re.sub(r'\[[^\]]+\]', '', raw_clean).strip()
+    if '페피타' in raw_clean:
+        return '페피타 한정판'
     base = normalize_item_name(item_name or '') or (item_name or '') or '(품목미상)'
     base = re.sub(r'검수必\s*', '', base)
     base = re.sub(r'\[[^\]]+\]', '', base).strip()
@@ -3688,9 +3697,13 @@ def _promo_product_key(item_name):
     예: '[줄즈]에어2_모기장&썬커버' → '에어2', '검수必[레카로]토론1' → '토론1'.
     단, '한정판'처럼 소비자가 자체가 다른 특별 변형은 색상 변형과 똑같이 취급하면 안 된다 —
     (예: 에어2_카밍베이지_한정판은 소비자가 960,000원으로 일반 에어2(840,000원)와 다르다)
-    그래서 원본 이름에 '한정판' 표시가 있으면 정규화된 키에 그대로 남겨서 별도 제품으로 구분한다."""
+    그래서 원본 이름에 '한정판' 표시가 있으면 정규화된 키에 그대로 남겨서 별도 제품으로 구분한다.
+    '페피타'처럼 특정 섀시(예: 액시언1) 기반이지만 실제로는 별도 상품명으로 판매·공급되는 경우는
+    앞에 어떤 모델명이 붙어 있든(예: '액시언1_페피타_한정판') 그 특별판 자체로 고정해서 매칭한다."""
     raw_clean = re.sub(r'검수必\s*', '', (item_name or ''))
     raw_clean = re.sub(r'\[[^\]]+\]', '', raw_clean).strip()
+    if '페피타' in raw_clean:
+        return '페피타한정판'
     key = _display_product_name(item_name).replace(' ', '')
     if '한정판' in raw_clean and '한정판' not in key:
         key += '한정판'
@@ -3736,16 +3749,73 @@ def _load_event_rate_map(event_ids):
 
 def _lookup_promo_rate(rate_map, by_brand_keys, event_id, brand, pkey):
     """제품 키로 공급율표를 찾는다 — 정확히 일치하는 게 없으면, 같은 브랜드 안에서 한쪽이 다른 쪽의
-    앞부분과 같은 제품키를 찾아본다(세대번호·표기 차이로 인한 '토론1' vs '토론' 같은 불일치 방지)."""
+    앞부분과 같은 제품키를 찾아본다(세대번호·표기 차이로 인한 '토론1' vs '토론' 같은 불일치 방지).
+    단, '한정판'은 소비자가 자체가 다른 별개 제품이라서 — 한쪽에만 '한정판'이 붙어있으면
+    앞부분이 같아도 절대 서로 매칭하지 않는다(예: '액시언1한정판'이 '액시언1'로 잘못 매칭되면 안 됨)."""
     rc = rate_map.get((event_id, brand, pkey))
     if rc: return rc
     if not pkey: return None
     for cand in by_brand_keys.get((event_id, brand), []):
         if not cand: continue
         if cand == pkey: continue
+        if ('한정판' in pkey) != ('한정판' in cand):
+            continue
         if pkey.startswith(cand) or cand.startswith(pkey):
             return rate_map.get((event_id, brand, cand))
     return None
+
+
+def _import_rates_from_work_promotion(event_id, date_start, date_end):
+    """매장관리 플랫폼(업무 탭 > 프로모션 캘린더)에 이미 업로드해둔 공급조건 PDF/엑셀의 가격표를
+    그대로 가져와서 이 행사의 제품별 공급율표에 채워 넣는다 — 브랜드별로 따로 "행사 관리"에
+    재업로드할 필요 없이, 플랫폼에 올려둔 자료를 그대로 활용한다.
+    work_promotion.detail_json의 price_table 각 항목은 {product, consumer_price, event_price,
+    supply_price, gift} 구조이고, 여기서 supply_price=정상 공급가, event_price=행사 공급가로 본다."""
+    conn = get_db()
+    rows = conn.execute("""SELECT brand, detail_json FROM work_promotion
+        WHERE period_start!='' AND period_end!='' AND period_start<=? AND period_end>=?""",
+        (date_end, date_start)).fetchall()
+    now = datetime.now().strftime('%Y-%m-%d %H:%M')
+    imported = 0
+    for brand, detail_json in rows:
+        try:
+            price_table = json.loads(detail_json or '[]')
+        except Exception:
+            continue
+        for entry in price_table:
+            product = (entry.get('product') or '').strip()
+            normal_price = entry.get('supply_price')
+            if not product or normal_price is None:
+                continue
+            event_price = entry.get('event_price')
+            if event_price is None:
+                event_price = normal_price
+            conn.execute("""INSERT INTO promo_event_rate (event_id, brand, product_name, normal_price, event_price, note, updated_at)
+                VALUES (?,?,?,?,?,?,?)
+                ON CONFLICT(event_id, brand, product_name) DO UPDATE SET
+                normal_price=COALESCE(normal_price, excluded.normal_price),
+                event_price=COALESCE(event_price, excluded.event_price),
+                updated_at=excluded.updated_at""",
+                (event_id, brand or '(미분류)', product, normal_price, event_price,
+                 '매장관리 플랫폼에 업로드된 프로모션 자료에서 자동 반영', now))
+            imported += 1
+    conn.commit(); conn.close()
+    return imported
+
+
+@app.route("/api/promo-events/<int:event_id>/import-from-platform", methods=["POST"])
+@login_required
+def api_promo_event_import_platform(event_id):
+    """이 행사 기간과 겹치는, 플랫폼에 이미 업로드돼 있는 프로모션 가격표를 전부 가져와서 반영한다."""
+    conn = get_db()
+    ev = conn.execute("SELECT date_start, date_end FROM promo_event WHERE id=?", (event_id,)).fetchone()
+    conn.close()
+    if not ev:
+        return jsonify({'ok': False, 'msg': '행사를 찾을 수 없습니다'}), 404
+    imported = _import_rates_from_work_promotion(event_id, ev[0], ev[1])
+    if imported == 0:
+        return jsonify({'ok': False, 'msg': '겹치는 기간에 플랫폼(업무 탭 > 프로모션 캘린더)에 업로드된 가격표를 찾지 못했어요. 날짜가 이 행사 기간과 겹치는지, 가격표가 포함된 파일인지 확인해주세요.'}), 400
+    return jsonify({'ok': True, 'imported': imported})
 
 
 def _compute_promo_margins(rows, date_from='', date_to=''):
@@ -3874,6 +3944,38 @@ def api_promo_event_rates_list(event_id):
                             WHERE event_id=? ORDER BY brand, product_name""", (event_id,)).fetchall()
     conn.close()
     return jsonify({'ok': True, 'rates': [dict(r) for r in rows]})
+
+
+@app.route("/api/promo-events/<int:event_id>/missing-products")
+@login_required
+def api_promo_event_missing_products(event_id):
+    """이 행사(비고에 행사명이 찍힌 판매건들) 중, 아직 정상/행사 공급가가 등록되지 않은
+    브랜드·제품을 실제 판매수량·매출과 함께 찾아준다 — '분명 파일을 올렸는데 왜 반영이 안 됐지'
+    싶을 때, 어떤 제품이 정말 빠져 있는지 바로 확인할 수 있게 하기 위한 기능이다."""
+    conn = get_db()
+    ev = conn.execute("SELECT id, name, date_start, date_end FROM promo_event WHERE id=?", (event_id,)).fetchone()
+    if not ev:
+        conn.close()
+        return jsonify({'ok': False, 'msg': '행사를 찾을 수 없습니다'}), 404
+    rows = conn.execute("SELECT real_seller, item_name, item_group, quantity, total, note, sale_date FROM sales_data WHERE note LIKE ?",
+                         (f"%{ev['name']}%",)).fetchall()
+    registered = {(r[0], r[1]) for r in conn.execute(
+        "SELECT brand, product_name FROM promo_event_rate WHERE event_id=?", (event_id,)).fetchall()}
+    registered_keys = {(b, _promo_product_key(p)) for b, p in registered}
+    conn.close()
+
+    agg = {}
+    for r in rows:
+        brand = remap_group(r['item_group'] or '', r['item_name'] or '') or '(미분류)'
+        pkey = _promo_product_key(r['item_name'])
+        if (brand, pkey) in registered_keys:
+            continue
+        key = (brand, pkey)
+        g = agg.setdefault(key, {'brand': brand, 'product': _display_product_name(r['item_name']), 'qty': 0, 'amount': 0})
+        g['qty'] += r['quantity'] or 0
+        g['amount'] += r['total'] or 0
+    missing = sorted(agg.values(), key=lambda x: -x['amount'])
+    return jsonify({'ok': True, 'event': dict(ev), 'missing': missing})
 
 
 @app.route("/api/promo-events/<int:event_id>/rates", methods=["POST"])
@@ -4162,13 +4264,13 @@ def export_xlsx_event_report():
     period_label = f"{date_from or '전체'} ~ {date_to or '전체'}"
     ws.merge_cells(start_row=2, start_column=2, end_row=2, end_column=last_col_main)
     c = ws.cell(row=2, column=2, value=f" {keyword} 행사 판매실적 보고")
-    c.font = Font(bold=True, size=16, name=FNAME); c.alignment = ctr
+    c.font = Font(bold=True, size=16, name=FNAME, color='111827'); c.alignment = ctr
     for ci in range(2, last_col_main+1): ws.cell(row=2, column=ci).border = bdr
     ws.row_dimensions[2].height = 26.25
 
     ws.merge_cells(start_row=3, start_column=2, end_row=3, end_column=last_col_main)
     c = ws.cell(row=3, column=2, value=f"기간: {period_label}")
-    c.font = Font(size=10, name=FNAME); c.alignment = left_a
+    c.font = Font(size=10, name=FNAME, color='111827'); c.alignment = left_a
     for ci in range(2, last_col_main+1): ws.cell(row=3, column=ci).border = bdr
 
     # KPI (라벨행 4, 값행 5 — 참고 양식과 동일하게 단일 컬럼씩 배치)
@@ -4176,8 +4278,8 @@ def export_xlsx_event_report():
             ('총 판매수량', f"{total_qty:,}개"), ('판매 건수', f"{len(rows)}건")]
     for i, (label, val) in enumerate(kpis):
         ci = 2 + i
-        c = ws.cell(row=4, column=ci, value=label); c.font=Font(size=9,name=FNAME); c.fill=mf(LGRAY); c.border=bdr; c.alignment=left_a
-        c = ws.cell(row=5, column=ci, value=val); c.font=Font(size=11,name=FNAME); c.border=bdr; c.alignment=left_a
+        c = ws.cell(row=4, column=ci, value=label); c.font=Font(size=9,name=FNAME, color='111827'); c.fill=mf(LGRAY); c.border=bdr; c.alignment=left_a
+        c = ws.cell(row=5, column=ci, value=val); c.font=Font(size=11,name=FNAME, color='111827'); c.border=bdr; c.alignment=left_a
     ws.row_dimensions[4].height=18
 
     ri = 7
@@ -4187,20 +4289,20 @@ def export_xlsx_event_report():
     ws.row_dimensions[ri].height = 17.25
     ri += 1
     for ci, h in enumerate(['브랜드','제품명','판매수량','판매금액'], 2):
-        c = ws.cell(row=ri, column=ci, value=h); c.font=Font(bold=True,size=9,name=FNAME); c.fill=mf(LGRAY); c.border=bdr; c.alignment=ctr
+        c = ws.cell(row=ri, column=ci, value=h); c.font=Font(bold=True,size=9,name=FNAME, color='111827'); c.fill=mf(LGRAY); c.border=bdr; c.alignment=ctr
     ri += 1
     prev_b = None
     for p in product_rows:
         first = p['brand'] != prev_b; prev_b = p['brand']
         vals = [p['brand'] if first else '', p['item_name'], p['qty'], p['amount']]
         for ci, v in enumerate(vals, 2):
-            c = ws.cell(row=ri, column=ci, value=v); c.font=Font(bold=(ci==2 and first),size=9,name=FNAME); c.border=bdr
+            c = ws.cell(row=ri, column=ci, value=v); c.font=Font(bold=(ci==2 and first),size=9,name=FNAME,color='111827'); c.border=bdr
             c.alignment = left_a if ci<=3 else right_a
             if ci in (4,5): c.number_format='#,##0'
         ri += 1
     vals = ['합계', '', total_qty, total_amt]
     for ci, v in enumerate(vals, 2):
-        c = ws.cell(row=ri, column=ci, value=v); c.font=Font(bold=True,size=9,name=FNAME); c.border=bdr
+        c = ws.cell(row=ri, column=ci, value=v); c.font=Font(bold=True,size=9,name=FNAME, color='111827'); c.border=bdr
         c.alignment = left_a if ci<=3 else right_a
         if ci in (4,5): c.number_format='#,##0'
     ri += 2
@@ -4219,18 +4321,18 @@ def export_xlsx_event_report():
         end_ci = mci + len(prods) - 1
         if end_ci > mci:
             ws.merge_cells(start_row=ri, start_column=mci, end_row=ri, end_column=end_ci)
-        c = ws.cell(row=ri, column=mci, value=b); c.font=Font(bold=True,size=9,name=FNAME); c.alignment=ctr
+        c = ws.cell(row=ri, column=mci, value=b); c.font=Font(bold=True,size=9,name=FNAME,color='111827'); c.alignment=ctr
         for ci in range(mci, end_ci+1): ws.cell(row=ri, column=ci).border = bdr
         mci = end_ci + 1
-    ws.row_dimensions[ri].height = 17.25
+    ws.row_dimensions[ri].height = 24
     ri += 1
 
     for ci, h in enumerate(['매장명','판매수량','판매금액','매장 추가 마진','비중'], 2):
-        c = ws.cell(row=ri, column=ci, value=h); c.font=Font(bold=True,size=9,name=FNAME); c.fill=mf(LGRAY); c.border=bdr; c.alignment=ctr
+        c = ws.cell(row=ri, column=ci, value=h); c.font=Font(bold=True,size=9,name=FNAME, color='111827'); c.fill=mf(LGRAY); c.border=bdr; c.alignment=ctr
     for b in ordered_brands:
         for j, prod in enumerate(brand_products[b]):
             c = ws.cell(row=ri, column=brand_col_start[b]+j, value=prod)
-            c.font=Font(size=9,name=FNAME); c.border=bdr; c.alignment=left_a
+            c.font=Font(size=9,name=FNAME, color='111827'); c.border=bdr; c.alignment=left_a
     ri += 1
 
     for s in store_rows:
@@ -4238,7 +4340,7 @@ def export_xlsx_event_report():
         margin = s.get('extra_margin') or 0
         vals = [s['store'], s['qty'], s['amount'], (f"+{margin:,}" if margin else ''), f"{pct}%"]
         for ci, v in enumerate(vals, 2):
-            c = ws.cell(row=ri, column=ci, value=v); c.font=Font(size=9,name=FNAME); c.border=bdr
+            c = ws.cell(row=ri, column=ci, value=v); c.font=Font(size=9,name=FNAME, color='111827'); c.border=bdr
             c.alignment = left_a if ci==2 else right_a if ci<=5 else ctr
             if ci in (3,4): c.number_format='#,##0'
             if ci == 5 and margin:
@@ -4247,15 +4349,15 @@ def export_xlsx_event_report():
             for j, prod in enumerate(brand_products[b]):
                 qty = store_product_qty.get((s['store'], b, prod), 0)
                 c = ws.cell(row=ri, column=brand_col_start[b]+j, value=(qty if qty else None))
-                c.font=Font(size=9,name=FNAME); c.border=bdr; c.alignment=ctr
+                c.font=Font(size=9,name=FNAME, color='111827'); c.border=bdr; c.alignment=ctr
         ri += 1
 
     # 총합계 행
     total_margin_all = sum(s.get('extra_margin') or 0 for s in store_rows)
-    c = ws.cell(row=ri, column=2, value='총합계'); c.font=Font(bold=True,size=9,name=FNAME); c.fill=mf(LGRAY); c.border=bdr; c.alignment=left_a
+    c = ws.cell(row=ri, column=2, value='총합계'); c.font=Font(bold=True,size=9,name=FNAME, color='111827'); c.fill=mf(LGRAY); c.border=bdr; c.alignment=left_a
     tot_vals = [total_qty, total_amt, (f"+{total_margin_all:,}" if total_margin_all else ''), '100.0%']
     for ci, v in enumerate(tot_vals, 3):
-        c = ws.cell(row=ri, column=ci, value=v); c.font=Font(bold=True,size=9,name=FNAME); c.fill=mf(LGRAY); c.border=bdr
+        c = ws.cell(row=ri, column=ci, value=v); c.font=Font(bold=True,size=9,name=FNAME, color='111827'); c.fill=mf(LGRAY); c.border=bdr
         c.alignment = right_a if ci<=5 else ctr
         if ci in (3,4): c.number_format='#,##0'
         if ci==5 and total_margin_all: c.font = Font(bold=True,size=9,name=FNAME,color='DC2626')
@@ -4263,7 +4365,7 @@ def export_xlsx_event_report():
         for j, prod in enumerate(brand_products[b]):
             tot_qty_bp = sum(store_product_qty.get((s['store'], b, prod), 0) for s in store_rows)
             c = ws.cell(row=ri, column=brand_col_start[b]+j, value=(tot_qty_bp if tot_qty_bp else None))
-            c.font=Font(bold=True,size=9,name=FNAME); c.fill=mf(LGRAY); c.border=bdr; c.alignment=ctr
+            c.font=Font(bold=True,size=9,name=FNAME, color='111827'); c.fill=mf(LGRAY); c.border=bdr; c.alignment=ctr
     ri += 1
 
     ws.column_dimensions['B'].width = 24
@@ -4279,10 +4381,10 @@ def export_xlsx_event_report():
     ws_prod.column_dimensions['A'].width = 2
     ws_prod.merge_cells('B2:F2')
     c = ws_prod.cell(row=2, column=2, value=f"※ 『 {keyword} 』 브랜드별 제품 판매 상세")
-    c.font = Font(bold=True, size=13, name=FNAME); c.alignment = left_a
+    c.font = Font(bold=True, size=13, name=FNAME, color='111827'); c.alignment = left_a
     hdrs_p = ['브랜드','제품명','판매건수','판매수량','판매금액']
     for ci, h in enumerate(hdrs_p, 2):
-        c = ws_prod.cell(row=4, column=ci, value=h); c.font=Font(bold=True,size=9,name=FNAME); c.fill=mf(LGRAY); c.border=bdr; c.alignment=ctr
+        c = ws_prod.cell(row=4, column=ci, value=h); c.font=Font(bold=True,size=9,name=FNAME, color='111827'); c.fill=mf(LGRAY); c.border=bdr; c.alignment=ctr
     ri_p = 5
     prev_brand = None
     for p in product_rows:
@@ -4290,7 +4392,7 @@ def export_xlsx_event_report():
         prev_brand = p['brand']
         vals = [p['brand'] if first_in_brand else '', p['item_name'], p['cnt'], p['qty'], p['amount']]
         for ci, v in enumerate(vals, 2):
-            c = ws_prod.cell(row=ri_p, column=ci, value=v); c.font=Font(bold=(ci==2 and first_in_brand),size=9,name=FNAME); c.border=bdr
+            c = ws_prod.cell(row=ri_p, column=ci, value=v); c.font=Font(bold=(ci==2 and first_in_brand),size=9,name=FNAME,color='111827'); c.border=bdr
             c.alignment = left_a if ci in (2,3) else right_a
             if ci in (4,5,6): c.number_format='#,##0'
         ri_p += 1
@@ -4302,12 +4404,12 @@ def export_xlsx_event_report():
     ws2.column_dimensions['A'].width = 2
     hdrs2 = ['일자','매장명','품명','품목그룹','수량','단가','합계','특이사항(비고)','채널']
     for ci, h in enumerate(hdrs2, 2):
-        c = ws2.cell(row=2, column=ci, value=h); c.font=Font(bold=True,size=9,name=FNAME); c.fill=mf(LGRAY); c.border=bdr; c.alignment=ctr
+        c = ws2.cell(row=2, column=ci, value=h); c.font=Font(bold=True,size=9,name=FNAME, color='111827'); c.fill=mf(LGRAY); c.border=bdr; c.alignment=ctr
     ri2 = 3
     for r in rows:
         vals = [r['sale_date'], r['real_seller'], r['item_name'], r['item_group'], r['quantity'], r['unit_price'], r['total'], r['note'], r['channel']]
         for ci, v in enumerate(vals, 2):
-            c = ws2.cell(row=ri2, column=ci, value=v); c.font=Font(size=9,name=FNAME); c.border=bdr
+            c = ws2.cell(row=ri2, column=ci, value=v); c.font=Font(size=9,name=FNAME, color='111827'); c.border=bdr
             c.alignment = right_a if ci in (6,7,8) else left_a if ci in (3,4,9,10) else ctr
             if ci in (7,8): c.number_format='#,##0'
         ri2 += 1
@@ -4350,13 +4452,13 @@ def export_xlsx_event_report():
     ws3.merge_cells('B2:K2')
     ev_label = ', '.join(f"{e['name']}({e['date_start']}~{e['date_end']})" for e in _matched_events) or '해당 기간에 등록된 행사 없음'
     c = ws3.cell(row=2, column=2, value=f"※ 매장별 추가마진 및 공급율 할인 — 적용 행사: {ev_label}")
-    c.font = Font(bold=True, size=13, name=FNAME); c.alignment = left_a
+    c.font = Font(bold=True, size=13, name=FNAME, color='111827'); c.alignment = left_a
     ws3.merge_cells('B3:K3')
     c = ws3.cell(row=3, column=2, value="※ 추가마진 = 수량 × (정상 공급가 − 실제 공급단가, 부가세 포함 금액 기준). 행사 표준가와 다르게 공급된 경우도 실제 단가 그대로 잡혀요.")
     c.font = Font(size=9, name=FNAME, color='9CA3AF'); c.alignment = left_a
     hdrs3 = ['매장명', '행사명', '브랜드', '제품명', '판매수량', '정상 공급가', '행사 기준가', '실제 공급단가', '추가마진(원)', '비고']
     for ci, h in enumerate(hdrs3, 2):
-        c = ws3.cell(row=5, column=ci, value=h); c.font = Font(bold=True, size=9, name=FNAME); c.fill = mf(LGRAY); c.border = bdr; c.alignment = ctr
+        c = ws3.cell(row=5, column=ci, value=h); c.font = Font(bold=True, size=9, name=FNAME, color='111827'); c.fill = mf(LGRAY); c.border = bdr; c.alignment = ctr
     ri3 = 6
     total_margin = 0
     for m in _margin_detail:
@@ -4366,14 +4468,14 @@ def export_xlsx_event_report():
                 (m['actual_unit_price'] if m.get('actual_unit_price') is not None else '—'),
                 (m['extra_margin'] if m['extra_margin'] is not None else 0), m['note']]
         for ci, v in enumerate(vals, 2):
-            c = ws3.cell(row=ri3, column=ci, value=v); c.font = Font(size=9, name=FNAME); c.border = bdr
+            c = ws3.cell(row=ri3, column=ci, value=v); c.font = Font(size=9, name=FNAME, color='111827'); c.border = bdr
             c.alignment = left_a if ci in (2, 3, 4, 11) else right_a if ci in (7, 8, 9, 10) else ctr
             if ci in (7, 8, 9, 10): c.number_format = '#,##0'
             if ci == 10 and m['extra_margin']:
                 c.font = Font(size=9, name=FNAME, bold=True, color='DC2626')
         if m['extra_margin']: total_margin += m['extra_margin']
         ri3 += 1
-    c = ws3.cell(row=ri3, column=2, value='합계'); c.font = Font(bold=True, size=9, name=FNAME); c.fill = mf(LGRAY); c.border = bdr
+    c = ws3.cell(row=ri3, column=2, value='합계'); c.font = Font(bold=True, size=9, name=FNAME, color='111827'); c.fill = mf(LGRAY); c.border = bdr
     ws3.merge_cells(start_row=ri3, start_column=2, end_row=ri3, end_column=9)
     c = ws3.cell(row=ri3, column=10, value=total_margin); c.font = Font(bold=True, size=9, name=FNAME, color='DC2626'); c.number_format = '#,##0'; c.border = bdr; c.alignment = right_a
     for ci, w in zip(range(2, 12), [22, 16, 12, 20, 10, 13, 13, 13, 13, 44]):
@@ -11435,7 +11537,7 @@ def api_export_work_xlsx():
     ctr  = Alignment(horizontal='center', vertical='center', wrap_text=True)
     left = Alignment(horizontal='left', vertical='center', wrap_text=True)
     rgt  = Alignment(horizontal='right', vertical='center')
-    HDR = mf('F3F4F6'); BRAND_FILL = mf('EEF2FF'); TOTAL_FILL = mf('F9FAFB')
+    HDR = mf('F3F4F6'); BRAND_FILL = mf('F3F4F6'); TOTAL_FILL = mf('F9FAFB')
 
     wb = openpyxl.Workbook()
     mgr_label = manager or '전체'
@@ -11459,7 +11561,7 @@ def api_export_work_xlsx():
 
     def _num(ws, row, col, val, bold=False, fill=None):
         c = ws.cell(row=row, column=col, value=val)
-        c.number_format = '#,##0'; c.font = Font(size=9, name=FNAME, bold=bold); c.border = bdr; c.alignment = rgt
+        c.number_format = '#,##0'; c.font = Font(size=9, name=FNAME, bold=bold, color='111827'); c.border = bdr; c.alignment = rgt
         if fill: c.fill = fill
         return c
 
@@ -11468,7 +11570,7 @@ def api_export_work_xlsx():
         t_ref = f"{get_column_letter(target_col)}{row}"; a_ref = f"{get_column_letter(actual_col)}{row}"
         c = ws.cell(row=row, column=col, value=f"=IFERROR({a_ref}/{t_ref},0)")
         c.number_format = '0.0%'; c.border = bdr; c.alignment = ctr
-        c.font = _rate_font(rate_for_color or 0, bold) if rate_for_color is not None else Font(size=9, name=FNAME)
+        c.font = _rate_font(rate_for_color or 0, bold) if rate_for_color is not None else Font(size=9, name=FNAME, color='111827')
         if fill: c.fill = fill
         return c
 
@@ -11477,7 +11579,7 @@ def api_export_work_xlsx():
         letter = get_column_letter(col)
         refs = ','.join(f"{letter}{r}" for r in row_refs)
         c = ws.cell(row=row, column=col, value=(f"=SUM({refs})" if row_refs else 0))
-        c.number_format = '#,##0'; c.font = Font(size=9, name=FNAME, bold=bold); c.border = bdr; c.alignment = rgt
+        c.number_format = '#,##0'; c.font = Font(size=9, name=FNAME, bold=bold, color='111827'); c.border = bdr; c.alignment = rgt
         if fill: c.fill = fill
         return c
 
@@ -11490,12 +11592,12 @@ def api_export_work_xlsx():
     kpi_data = _work_kpi_data(year, month, manager)
     ri = 4
     for it in kpi_data['items']:
-        c = ws1.cell(row=ri, column=2, value=it['label']); c.font = Font(size=9, name=FNAME); c.border = bdr; c.alignment = left
-        c = ws1.cell(row=ri, column=3, value=it['target']); c.font = Font(size=9, name=FNAME); c.border = bdr; c.alignment = ctr; c.number_format = f'#,##0"{it["unit"]}"'
-        c = ws1.cell(row=ri, column=4, value=it['actual']); c.font = Font(size=9, name=FNAME); c.border = bdr; c.alignment = ctr; c.number_format = f'#,##0"{it["unit"]}"'
+        c = ws1.cell(row=ri, column=2, value=it['label']); c.font = Font(size=9, name=FNAME, color='111827'); c.border = bdr; c.alignment = left
+        c = ws1.cell(row=ri, column=3, value=it['target']); c.font = Font(size=9, name=FNAME, color='111827'); c.border = bdr; c.alignment = ctr; c.number_format = f'#,##0"{it["unit"]}"'
+        c = ws1.cell(row=ri, column=4, value=it['actual']); c.font = Font(size=9, name=FNAME, color='111827'); c.border = bdr; c.alignment = ctr; c.number_format = f'#,##0"{it["unit"]}"'
         _pct_formula(ws1, ri, 5, 3, 4, it['rate'])
         c = ws1.cell(row=ri, column=6, value=(f"{'+' if it['delta']>=0 else ''}{it['delta']}" if it['delta'] else '-'))
-        c.font = Font(size=9, name=FNAME); c.border = bdr; c.alignment = ctr
+        c.font = Font(size=9, name=FNAME, color='111827'); c.border = bdr; c.alignment = ctr
         ri += 1
     for ci, w in zip(range(2, 7), [20, 14, 14, 12, 12]):
         ws1.column_dimensions[get_column_letter(ci)].width = w
@@ -11517,18 +11619,18 @@ def api_export_work_xlsx():
         return prev_total, target, actual, cum_t
     for b in data:
         pt, tg, ac, ct = _annual_vals(b)
-        c = ws2.cell(row=ri, column=2, value=b['brand']); c.font = Font(size=10, name=FNAME, bold=True); c.fill = BRAND_FILL; c.border = bdr; c.alignment = left
+        c = ws2.cell(row=ri, column=2, value=b['brand']); c.font = Font(size=10, name=FNAME, bold=True, color='111827'); c.fill = BRAND_FILL; c.border = bdr; c.alignment = left
         _num(ws2, ri, 3, pt, True, BRAND_FILL); _num(ws2, ri, 4, tg, True, BRAND_FILL); _num(ws2, ri, 5, ac, True, BRAND_FILL)
         _pct_formula(ws2, ri, 6, 4, 5, _rate(ac, tg), True, BRAND_FILL)
         _num(ws2, ri, 7, ct, True, BRAND_FILL); _pct_formula(ws2, ri, 8, 7, 5, _rate(ac, ct), True, BRAND_FILL)
         brand_rows2.append(ri); ri += 1
         for p in b['products']:
             pt, tg, ac, ct = _annual_vals(p)
-            c = ws2.cell(row=ri, column=2, value=f"   └ {p['name']}"); c.font = Font(size=9, name=FNAME); c.border = bdr; c.alignment = left
+            c = ws2.cell(row=ri, column=2, value=f"   └ {p['name']}"); c.font = Font(size=9, name=FNAME, color='111827'); c.border = bdr; c.alignment = left
             _num(ws2, ri, 3, pt); _num(ws2, ri, 4, tg); _num(ws2, ri, 5, ac)
             _pct_formula(ws2, ri, 6, 4, 5, _rate(ac, tg)); _num(ws2, ri, 7, ct); _pct_formula(ws2, ri, 8, 7, 5, _rate(ac, ct))
             ri += 1
-    c = ws2.cell(row=ri, column=2, value='합계'); c.font = Font(size=10, name=FNAME, bold=True); c.fill = TOTAL_FILL; c.border = bdr
+    c = ws2.cell(row=ri, column=2, value='합계'); c.font = Font(size=10, name=FNAME, bold=True, color='111827'); c.fill = TOTAL_FILL; c.border = bdr
     _sum_formula(ws2, ri, 3, brand_rows2, True, TOTAL_FILL); _sum_formula(ws2, ri, 4, brand_rows2, True, TOTAL_FILL)
     _sum_formula(ws2, ri, 5, brand_rows2, True, TOTAL_FILL)
     grand_ac = sum(_annual_vals(b)[2] for b in data); grand_tg = sum(_annual_vals(b)[1] for b in data); grand_ct = sum(_annual_vals(b)[3] for b in data)
@@ -11566,7 +11668,7 @@ def api_export_work_xlsx():
     def _write_row3(ri, row, is_brand):
         fill = BRAND_FILL if is_brand else None
         c = ws3.cell(row=ri, column=2, value=row['name'] if is_brand else f"   └ {row['name']}")
-        c.font = Font(size=10 if is_brand else 9, name=FNAME, bold=is_brand); c.border = bdr; c.alignment = left
+        c.font = Font(size=10 if is_brand else 9, name=FNAME, bold=is_brand, color='111827'); c.border = bdr; c.alignment = left
         if fill: c.fill = fill
         for md in row['months']:
             c0 = 3 + (md['month'] - 1) * 3
@@ -11585,7 +11687,7 @@ def api_export_work_xlsx():
         _write_row3(ri, br, True); brand_rows3.append(ri); ri += 1
         for pr in br['products']:
             _write_row3(ri, pr, False); ri += 1
-    c = ws3.cell(row=ri, column=2, value='합계'); c.font = Font(size=10, name=FNAME, bold=True); c.fill = TOTAL_FILL; c.border = bdr
+    c = ws3.cell(row=ri, column=2, value='합계'); c.font = Font(size=10, name=FNAME, bold=True, color='111827'); c.fill = TOTAL_FILL; c.border = bdr
     for m in range(1, 13):
         c0 = 3 + (m - 1) * 3
         _sum_formula(ws3, ri, c0, brand_rows3, True, TOTAL_FILL)
@@ -11631,9 +11733,9 @@ def api_export_work_xlsx():
     def _write_row4(ri, name, mgr_name, months, ann_t, ann_a, is_group):
         fill = BRAND_FILL if is_group else None
         c = ws4.cell(row=ri, column=2, value=name if is_group else f"   └ {name}")
-        c.font = Font(size=10 if is_group else 9, name=FNAME, bold=is_group); c.border = bdr; c.alignment = left
+        c.font = Font(size=10 if is_group else 9, name=FNAME, bold=is_group, color='111827'); c.border = bdr; c.alignment = left
         if fill: c.fill = fill
-        c = ws4.cell(row=ri, column=3, value=mgr_name or ''); c.font = Font(size=9, name=FNAME); c.border = bdr; c.alignment = ctr
+        c = ws4.cell(row=ri, column=3, value=mgr_name or ''); c.font = Font(size=9, name=FNAME, color='111827'); c.border = bdr; c.alignment = ctr
         if fill: c.fill = fill
         for md in months:
             c0 = 4 + (md['month'] - 1) * 3
@@ -11662,7 +11764,7 @@ def api_export_work_xlsx():
         for s in grp['stores']:
             _write_row4(ri, s['name'], s.get('manager', ''), s['months'], s['annual_target'], s['ytd_actual'], False)
             ri += 1
-    c = ws4.cell(row=ri, column=2, value='총 합계'); c.font = Font(size=10, name=FNAME, bold=True); c.fill = TOTAL_FILL; c.border = bdr
+    c = ws4.cell(row=ri, column=2, value='총 합계'); c.font = Font(size=10, name=FNAME, bold=True, color='111827'); c.fill = TOTAL_FILL; c.border = bdr
     c = ws4.cell(row=ri, column=3, value=''); c.border = bdr; c.fill = TOTAL_FILL
     for m in range(1, 13):
         c0 = 4 + (m - 1) * 3
@@ -11691,9 +11793,9 @@ def api_export_work_xlsx():
     raw_rows = _work_raw_summary(year, manager)
     ri = 5
     for r in raw_rows:
-        c = ws5.cell(row=ri, column=2, value=r['ym']); c.font = Font(size=9, name=FNAME); c.border = bdr; c.alignment = ctr
-        c = ws5.cell(row=ri, column=3, value=r['store']); c.font = Font(size=9, name=FNAME); c.border = bdr; c.alignment = left
-        c = ws5.cell(row=ri, column=4, value=r['brand']); c.font = Font(size=9, name=FNAME); c.border = bdr; c.alignment = ctr
+        c = ws5.cell(row=ri, column=2, value=r['ym']); c.font = Font(size=9, name=FNAME, color='111827'); c.border = bdr; c.alignment = ctr
+        c = ws5.cell(row=ri, column=3, value=r['store']); c.font = Font(size=9, name=FNAME, color='111827'); c.border = bdr; c.alignment = left
+        c = ws5.cell(row=ri, column=4, value=r['brand']); c.font = Font(size=9, name=FNAME, color='111827'); c.border = bdr; c.alignment = ctr
         _num(ws5, ri, 5, r['cnt']); _num(ws5, ri, 6, r['qty']); _num(ws5, ri, 7, r['total'])
         ri += 1
     ws5.column_dimensions['B'].width = 10
