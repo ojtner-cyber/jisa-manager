@@ -7104,13 +7104,125 @@ def _restore_raw_data_sheets(wb, conn, year, months_needed=None, seller_filter='
     return sheet_names, info
 
 
-def _extract_single_sheet_xlsx_b64(src_ws):
-    """특정 시트 하나를 서식 그대로 유지한 채 독립된 xlsx 파일(base64)로 추출"""
+def _extract_rich_value_cell_images(xlsx_bytes):
+    """엑셀 최신 기능인 '셀에 그림 삽입'(그림을 셀 안에 직접 넣는 방식 — 일반적인 '그림 삽입'과 달리
+    openpyxl이 전혀 읽지 못함)으로 들어간 이미지를 시트별로 추출한다.
+    이런 셀은 캐시된 값이 문자 그대로 "#VALUE!"라서, 일반적인 서식 복사로는 그림이 사라지고
+    #VALUE! 텍스트만 남는다 — "브랜드별 매출 비율"/"월별 판매 추이" 등이 안 보이는 원인.
+    xlsx 내부 구조: 셀의 vm 속성(1부터 시작, 워크북 전체에서 공유되는 번호) →
+    xl/metadata.xml의 valueMetadata 목록(순서) → xl/richData/rdrichvalue.xml의 rv 목록(richValueRel 내 위치) →
+    xl/richData/richValueRel.xml의 관계 id 목록(순서) → xl/richData/_rels/richValueRel.xml.rels → 실제 이미지 경로
+    반환: {시트이름: [(셀주소, 이미지bytes, 병합범위 or None), ...]}"""
+    import zipfile, re as _re_rv, os as _os_rv
+    result = {}
+    try:
+        z = zipfile.ZipFile(io.BytesIO(xlsx_bytes))
+        names = set(z.namelist())
+        if 'xl/metadata.xml' not in names or 'xl/richData/rdrichvalue.xml' not in names:
+            return result  # 이 기능을 쓰지 않은 파일 — 해당 없음
+
+        wb_xml = z.read('xl/workbook.xml').decode('utf-8', 'replace')
+        sheet_rids = dict(_re_rv.findall(r'<sheet[^>]*name="([^"]*)"[^>]*r:id="([^"]*)"', wb_xml))
+
+        rels_xml = z.read('xl/_rels/workbook.xml.rels').decode('utf-8', 'replace')
+        rid_targets = dict(_re_rv.findall(r'<Relationship Id="([^"]*)"[^>]*Target="([^"]*)"', rels_xml))
+
+        meta_xml = z.read('xl/metadata.xml').decode('utf-8', 'replace')
+        bk_list = _re_rv.findall(r'<bk><rc t="1" v="(\d+)"/></bk>', meta_xml)
+
+        rv_xml = z.read('xl/richData/rdrichvalue.xml').decode('utf-8', 'replace')
+        rv_list = _re_rv.findall(r'<rv[^>]*><v>(\d+)</v>', rv_xml)
+
+        rvrel_xml = z.read('xl/richData/richValueRel.xml').decode('utf-8', 'replace')
+        rel_ids = _re_rv.findall(r'<rel r:id="([^"]*)"/>', rvrel_xml)
+
+        rvrel_rels_xml = z.read('xl/richData/_rels/richValueRel.xml.rels').decode('utf-8', 'replace')
+        img_targets = dict(_re_rv.findall(r'<Relationship Id="([^"]*)"[^>]*Target="([^"]*)"', rvrel_rels_xml))
+
+        def _vm_to_image_bytes(vm):
+            idx = vm - 1
+            if idx < 0 or idx >= len(bk_list): return None
+            rv_idx = int(bk_list[idx])
+            if rv_idx < 0 or rv_idx >= len(rv_list): return None
+            rel_pos = int(rv_list[rv_idx])
+            if rel_pos < 0 or rel_pos >= len(rel_ids): return None
+            rid = rel_ids[rel_pos]
+            target = img_targets.get(rid)
+            if not target: return None
+            img_path = _os_rv.path.normpath(_os_rv.path.join('xl/richData', target)).replace('\\', '/')
+            if img_path not in names: return None
+            return z.read(img_path)
+
+        for sheet_name, rid in sheet_rids.items():
+            target = rid_targets.get(rid)
+            if not target: continue
+            sheet_path = target if target.startswith('xl/') else ('xl/' + target)
+            if sheet_path not in names: continue
+            sheet_xml = z.read(sheet_path).decode('utf-8', 'replace')
+            merges = {}
+            for ref in _re_rv.findall(r'<mergeCell ref="([^"]*)"/>', sheet_xml):
+                merges[ref.split(':')[0]] = ref
+            cells = []
+            for m in _re_rv.finditer(r'<c r="([A-Z]+\d+)"[^>]*\bvm="(\d+)"[^>]*(?:/>|>.*?</c>)', sheet_xml):
+                cell_ref, vm = m.group(1), int(m.group(2))
+                img_bytes = _vm_to_image_bytes(vm)
+                if img_bytes:
+                    cells.append((cell_ref, img_bytes, merges.get(cell_ref)))
+            if cells:
+                result[sheet_name] = cells
+    except Exception:
+        pass
+    return result
+
+
+def _inject_rich_value_images(dst_ws, rv_cells):
+    """_extract_rich_value_cell_images가 찾아낸 '셀에 삽입된 그림'을 일반 플로팅 이미지로
+    해당 셀(병합범위가 있으면 그 범위 전체를 채우도록) 자리에 넣고, 밑에 깔려있던
+    "#VALUE!" 캐시 텍스트는 지운다."""
+    if not rv_cells:
+        return
+    from openpyxl.drawing.image import Image as _XLImage
+    from openpyxl.drawing.spreadsheet_drawing import TwoCellAnchor, AnchorMarker
+    from openpyxl.utils.cell import range_boundaries, coordinate_from_string, column_index_from_string
+    for cell_ref, img_bytes, merge_range in rv_cells:
+        try:
+            img = _XLImage(io.BytesIO(img_bytes))
+            if merge_range:
+                min_col, min_row, max_col, max_row = range_boundaries(merge_range)
+            else:
+                col_letter, row_idx = coordinate_from_string(cell_ref)
+                min_col = column_index_from_string(col_letter); min_row = row_idx
+                max_col, max_row = min_col + 1, min_row + 1
+            anchor = TwoCellAnchor(editAs='oneCell')
+            anchor._from = AnchorMarker(col=min_col - 1, row=min_row - 1, colOff=0, rowOff=0)
+            anchor.to = AnchorMarker(col=max_col, row=max_row, colOff=0, rowOff=0)
+            img.anchor = anchor
+            dst_ws.add_image(img)
+            # 그림 밑에 깔려 있던 #VALUE! 캐시 텍스트 제거
+            # (ws.cell(..., value=None)은 openpyxl에서 "값 변경 안 함"으로 처리되는 무동작이므로
+            #  반드시 셀 객체를 얻은 뒤 .value를 직접 대입해야 실제로 지워진다)
+            col_letter, row_idx = coordinate_from_string(cell_ref)
+            target_cell = dst_ws.cell(row=row_idx, column=column_index_from_string(col_letter))
+            target_cell.value = None
+        except Exception:
+            pass
+
+
+def _extract_single_sheet_xlsx_b64(src_ws, raw_bytes=None):
+    """특정 시트 하나를 서식 그대로 유지한 채 독립된 xlsx 파일(base64)로 추출.
+    raw_bytes(원본 업로드 파일 전체)가 주어지면, '셀에 삽입된 그림'(openpyxl이 못 읽는 최신 기능)도
+    함께 찾아서 일반 그림으로 바꿔 넣는다."""
     import base64
     new_wb = openpyxl.Workbook()
     new_ws = new_wb.active
     new_ws.title = (src_ws.title or 'Sheet1')[:31]
     _copy_sheet_with_style(src_ws, new_ws)
+    if raw_bytes:
+        try:
+            rv_map = _extract_rich_value_cell_images(raw_bytes)
+            _inject_rich_value_images(new_ws, rv_map.get(src_ws.title, []))
+        except Exception:
+            pass
     buf = io.BytesIO()
     new_wb.save(buf)
     return base64.b64encode(buf.getvalue()).decode('ascii')
@@ -7311,7 +7423,7 @@ def api_visit_report_upload():
     inserted, updated, skipped = 0, 0, 0
     errors = []
 
-    def _process_workbook(wb, fname):
+    def _process_workbook(wb, fname, raw_file_bytes=None):
         nonlocal inserted, updated, skipped
         for sh_name in wb.sheetnames:
             if sh_name.strip() in ('매장별 방문현황',):
@@ -7326,7 +7438,7 @@ def api_visit_report_upload():
                 skipped += 1
                 continue
             try:
-                raw_xlsx_b64 = _extract_single_sheet_xlsx_b64(ws)
+                raw_xlsx_b64 = _extract_single_sheet_xlsx_b64(ws, raw_bytes=raw_file_bytes)
             except Exception as e:
                 raw_xlsx_b64 = ''
                 errors.append(f"{fname}/{sh_name} 서식 저장 실패: {e}")
@@ -7375,12 +7487,12 @@ def api_visit_report_upload():
                         inner_data = z.read(inner_name)
                         try:
                             wb = openpyxl.load_workbook(io.BytesIO(inner_data), data_only=True)
-                            _process_workbook(wb, inner_name)
+                            _process_workbook(wb, inner_name, raw_file_bytes=inner_data)
                         except Exception as e:
                             errors.append(f"{inner_name}: {e}")
             else:
                 wb = openpyxl.load_workbook(io.BytesIO(data), data_only=True)
-                _process_workbook(wb, fname)
+                _process_workbook(wb, fname, raw_file_bytes=data)
         except Exception as e:
             errors.append(f"{fname}: {e}")
 
