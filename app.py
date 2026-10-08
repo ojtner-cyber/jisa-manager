@@ -7115,11 +7115,14 @@ def _extract_rich_value_cell_images(xlsx_bytes):
     반환: {시트이름: [(셀주소, 이미지bytes, 병합범위 or None), ...]}"""
     import zipfile, re as _re_rv, os as _os_rv
     result = {}
+    debug = result.setdefault('__debug__', [])
     try:
         z = zipfile.ZipFile(io.BytesIO(xlsx_bytes))
         names = set(z.namelist())
         if 'xl/metadata.xml' not in names or 'xl/richData/rdrichvalue.xml' not in names:
-            return result  # 이 기능을 쓰지 않은 파일 — 해당 없음
+            debug.append('richData 파트 없음(이 파일은 셀삽입그림을 안 씀) — xl/metadata.xml 있음:'
+                          f'{"xl/metadata.xml" in names}, xl/richData/rdrichvalue.xml 있음:{"xl/richData/rdrichvalue.xml" in names}')
+            return result
 
         wb_xml = z.read('xl/workbook.xml').decode('utf-8', 'replace')
         sheet_rids = dict(_re_rv.findall(r'<sheet[^>]*name="([^"]*)"[^>]*r:id="([^"]*)"', wb_xml))
@@ -7155,27 +7158,40 @@ def _extract_rich_value_cell_images(xlsx_bytes):
 
         for sheet_name, rid in sheet_rids.items():
             target = rid_targets.get(rid)
-            if not target: continue
-            sheet_path = target if target.startswith('xl/') else ('xl/' + target)
-            if sheet_path not in names: continue
+            if not target:
+                debug.append(f'[{sheet_name}] workbook.xml.rels에 관계 없음(rid={rid})'); continue
+            target = target.lstrip('/')
+            if target.startswith('xl/'):
+                sheet_path = target
+            else:
+                sheet_path = _os_rv.path.normpath(_os_rv.path.join('xl', target)).replace('\\', '/')
+            if sheet_path not in names:
+                debug.append(f'[{sheet_name}] 시트 파일 경로를 못 찾음: {sheet_path}'); continue
             sheet_xml = z.read(sheet_path).decode('utf-8', 'replace')
             merges = {}
             for ref in _re_rv.findall(r'<mergeCell ref="([^"]*)"/>', sheet_xml):
                 merges[ref.split(':')[0]] = ref
+            vm_cells_found = _re_rv.findall(r'<c r="([A-Z]+\d+)"[^>]*\bvm="(\d+)"', sheet_xml)
             cells = []
-            for m in _re_rv.finditer(r'<c r="([A-Z]+\d+)"[^>]*\bvm="(\d+)"[^>]*(?:/>|>.*?</c>)', sheet_xml):
-                cell_ref, vm = m.group(1), int(m.group(2))
+            for cell_ref, vm_s in vm_cells_found:
+                vm = int(vm_s)
                 img_bytes = _vm_to_image_bytes(vm)
                 if img_bytes:
                     cells.append((cell_ref, img_bytes, merges.get(cell_ref)))
+                else:
+                    debug.append(f'[{sheet_name}] {cell_ref} vm={vm} → 이미지 경로 해석 실패 '
+                                  f'(bk={len(bk_list)}개, rv={len(rv_list)}개, rel={len(rel_ids)}개, img_targets={len(img_targets)}개)')
+            if vm_cells_found and not cells:
+                debug.append(f'[{sheet_name}] vm 셀 {len(vm_cells_found)}개 찾았지만 이미지 0개 복원됨')
             if cells:
                 result[sheet_name] = cells
-    except Exception:
-        pass
+    except Exception as _e:
+        import traceback
+        debug.append(f'예외: {type(_e).__name__}: {_e} | {traceback.format_exc()[-500:]}')
     return result
 
 
-def _inject_rich_value_images(dst_ws, rv_cells):
+def _inject_rich_value_images(dst_ws, rv_cells, debug=None):
     """_extract_rich_value_cell_images가 찾아낸 '셀에 삽입된 그림'을 일반 플로팅 이미지로
     해당 셀(병합범위가 있으면 그 범위 전체를 채우도록) 자리에 넣고, 밑에 깔려있던
     "#VALUE!" 캐시 텍스트는 지운다."""
@@ -7185,6 +7201,9 @@ def _inject_rich_value_images(dst_ws, rv_cells):
     from openpyxl.drawing.spreadsheet_drawing import TwoCellAnchor, AnchorMarker
     from openpyxl.utils.cell import range_boundaries, coordinate_from_string, column_index_from_string
     for cell_ref, img_bytes, merge_range in rv_cells:
+        placed = False
+        # 1차: 병합범위 전체를 채우는 TwoCellAnchor (openpyxl 버전에 따라 생성자/속성이 다를 수 있어
+        # 여러 방식을 순서대로 시도한다 — 하나가 실패해도 그림 자체는 포기하지 않는다)
         try:
             img = _XLImage(io.BytesIO(img_bytes))
             if merge_range:
@@ -7193,25 +7212,47 @@ def _inject_rich_value_images(dst_ws, rv_cells):
                 col_letter, row_idx = coordinate_from_string(cell_ref)
                 min_col = column_index_from_string(col_letter); min_row = row_idx
                 max_col, max_row = min_col + 1, min_row + 1
-            anchor = TwoCellAnchor(editAs='oneCell')
+            try:
+                anchor = TwoCellAnchor(editAs='oneCell')
+            except Exception:
+                anchor = TwoCellAnchor()
             anchor._from = AnchorMarker(col=min_col - 1, row=min_row - 1, colOff=0, rowOff=0)
             anchor.to = AnchorMarker(col=max_col, row=max_row, colOff=0, rowOff=0)
             img.anchor = anchor
             dst_ws.add_image(img)
+            placed = True
+        except Exception as _e:
+            if debug is not None:
+                debug.append(f'{cell_ref} 그림 삽입(1차:TwoCellAnchor) 실패: {type(_e).__name__}: {_e}')
+        # 2차 폴백: 셀 주소 하나로 단순 앵커 (병합범위에 꽉 차지는 않지만 최소한 그림은 보이게)
+        if not placed:
+            try:
+                img2 = _XLImage(io.BytesIO(img_bytes))
+                img2.anchor = cell_ref
+                dst_ws.add_image(img2)
+                placed = True
+            except Exception as _e2:
+                if debug is not None:
+                    debug.append(f'{cell_ref} 그림 삽입(2차:단순앵커) 실패: {type(_e2).__name__}: {_e2}')
+        if placed:
             # 그림 밑에 깔려 있던 #VALUE! 캐시 텍스트 제거
             # (ws.cell(..., value=None)은 openpyxl에서 "값 변경 안 함"으로 처리되는 무동작이므로
             #  반드시 셀 객체를 얻은 뒤 .value를 직접 대입해야 실제로 지워진다)
-            col_letter, row_idx = coordinate_from_string(cell_ref)
-            target_cell = dst_ws.cell(row=row_idx, column=column_index_from_string(col_letter))
-            target_cell.value = None
-        except Exception:
-            pass
+            try:
+                col_letter, row_idx = coordinate_from_string(cell_ref)
+                target_cell = dst_ws.cell(row=row_idx, column=column_index_from_string(col_letter))
+                target_cell.value = None
+            except Exception:
+                pass
+        else:
+            if debug is not None:
+                debug.append(f'{cell_ref} 그림 삽입 완전 실패 — #VALUE! 그대로 남음')
 
 
-def _extract_single_sheet_xlsx_b64(src_ws, raw_bytes=None):
+def _extract_single_sheet_xlsx_b64(src_ws, raw_bytes=None, debug_errors=None):
     """특정 시트 하나를 서식 그대로 유지한 채 독립된 xlsx 파일(base64)로 추출.
     raw_bytes(원본 업로드 파일 전체)가 주어지면, '셀에 삽입된 그림'(openpyxl이 못 읽는 최신 기능)도
-    함께 찾아서 일반 그림으로 바꿔 넣는다."""
+    함께 찾아서 일반 그림으로 바꿔 넣는다. debug_errors 리스트가 주어지면 실패 원인을 적어넣는다."""
     import base64
     new_wb = openpyxl.Workbook()
     new_ws = new_wb.active
@@ -7220,9 +7261,14 @@ def _extract_single_sheet_xlsx_b64(src_ws, raw_bytes=None):
     if raw_bytes:
         try:
             rv_map = _extract_rich_value_cell_images(raw_bytes)
-            _inject_rich_value_images(new_ws, rv_map.get(src_ws.title, []))
-        except Exception:
-            pass
+            dbg = rv_map.pop('__debug__', [])
+            if debug_errors is not None and dbg:
+                debug_errors.extend(f'[{src_ws.title}] {d}' for d in dbg)
+            _inject_rich_value_images(new_ws, rv_map.get(src_ws.title, []), debug=debug_errors)
+        except Exception as _e:
+            if debug_errors is not None:
+                import traceback
+                debug_errors.append(f'[{src_ws.title}] 셀그림 복원 예외: {type(_e).__name__}: {_e} | {traceback.format_exc()[-300:]}')
     buf = io.BytesIO()
     new_wb.save(buf)
     return base64.b64encode(buf.getvalue()).decode('ascii')
@@ -7438,7 +7484,7 @@ def api_visit_report_upload():
                 skipped += 1
                 continue
             try:
-                raw_xlsx_b64 = _extract_single_sheet_xlsx_b64(ws, raw_bytes=raw_file_bytes)
+                raw_xlsx_b64 = _extract_single_sheet_xlsx_b64(ws, raw_bytes=raw_file_bytes, debug_errors=errors)
             except Exception as e:
                 raw_xlsx_b64 = ''
                 errors.append(f"{fname}/{sh_name} 서식 저장 실패: {e}")
@@ -7498,7 +7544,7 @@ def api_visit_report_upload():
 
     conn.commit(); conn.close()
     return jsonify({'ok': True, 'inserted': inserted, 'updated': updated, 'skipped': skipped,
-                     'errors': errors[:10]})
+                     'errors': errors[:30]})
 
 
 @app.route("/api/visit-report/list")

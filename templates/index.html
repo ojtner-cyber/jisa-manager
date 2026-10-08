@@ -2499,7 +2499,10 @@ async function uploadVisitReports(e){
     const r = await resp.json();
     if(r.ok){
       toast(`업로드 완료 — 신규 ${r.inserted}건, 갱신 ${r.updated}건`);
-      if(r.errors?.length) console.warn('업로드 오류:', r.errors);
+      if(r.errors?.length){
+        console.warn('업로드 오류/진단:', r.errors);
+        alert('업로드 중 참고할 메시지가 있습니다 (그림 복원 진단 포함):\n\n' + r.errors.join('\n'));
+      }
       loadVisitReportPage();
     } else {
       toast(r.msg || '업로드에 실패했습니다', false);
