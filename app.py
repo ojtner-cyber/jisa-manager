@@ -6915,6 +6915,56 @@ def _copy_sheet_with_style(src_ws, dst_ws, value_ws=None):
         dst_ws.sheet_view.showGridLines = src_ws.sheet_view.showGridLines
     except Exception:
         pass
+    # 삽입된 그림(이미지) 복사 — "브랜드별 매출 비율"/"월별 판매 추이" 등 원본에 붙여넣은
+    # 매출 이미지가 여기 해당. 이미지는 셀 범위를 참조하지 않고 위치(anchor)만 가지므로
+    # 시트 이름이 달라져도 그대로 복사하면 된다.
+    try:
+        from copy import copy as _copy_img
+        for _img in getattr(src_ws, '_images', []):
+            try:
+                dst_ws.add_image(_copy_img(_img))
+            except Exception:
+                pass
+    except Exception:
+        pass
+    # 네이티브 엑셀 차트 복사 — 차트가 데이터를 "같은 시트"에서 참조하던 경우만
+    # 수식 문자열의 시트명을 새 시트 이름으로 바꿔줘야 한다(그대로 두면 원본 시트명이 없어서
+    # #REF!/#VALUE! 처럼 깨져 보인다). 다른 시트를 참조하던 차트는 그 시트를 복사하지 않으므로
+    # 그대로 두면 깨지지만, 적어도 자기 시트 참조 차트는 정상 표시된다.
+    try:
+        from copy import deepcopy as _deepcopy_chart
+        src_title, dst_title = src_ws.title, dst_ws.title
+        if src_title != dst_title:
+            old_q, new_q = f"'{src_title}'!", f"'{dst_title}'!"
+            def _retitle(obj, _seen=None):
+                if _seen is None: _seen = set()
+                oid = id(obj)
+                if oid in _seen: return
+                _seen.add(oid)
+                if isinstance(obj, str):
+                    return
+                if hasattr(obj, 'f') and isinstance(getattr(obj, 'f'), str) and old_q in obj.f:
+                    obj.f = obj.f.replace(old_q, new_q)
+                for attr in ('__dict__',):
+                    d = getattr(obj, attr, None)
+                    if isinstance(d, dict):
+                        for val in d.values():
+                            if isinstance(val, (list, tuple)):
+                                for it in val: _retitle(it, _seen)
+                            elif hasattr(val, '__dict__') or hasattr(val, 'f'):
+                                _retitle(val, _seen)
+        else:
+            def _retitle(obj, _seen=None):
+                pass
+        for _ch in getattr(src_ws, '_charts', []):
+            try:
+                new_ch = _deepcopy_chart(_ch)
+                _retitle(new_ch)
+                dst_ws.add_chart(new_ch)
+            except Exception:
+                pass
+    except Exception:
+        pass
 
 
 def _copy_sheet_values_fast(src_ws, dst_ws):
