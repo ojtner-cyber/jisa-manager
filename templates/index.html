@@ -1437,7 +1437,19 @@ td.center{text-align:center}
       </div>
 
       <!-- KPI -->
-      <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:12px;margin-bottom:20px" id="sns-kpi"></div>
+      <div style="display:grid;grid-template-columns:repeat(6,1fr);gap:12px;margin-bottom:20px" id="sns-kpi"></div>
+
+      <!-- 자사 제품 홍보 집계 + 인스타 조회수 TOP 게시물 -->
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:20px">
+        <div style="background:var(--paper);border-radius:var(--r-md);padding:16px;box-shadow:var(--sh-sm)">
+          <div style="font-size:13px;font-weight:700;margin-bottom:10px">🏷️ 브랜드별 인스타 노출 현황</div>
+          <div id="sns-brand-stats" style="font-size:12px;color:var(--ink-300)">로딩 중...</div>
+        </div>
+        <div style="background:var(--paper);border-radius:var(--r-md);padding:16px;box-shadow:var(--sh-sm)">
+          <div style="font-size:13px;font-weight:700;margin-bottom:10px">📈 인스타 조회수 TOP 게시물</div>
+          <div id="sns-top-posts" style="font-size:12px;color:var(--ink-300);max-height:260px;overflow-y:auto">로딩 중...</div>
+        </div>
+      </div>
 
       <!-- 메인 테이블 -->
       <div class="tw">
@@ -4418,6 +4430,33 @@ async function loadSNS(){
   snsData=rows;
   renderSNSKPI(rows);
   renderSNSTable(rows);
+  loadSNSInstaTop();
+}
+
+// 수정4: 자사 제품 홍보 비중(블로그) + 브랜드별 인스타 노출/조회수 TOP 게시물
+async function loadSNSInstaTop(){
+  const data=await api('/api/sns/insta-top?limit=15');
+  if(!data)return;
+  const brandBox=document.getElementById('sns-brand-stats');
+  const stats=data.brand_stats||[];
+  brandBox.innerHTML = stats.length
+    ? stats.map(b=>`<div style="display:flex;justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid var(--ink-50)">
+        <span style="font-weight:600;color:var(--ink-700)">${b.brand}</span>
+        <span style="color:var(--ink-400)">${b.post_count}건</span>
+        <span style="color:#C13584;font-weight:700">👁 ${(b.total_views||0).toLocaleString()}</span>
+      </div>`).join('')
+    : '<div style="text-align:center;padding:16px;color:var(--ink-200)">등록된 인스타그램 게시물이 없습니다.</div>';
+
+  const topBox=document.getElementById('sns-top-posts');
+  const posts=data.top_posts||[];
+  topBox.innerHTML = posts.length
+    ? posts.map((p,i)=>`<a href="${p.post_url}" target="_blank" rel="noopener" style="display:flex;justify-content:space-between;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid var(--ink-50);text-decoration:none;color:inherit">
+        <span style="color:var(--ink-300);font-size:11px;width:16px">${i+1}</span>
+        <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:600">${p.seller_name}</span>
+        ${p.brand?`<span style="background:#FEF9C3;color:#92400E;padding:1px 6px;border-radius:4px;font-size:9px;font-weight:700;white-space:nowrap">${p.brand}</span>`:''}
+        <span style="color:#C13584;font-weight:700;white-space:nowrap">👁 ${(p.view_count||0).toLocaleString()}</span>
+      </a>`).join('')
+    : '<div style="text-align:center;padding:16px;color:var(--ink-200)">등록된 인스타그램 게시물이 없습니다.</div>';
 }
 
 function filterSNS(){
@@ -4432,11 +4471,15 @@ function renderSNSKPI(rows){
   const gradeA=rows.filter(r=>r.blog_grade==='A').length;
   const gradeB=rows.filter(r=>r.blog_grade==='B').length;
   const totalViews=rows.reduce((s,r)=>s+(r.instagram_views||0),0);
+  // 수정4: 자사 제품 관련 내용이 전체적으로 얼마나 발행되고 있는지(블로그 홍보글 총합 + 홍보 매장 수)
+  const totalPromoPosts=rows.reduce((s,r)=>s+(r.blog_promo_count||0),0);
+  const storesWithPromo=rows.filter(r=>r.blog_promo_count>0).length;
   document.getElementById('sns-kpi').innerHTML=[
     {l:'전체 매장',v:`${total}개`,c:'var(--accent-m)'},
     {l:'분석 완료',v:`${searched}개`,c:'#0891B2'},
     {l:'30일 내 활성',v:`${active}개`,c:'#16A34A'},
     {l:'A/B등급 우수',v:`${gradeA+gradeB}개`,c:'#D97706'},
+    {l:'자사 제품 홍보글',v:`${totalPromoPosts}건 (${storesWithPromo}개 매장)`,c:'#CA8A04'},
     {l:'인스타 누적 조회수',v:totalViews.toLocaleString(),c:'#C13584'},
   ].map(k=>`<div class="kpi"><div class="kpi-accent" style="background:${k.c}"></div>
     <div class="kpi-lbl">${k.l}</div>
@@ -4520,7 +4563,7 @@ function renderSNSTable(rows){
           ? `<a href="${firstLink}" target="_blank" rel="noopener" onclick="event.stopPropagation()"
               style="color:var(--accent-m);text-decoration:none;border-bottom:1px dashed var(--accent-m)">${firstTitle} ↗</a>`
           : `<span style="color:var(--accent-m);cursor:pointer;text-decoration:underline"
-              onclick="openSNSTitleModal('${r.seller_name.replace(/'/g,"\\'")}','${(r.blog_recent_titles||'').replace(/'/g,"\\'")}','${r.blog_grade}',${r.blog_score},'${(r.blog_platform||'').replace(/'/g,"\\'")}','${(r.blog_keywords||'').replace(/'/g,"\\'")}')">${firstTitle}</span>`)
+              onclick="openSNSTitleModal('${r.seller_name.replace(/'/g,"\\'")}','${(r.blog_recent_titles||'').replace(/'/g,"\\'")}','${(r.blog_recent_links||'').replace(/'/g,"\\'")}','${r.blog_grade}',${r.blog_score},'${(r.blog_platform||'').replace(/'/g,"\\'")}','${(r.blog_keywords||'').replace(/'/g,"\\'")}')">${firstTitle}</span>`)
       : '<span style="color:var(--ink-200)">—</span>';
 
     return`<tr>
@@ -4576,6 +4619,50 @@ function openPromoModal(seller, promoJson, count){
         <div style="font-size:13px;font-weight:600;color:var(--ink-800)">${p.title||'(제목 없음)'}</div>
         ${p.link?`<div style="margin-top:6px"><a href="${p.link}" target="_blank" style="color:var(--accent-m);font-size:11px">포스팅 보기 →</a></div>`:''}
       </div>`).join('');
+  }
+  m.style.display='flex';
+}
+
+// 수정6: "최근 포스팅 제목" 클릭 시(원문 링크가 없는 경우) 최근 글 전체 목록을 보여주는 상세 모달
+function openSNSTitleModal(seller, titlesStr, linksStr, grade, score, platform, keywords){
+  const titles = (titlesStr||'').split(' | ').filter(Boolean);
+  const links  = (linksStr||'').split(' | ');
+  let m=document.getElementById('sns-title-modal');
+  if(!m){
+    m=document.createElement('div');
+    m.id='sns-title-modal';
+    m.style.cssText='display:none;position:fixed;inset:0;background:rgba(0,0,0,.4);z-index:1000;align-items:center;justify-content:center';
+    m.innerHTML=`<div style="background:var(--paper);border-radius:var(--r-lg);padding:24px;width:min(540px,95vw);max-height:80vh;overflow-y:auto;box-shadow:0 24px 60px rgba(0,0,0,.3)">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+        <div>
+          <div style="font-size:14px;font-weight:700" id="sns-title-modal-seller"></div>
+          <div style="font-size:12px;color:var(--ink-400);margin-top:2px">최근 포스팅 목록</div>
+        </div>
+        <button onclick="document.getElementById('sns-title-modal').style.display='none'" style="background:none;border:none;cursor:pointer;font-size:18px;color:var(--ink-300)">✕</button>
+      </div>
+      <div id="sns-title-modal-meta" style="font-size:11px;color:var(--ink-300);margin-bottom:14px"></div>
+      <div id="sns-title-modal-body"></div>
+    </div>`;
+    document.body.appendChild(m);
+  }
+  document.getElementById('sns-title-modal-seller').textContent=`${seller} — 블로그·SNS 최근 글`;
+  const metaParts=[];
+  if(grade)metaParts.push(`${grade}등급 (${score||0}점)`);
+  if(platform)metaParts.push(platform);
+  if(keywords)metaParts.push(`키워드: ${keywords}`);
+  document.getElementById('sns-title-modal-meta').textContent=metaParts.join(' · ')||'';
+  const body=document.getElementById('sns-title-modal-body');
+  if(!titles.length){
+    body.innerHTML='<div style="text-align:center;padding:30px;color:var(--ink-300)">포스팅 상세 정보가 없습니다.<br>재분석 시 자동으로 수집됩니다.</div>';
+  } else {
+    body.innerHTML=titles.map((t,i)=>{
+      const link=links[i]||'';
+      return `<div style="border:1px solid var(--ink-100);border-radius:var(--r-md);padding:12px;margin-bottom:8px">
+        <div style="font-size:13px;font-weight:600;color:var(--ink-800)">${t}</div>
+        ${link?`<div style="margin-top:6px"><a href="${link}" target="_blank" rel="noopener" style="color:var(--accent-m);font-size:11px">포스팅 보기 →</a></div>`
+              :'<div style="margin-top:6px;font-size:11px;color:var(--ink-300)">원문 링크 없음</div>'}
+      </div>`;
+    }).join('');
   }
   m.style.display='flex';
 }

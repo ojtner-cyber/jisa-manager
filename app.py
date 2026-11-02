@@ -4045,23 +4045,55 @@ def api_promo_event_rates_upload(event_id):
         conn2.commit(); conn2.close()
         inserted += 1
 
+    def _norm_h(s):
+        """헤더 셀 텍스트 정규화 — 공백/개행을 모두 없애서 '정상 공급율'/'정상공급율' 같은 표기 차이를 흡수"""
+        return re.sub(r'\s+', '', str(s or ''))
+
+    def _num(v):
+        if v in (None, ''): return None
+        s = re.sub(r'\s+', '', str(v)).replace(',', '').replace('%', '')
+        if not s: return None
+        try: return float(s)
+        except Exception: return None
+
     if filename.endswith(('.xlsx', '.xls')):
         wb = _load_workbook_resilient(data)
         if wb is None:
             return jsonify({'ok': False, 'msg': '엑셀 파일을 읽을 수 없습니다'}), 400
         ws = wb[wb.sheetnames[0]]
         header_row = None; col_map = {}
-        for ri in range(1, min(6, ws.max_row + 1)):
-            vals = {str(ws.cell(ri, ci).value).strip(): ci for ci in range(1, ws.max_column + 1) if ws.cell(ri, ci).value}
-            if any(k in vals for k in ('제품명', '상품명')):
-                header_row = ri
-                col_map = {'brand': vals.get('브랜드'), 'product': vals.get('제품명') or vals.get('상품명'),
-                           'normal': vals.get('정상공급율') or vals.get('정상 공급율'),
-                           'event': vals.get('행사공급율') or vals.get('행사 공급율'),
-                           'normal_price': vals.get('정상공급가') or vals.get('정상 공급가격') or vals.get('정상공급가격'),
-                           'event_price': vals.get('행사공급가') or vals.get('행사 공급가격') or vals.get('행사공급가격'),
-                           'note': vals.get('비고')}
-                break
+        for ri in range(1, min(8, ws.max_row + 1)):
+            row_vals = {ci: _norm_h(ws.cell(ri, ci).value) for ci in range(1, ws.max_column + 1) if ws.cell(ri, ci).value}
+            if not any(v in ('제품명', '상품명') for v in row_vals.values()):
+                continue
+            def _find_col(*keys):
+                for ci, v in row_vals.items():
+                    if v in keys: return ci
+                return None
+            product_col = _find_col('제품명', '상품명')
+            normal_rate_col = _find_col('정상공급율')
+            event_rate_col  = _find_col('행사공급율')
+            normal_price_col = _find_col('정상공급가', '정상공급가격')
+            event_price_col  = _find_col('행사공급가', '행사공급가격')
+            # 수정5: "정상공급조건/행사공급조건" 상위 묶음헤더 + 바로 아래 줄의 "공급율/공급가격" 하위헤더로
+            # 이뤄진 2단 헤더 표(실제 행사 안내 PDF/엑셀에서 흔히 쓰는 양식)도 인식
+            data_start = ri
+            if (normal_rate_col is None or event_rate_col is None) and ri + 1 <= ws.max_row:
+                sub_vals = {ci: _norm_h(ws.cell(ri + 1, ci).value) for ci in range(1, ws.max_column + 1) if ws.cell(ri + 1, ci).value}
+                rate_cols  = sorted(ci for ci, v in sub_vals.items() if v == '공급율')
+                price_cols = sorted(ci for ci, v in sub_vals.items() if v in ('공급가', '공급가격'))
+                if len(rate_cols) >= 2:
+                    normal_rate_col, event_rate_col = rate_cols[0], rate_cols[1]
+                    data_start = ri + 1
+                if len(price_cols) >= 2:
+                    normal_price_col, event_price_col = price_cols[0], price_cols[1]
+                    data_start = ri + 1
+            header_row = data_start
+            col_map = {'brand': _find_col('브랜드'), 'product': product_col,
+                       'normal': normal_rate_col, 'event': event_rate_col,
+                       'normal_price': normal_price_col, 'event_price': event_price_col,
+                       'note': _find_col('비고')}
+            break
         if not header_row or not col_map.get('product'):
             return jsonify({'ok': False, 'msg': '엑셀에서 "제품명"(또는 "상품명") 헤더를 찾을 수 없어요. 브랜드/제품명/정상공급율/행사공급율/정상공급가격/행사공급가격/비고 형식으로 올려주세요.'}), 400
         for ri in range(header_row + 1, ws.max_row + 1):
@@ -4069,10 +4101,7 @@ def api_promo_event_rates_upload(event_id):
             if not product: continue
             brand = str(ws.cell(ri, col_map['brand']).value or '').strip() if col_map.get('brand') else default_brand
             def _cell_f(ci):
-                if not ci: return None
-                v = ws.cell(ri, ci).value
-                try: return float(str(v).replace('%', '').replace(',', '').strip()) if v not in (None, '') else None
-                except Exception: return None
+                return _num(ws.cell(ri, ci).value) if ci else None
             _save(brand or default_brand, str(product).strip(), _cell_f(col_map.get('normal')), _cell_f(col_map.get('event')),
                   _cell_f(col_map.get('normal_price')), _cell_f(col_map.get('event_price')),
                   str(ws.cell(ri, col_map['note']).value or '').strip() if col_map.get('note') else '')
@@ -4083,26 +4112,98 @@ def api_promo_event_rates_upload(event_id):
             import pdfplumber
         except ImportError:
             return jsonify({'ok': False, 'msg': 'PDF 자동 인식 기능을 쓰려면 서버에 pdfplumber 라이브러리 설치가 필요해요(requirements.txt에 pdfplumber 추가). 엑셀(브랜드/제품명/정상공급율/행사공급율/정상공급가격/행사공급가격)로 올려주시거나, 화면에서 직접 입력해주세요.'}), 400
-        try:
-            text = ''
-            with pdfplumber.open(io.BytesIO(data)) as pdf:
+
+        _PDF_KNOWN_BRANDS = ['줄즈', '레카로', 'ABC디자인', '원더폴드', '카오스', '엔픽스', '타프토이즈']
+
+        def _extract_pdf_rate_rows(pdf_bytes):
+            """행사 안내 PDF의 표에서 구분/제품명/정상공급조건(공급율·공급가격)/행사공급조건(공급율·공급가격)/비고를 추출.
+            표 헤더가 '정상공급조건/행사공급조건' 묶음헤더 + '공급율/공급가격' 하위헤더의 2단 구조인 경우와,
+            한 줄에 바로 '정상공급율/행사공급율'이 있는 1단 구조인 경우를 모두 지원한다.
+            (수정5) pdfplumber가 일부 글꼴에서 숫자 중간에 공백을 끼워 추출하는 경우(예: '8 80,000')가 있어
+            숫자 파싱 시 공백을 전부 제거한다."""
+            rows_out = []
+            brand_detected = ''
+            with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
+                full_text = ''.join((p.extract_text() or '') + '\n' for p in pdf.pages)
+                for b in _PDF_KNOWN_BRANDS:
+                    if b in full_text:
+                        brand_detected = b
+                        break
                 for page in pdf.pages:
-                    text += (page.extract_text() or '') + '\n'
+                    for table in page.extract_tables():
+                        if len(table) < 2:
+                            continue
+                        header0 = [_norm_h(c) for c in table[0]]
+                        if not any('제품명' in h or '상품명' in h for h in header0):
+                            continue
+                        product_col  = next((i for i, h in enumerate(header0) if '제품명' in h or '상품명' in h), None)
+                        category_col = next((i for i, h in enumerate(header0) if h == '구분'), None)
+                        note_col     = next((i for i, h in enumerate(header0) if '비고' in h), None)
+                        rate_cols  = [i for i, h in enumerate(header0) if '공급율' in h]
+                        price_cols = [i for i, h in enumerate(header0) if ('공급가격' in h or h == '공급가')]
+                        data_start = 1
+                        if len(rate_cols) < 2 and len(table) > 1:
+                            header1 = [_norm_h(c) for c in table[1]]
+                            rate_cols2  = [i for i, h in enumerate(header1) if '공급율' in h]
+                            price_cols2 = [i for i, h in enumerate(header1) if ('공급가격' in h or h == '공급가')]
+                            if rate_cols2 or price_cols2:
+                                rate_cols, price_cols, data_start = rate_cols2, price_cols2, 2
+                        if product_col is None or len(rate_cols) < 2 or len(price_cols) < 2:
+                            continue
+                        normal_rate_col, event_rate_col   = rate_cols[0], rate_cols[1]
+                        normal_price_col, event_price_col = price_cols[0], price_cols[1]
+                        last_category = ''
+                        for row in table[data_start:]:
+                            if product_col >= len(row):
+                                continue
+                            product = (row[product_col] or '').strip()
+                            if not product or product in ('제품명', '상품명'):
+                                continue
+                            if category_col is not None and category_col < len(row) and (row[category_col] or '').strip():
+                                last_category = (row[category_col] or '').strip()
+                            def _cell(ci):
+                                return row[ci] if ci is not None and ci < len(row) else None
+                            rows_out.append({
+                                'category': last_category, 'product': product,
+                                'normal_rate': _num(_cell(normal_rate_col)), 'event_rate': _num(_cell(event_rate_col)),
+                                'normal_price': _num(_cell(normal_price_col)), 'event_price': _num(_cell(event_price_col)),
+                                'note': (_cell(note_col) or '').strip() if note_col is not None else '',
+                            })
+            return rows_out, brand_detected
+
+        try:
+            pdf_rows, brand_detected = _extract_pdf_rate_rows(data)
         except Exception as e:
             return jsonify({'ok': False, 'msg': f'PDF를 읽는 중 오류가 났어요: {e}'}), 400
-        # "상품명 소비자가 판매가 행사판매가 정상율% 정상공급가 행사율% 행사공급가" 형태의 줄에서
-        # 상품명 + 정상율/행사율 + 정상/행사 공급가격까지 함께 뽑아낸다
-        pattern = re.compile(
-            r'^([가-힣A-Za-z0-9_\s]+?)\s+[\d,]+\s+[\d,]+\s+[\d,]+\s+(\d{2,3})%\s+([\d,]+)\s+(\d{2,3})%\s+([\d,]+)', re.M)
-        for m in pattern.finditer(text):
-            product = m.group(1).strip()
-            if len(product) < 2 or product in ('상품명', '제품명'): continue
-            normal_price = float(m.group(3).replace(',', ''))
-            event_price = float(m.group(5).replace(',', ''))
-            _save(default_brand, product, float(m.group(2)), float(m.group(4)), normal_price, event_price)
+
+        brand_to_use = default_brand or brand_detected
+        for r in pdf_rows:
+            _save(brand_to_use, r['product'], r['normal_rate'], r['event_rate'],
+                  r['normal_price'], r['event_price'], r['note'])
+
+        if inserted == 0:
+            # 표 추출이 실패한 PDF(표 괘선이 없는 등)를 위한 최후 수단 — 텍스트 한 줄에
+            # "상품명 소비자가 판매가 행사판매가 정상율% 정상공급가 행사율% 행사공급가"가 그대로 나열된 경우만 인식
+            try:
+                text = ''
+                with pdfplumber.open(io.BytesIO(data)) as pdf:
+                    for page in pdf.pages:
+                        text += (page.extract_text() or '') + '\n'
+                pattern = re.compile(
+                    r'^([가-힣A-Za-z0-9_\s]+?)\s+[\d,]+\s+[\d,]+\s+[\d,]+\s+(\d{2,3})%\s+([\d,]+)\s+(\d{2,3})%\s+([\d,]+)', re.M)
+                for m in pattern.finditer(text):
+                    product = m.group(1).strip()
+                    if len(product) < 2 or product in ('상품명', '제품명'): continue
+                    normal_price = float(m.group(3).replace(',', ''))
+                    event_price = float(m.group(5).replace(',', ''))
+                    _save(default_brand or brand_detected, product, float(m.group(2)), float(m.group(4)), normal_price, event_price)
+            except Exception:
+                pass
+
         if inserted == 0:
             return jsonify({'ok': False, 'msg': 'PDF에서 표를 자동으로 읽지 못했어요. 화면에서 직접 입력하거나 엑셀로 정리해서 올려주세요.'}), 400
-        return jsonify({'ok': True, 'inserted': inserted, 'msg': f'{inserted}개 제품을 인식했어요 — 브랜드/수치가 맞는지 꼭 확인해주세요.'})
+        return jsonify({'ok': True, 'inserted': inserted, 'brand': brand_to_use,
+                         'msg': f'{inserted}개 제품을 인식했어요' + (f' (브랜드: {brand_to_use})' if brand_to_use else '') + ' — 수치가 맞는지 꼭 확인해주세요.'})
 
     return jsonify({'ok': False, 'msg': '엑셀(.xlsx) 또는 PDF 파일만 지원해요'}), 400
 
@@ -9117,7 +9218,34 @@ def api_sns_search():
     own_blog_url_map = {}
     for r in conn_insta.execute("SELECT seller_name, blog_url FROM sns_info WHERE blog_url!=''").fetchall():
         own_blog_url_map[r[0]] = r[1]
+    # 수정5: 판매처 관리(branches)에 등록된 주소 — 매장명만으로 특정이 어려운 글도
+    # "그 지역에서 발행된 자사 제품 글"로 보강 매칭할 수 있도록 지역(구/동/로 등) 힌트를 뽑아둔다.
+    addr_by_norm_name = {}
+    for r in conn_insta.execute("SELECT name, address FROM branches WHERE address IS NOT NULL AND address!=''").fetchall():
+        nm = (r[0] or '').replace(' ', '')
+        if nm:
+            addr_by_norm_name[nm] = r[1]
     conn_insta.close()
+
+    def _find_branch_address(seller_name):
+        """매장명으로 branches.address 를 찾는다 — 별칭/통합 규칙까지 고려."""
+        cand = resolve_seller(seller_name).replace(' ', '')
+        if cand in addr_by_norm_name:
+            return addr_by_norm_name[cand]
+        seller_norm = (seller_name or '').replace(' ', '')
+        for canon, aliases in STORE_MERGE_RULES.items():
+            canon_norm = canon.replace(' ', '')
+            alias_norms = [a.replace(' ', '') for a in aliases]
+            if seller_norm in ([canon_norm] + alias_norms) or cand in ([canon_norm] + alias_norms):
+                return addr_by_norm_name.get(canon_norm, '')
+        return ''
+
+    def _address_area_tokens(addr):
+        """주소에서 '구/동/읍/면/로/길' 등 지역을 특정할 수 있는 토큰만 추출 (시/도 단위는 너무 광범위해 제외)."""
+        if not addr:
+            return []
+        toks = re.findall(r'[가-힣]{2,}(?:구|동|읍|면|로|길)\b', addr)
+        return toks[-2:]  # 가장 세부적인 단위(보통 동/로 + 그 앞 구) 위주로 최대 2개
 
     for seller in sellers[:50]:
         res = {'seller_name': seller, 'ok': False, 'error': '',
@@ -9128,8 +9256,7 @@ def api_sns_search():
         try:
             clean = seller.replace('_', ' ').strip()
             d = naver_blog(clean, 20, 'date')
-            total = d.get('total', 0)
-            items = d.get('items', [])
+            raw_items = d.get('items', [])
 
             # 수정: 인스타그램 게시물을 더 적극적으로 포착하기 위한 전용 검색 (webkr에 instagram.com 도메인 힌트 추가)
             try:
@@ -9137,9 +9264,46 @@ def api_sns_search():
                 for item in insta_d.get('items', []):
                     if 'instagram.com' in item.get('link',''):
                         item['_source'] = 'webkr'
-                        items.append(item)
+                        raw_items.append(item)
             except Exception:
                 pass
+
+            # 수정5: 매장 주소(지역) 기반 보조 검색 — 매장명만으로는 잡히지 않는 글도
+            # "주소 지역명 + 매장명" 쿼리로 추가 탐색해 커버리지를 넓힌다.
+            branch_address = _find_branch_address(seller)
+            area_tokens = _address_area_tokens(branch_address)
+            if area_tokens:
+                try:
+                    addr_d = naver_blog(f'{clean} {area_tokens[-1]}', 10, 'date')
+                    existing_links = {i.get('link','') for i in raw_items}
+                    for item in addr_d.get('items', []):
+                        if item.get('link','') not in existing_links:
+                            raw_items.append(item)
+                            existing_links.add(item.get('link',''))
+                except Exception:
+                    pass
+
+            # 수정4: 매장명과 실제 관련 있는 게시물만 남기기
+            # — 네이버 검색은 매장명으로 검색해도 전혀 무관한 글(같은 단어가 들어간 다른 가게·뉴스·일반 게시물 등)을
+            #   섞어 반환하는 경우가 많아, "최근 포스팅 제목"에 전혀 다른 내용이 끼는 원인이 됐다.
+            #   제목+본문(공백 제거)에 매장명을 이루는 핵심 토큰이 전부 포함된 글만 "이 매장 관련 글"로 신뢰한다.
+            #   (수정5) 매장명이 정확히 등장하지 않아도, 등록된 주소의 지역 토큰(구/동/로 등)과
+            #   자사 브랜드/제품 키워드가 함께 나오면 "그 지역 매장에서 발행된 자사 제품 글"로 보고 인정한다.
+            seller_tokens = [t for t in re.split(r'\s+', clean) if len(t) >= 2]
+            def _is_relevant(it):
+                text = strip_tags(it.get('title', '')) + ' ' + strip_tags(it.get('description', ''))
+                text_ns = text.replace(' ', '')
+                if seller_tokens and all(tok.replace(' ', '') in text_ns for tok in seller_tokens):
+                    return True
+                if area_tokens and any(a in text for a in area_tokens):
+                    if any(b in text for b in OUR_BRANDS) or any(k in text for k in PRODUCT_KEYWORDS):
+                        return True
+                return not seller_tokens
+            items = [i for i in raw_items if _is_relevant(i)]
+            # 총 게시글 수도 네이버가 돌려주는(전혀 무관한 글까지 포함된) 추정치 대신,
+            # 실제로 이 매장과 관련 있다고 확인된 글의 개수를 사용 — 화면에 "총 N건"으로 그대로 노출되는 값이라
+            # 정확도가 특히 중요함.
+            total = len(items)
 
             # 수정1: 인스타그램 프로필(계정) 링크 탐지 — /p/, /reel/, /stories/ 등 게시물 링크가 아닌
             # 프로필 URL(instagram.com/계정명/) 패턴을 찾아 매장 인스타 계정으로 저장
@@ -9393,6 +9557,31 @@ def api_sns_list():
     return jsonify(result)
 
 
+@app.route("/api/sns/insta-top")
+@login_required
+def api_sns_insta_top():
+    """수정4: 인스타그램 조회수 TOP 게시물 — 자사 제품이 어떤 게시물에서 많이 노출됐는지 파악용"""
+    limit = request.args.get('limit', 15, type=int)
+    brand = request.args.get('brand', '').strip()
+    conn = get_db()
+    q = """SELECT seller_name, post_url, brand, product_name, post_type, view_count, posted_date, campaign_name
+           FROM instagram_post WHERE view_count IS NOT NULL"""
+    params = []
+    if brand:
+        q += " AND brand=?"
+        params.append(brand)
+    q += " ORDER BY view_count DESC LIMIT ?"
+    params.append(limit)
+    rows = [dict(r) for r in conn.execute(q, params).fetchall()]
+
+    # 브랜드별 인스타 집계 (건수/누적 조회수) — 어떤 브랜드가 얼마나 노출되는지 한눈에
+    brand_stats = [dict(r) for r in conn.execute(
+        """SELECT brand, COUNT(*) as post_count, SUM(COALESCE(view_count,0)) as total_views
+           FROM instagram_post WHERE brand!='' GROUP BY brand ORDER BY total_views DESC""").fetchall()]
+    conn.close()
+    return jsonify({'ok': True, 'top_posts': rows, 'brand_stats': brand_stats})
+
+
 # ── 인스타그램 피드/릴스 인증 & 가산점 API ────────────────────────
 OUR_BRAND_LIST = ['엔픽스','줄즈','레카로','원더폴드','카오스','ABC디자인','타프토이즈']
 
@@ -9546,11 +9735,31 @@ def api_instagram_upload():
     if seller_col is None:
         return jsonify({'ok': False, 'msg': '매장명 컬럼을 찾을 수 없습니다'}), 400
 
-    # 참여/URL/조회수 컬럼 그룹(회차) 자동 탐지
+    # 브랜드명 정규화용 — 헤더에 "ABC 디자인"처럼 띄어쓰기가 있어도 목록과 맞춰본다
+    _KNOWN_BRANDS = ['줄즈','레카로','ABC디자인','원더폴드','카오스','엔픽스','타프토이즈']
+    def _norm_brand(s):
+        s2 = (s or '').replace(' ', '')
+        for b in _KNOWN_BRANDS:
+            if b == s2 or b in s2:
+                return b
+        return s or ''
+
+    # 헤더 행의 병합셀(브랜드명이 블록 첫 칸에만 있고 나머지는 None)을 앞 값으로 채워서
+    # "URL 다음 칸 조회수" 형태의 블록이 몇 번째 칸에 있든 브랜드명을 찾을 수 있게 한다
+    header_filled = list(header)
+    last_val = ''
+    for ci in range(seller_col+1, max_col):
+        if hv(header_filled, ci):
+            last_val = hv(header_filled, ci)
+        else:
+            header_filled[ci] = last_val
+
+    # 참여/URL/조회수 컬럼 그룹(회차) 자동 탐지 — 형식이 여러 가지라 순서대로 시도한다
     rounds = []
     consumed = set()
     for ci in range(seller_col+1, max_col):
         if ci in consumed: continue
+        # 1) "참여(O)" 표시 컬럼이 있는 구버전 형식
         if hv(subheader, ci) == '참여':
             participate_col = ci
             url_col = ci+1
@@ -9559,13 +9768,21 @@ def api_instagram_upload():
                 if hv(header, vc) == '조회수':
                     view_col = vc; break
             rounds.append({'label': hv(header, ci) or f'{len(rounds)+1}차',
-                            'participate_col': participate_col, 'url_col': url_col, 'view_col': view_col})
+                            'brand': '', 'participate_col': participate_col, 'url_col': url_col, 'view_col': view_col})
             consumed.update([participate_col, url_col])
             if view_col: consumed.add(view_col)
+        # 2) 브랜드명이 헤더 행에, "URL"/"조회수"가 그 아래 서브헤더 행에 바로 붙어있는 형식
+        #    (예: "거래처별 리스트" — 레카로/ABC디자인 등 브랜드별 URL+조회수 블록이 반복됨)
+        elif hv(subheader, ci) == 'URL' and ci+1 < max_col and hv(subheader, ci+1) == '조회수':
+            brand = _norm_brand(hv(header_filled, ci))
+            rounds.append({'label': brand or f'{len(rounds)+1}차', 'brand': brand,
+                            'participate_col': None, 'url_col': ci, 'view_col': ci+1})
+            consumed.update([ci, ci+1])
+        # 3) 헤더 행에 바로 "조회수"가 있고 바로 앞 칸이 URL인 구버전 형식
         elif hv(header, ci) == '조회수' and ci not in consumed:
             url_col = ci-1
             if url_col not in consumed and url_col > seller_col:
-                rounds.append({'label': hv(header, url_col) or f'{len(rounds)+1}차',
+                rounds.append({'label': hv(header, url_col) or f'{len(rounds)+1}차', 'brand': '',
                                 'participate_col': None, 'url_col': url_col, 'view_col': ci})
                 consumed.update([url_col, ci])
 
@@ -9618,13 +9835,14 @@ def api_instagram_upload():
                 elif '릴스' in view_raw_text: post_type = '릴스'
 
             score = 8 if post_type == '릴스' else 5
+            row_brand = rnd.get('brand') or brand_guess
 
             try:
                 conn.execute("""INSERT INTO instagram_post
                     (seller_name, post_url, post_type, brand, product_name, score, note,
                      registered_by, posted_date, created_at, view_count, view_count_raw, campaign_name)
                     VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                    (seller_norm, url_str, post_type, brand_guess, product_guess, score,
+                    (seller_norm, url_str, post_type, row_brand, product_guess, score,
                      f"{rnd['label']} 협업" + (f' — {note}' if note else ''),
                      registered_by, now[:10], now, view_count, view_raw_text, campaign_name))
                 conn.commit()
