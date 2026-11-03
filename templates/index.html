@@ -615,9 +615,13 @@ td.center{text-align:center}
       <div id="sales-event-view" style="display:none">
         <div style="background:var(--paper);border:1px solid var(--border);border-radius:12px;padding:16px;margin-bottom:16px">
           <div style="font-size:12.5px;font-weight:700;color:var(--t-700);margin-bottom:8px">🔍 특이사항(비고) 키워드로 행사 실적 검색</div>
-          <div style="font-size:11px;color:var(--t-400);margin-bottom:10px">기초 판매현황의 특이사항(비고)란에 적힌 내용으로 검색해요. 예: "브랜드위크", "레드닷" — 해당 키워드가 들어간 판매 건만 모아 브랜드별·매장별로 정리해드려요.</div>
+          <div style="font-size:11px;color:var(--t-400);margin-bottom:10px">"행사 관리"에 등록해둔 행사를 선택하면, 그 행사에 등록한 정확한 비고 표기로만 매칭해서 같은 날 겹치는 다른 행사(다른 브랜드)가 섞이지 않아요. 등록된 행사가 없거나 자유 검색이 필요하면 키워드를 직접 입력해도 돼요.</div>
           <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
-            <input class="fi" type="text" id="event-keyword" placeholder="예: 브랜드위크" style="width:200px" onkeydown="if(event.key==='Enter')loadEventSales()">
+            <select class="fi" id="event-picker" style="width:260px" onchange="onEventPickerChange()">
+              <option value="">— 등록된 행사에서 선택 —</option>
+            </select>
+            <span style="font-size:11px;color:var(--t-400)">또는 키워드</span>
+            <input class="fi" type="text" id="event-keyword" placeholder="예: 브랜드위크" style="width:160px" onkeydown="if(event.key==='Enter')loadEventSales()" oninput="document.getElementById('event-picker').value=''">
             <span style="font-size:11px;color:var(--t-400)">기간</span>
             <input class="fi" type="date" id="event-date-from">
             <span style="color:var(--t-300)">~</span>
@@ -2419,7 +2423,7 @@ async function downloadVrSelectedStores(){
 function renderVrCard(r){
   const col = VR_BRAND_COLOR[r.brand] || '#6B7280';
   const catCount = Object.keys(r.content||{}).length;
-  const reqCount = (r.requests||[]).length;
+  const hasAction = !!(r.action_item && r.action_item.trim());
   const km = r.keyword_match;
   return `<div onclick="openVrDetail(${r.id})"
     style="background:var(--paper);border:1px solid ${km&&km.field?'var(--p)':'var(--border)'};border-radius:10px;padding:14px;cursor:pointer;transition:.15s"
@@ -2435,7 +2439,7 @@ function renderVrCard(r){
     </div>` : ''}
     <div style="display:flex;gap:6px;flex-wrap:wrap">
       ${catCount?`<span style="font-size:10px;background:var(--bg);color:var(--t-500);padding:2px 7px;border-radius:5px">주요내용 ${catCount}개</span>`:''}
-      ${reqCount?`<span style="font-size:10px;background:#FEF3C7;color:#D97706;padding:2px 7px;border-radius:5px;font-weight:700">요청 ${reqCount}건</span>`:''}
+      ${hasAction?`<span style="font-size:10px;background:#FEF3C7;color:#D97706;padding:2px 7px;border-radius:5px;font-weight:700">조치사항 있음</span>`:''}
     </div>
   </div>`;
 }
@@ -2484,8 +2488,13 @@ async function openVrDetail(rid){
   }
 
   if(r.followup_text){
-    html += `<div style="font-size:12.5px;font-weight:800;color:var(--t-900);margin:16px 0 10px">📌 타사 프로모션 및 후속조치</div>
+    html += `<div style="font-size:12.5px;font-weight:800;color:var(--t-900);margin:16px 0 10px">📌 타사 동향</div>
       <div style="font-size:12px;color:var(--t-700);line-height:1.7;white-space:pre-wrap;background:var(--bg);border-radius:8px;padding:10px 12px">${r.followup_text}</div>`;
+  }
+
+  if(r.action_item){
+    html += `<div style="font-size:12.5px;font-weight:800;color:var(--t-900);margin:16px 0 10px">✅ 조치사항·후속</div>
+      <div style="font-size:12px;color:var(--t-700);line-height:1.7;white-space:pre-wrap;background:var(--bg);border-radius:8px;padding:10px 12px">${r.action_item}</div>`;
   }
 
   html += `<div style="display:flex;justify-content:flex-end;margin-top:20px">
@@ -5644,18 +5653,38 @@ function switchSalesTab(tab){
   if(drBar) drBar.style.display = tab==='weekly' ? 'flex' : 'none';
   if(tab==='trend') { loadTrendData(); document.getElementById('raw-file-status-banner').style.display='none'; }
   else if(tab==='ranking') { renderRanking(); document.getElementById('raw-file-status-banner').style.display='none'; }
-  else if(tab==='event') { document.getElementById('raw-file-status-banner').style.display='none'; }
+  else if(tab==='event') { document.getElementById('raw-file-status-banner').style.display='none'; loadEventPicker(); }
   else loadSalesPage();
 }
 
+let evRegisteredEvents = [];
+
+async function loadEventPicker(){
+  const r = await api('/api/promo-events');
+  evRegisteredEvents = r?.events || [];
+  const sel = document.getElementById('event-picker');
+  const cur = sel.value;
+  sel.innerHTML = `<option value="">— 등록된 행사에서 선택 —</option>` +
+    evRegisteredEvents.map(e => `<option value="${e.id}">${e.name} (${e.date_start}${e.date_start!==e.date_end?' ~ '+e.date_end:''})${e.note_tags?' ✓':''}</option>`).join('');
+  sel.value = cur;
+}
+
+function onEventPickerChange(){
+  const sel = document.getElementById('event-picker');
+  if(sel.value) document.getElementById('event-keyword').value = '';
+  loadEventSales();
+}
+
 async function loadEventSales(){
+  const eventId = document.getElementById('event-picker').value;
   const keyword = document.getElementById('event-keyword').value.trim();
   const dateFrom = document.getElementById('event-date-from').value;
   const dateTo = document.getElementById('event-date-to').value;
   const el = document.getElementById('event-sales-result');
-  if(!keyword){ toast('검색할 키워드를 입력해주세요', false); return; }
+  if(!eventId && !keyword){ toast('행사를 선택하거나 검색할 키워드를 입력해주세요', false); return; }
   el.innerHTML = `<div style="text-align:center;padding:30px;color:var(--t-300);font-size:12px">검색 중...</div>`;
-  const params = new URLSearchParams({keyword});
+  const params = new URLSearchParams();
+  if(eventId) params.set('event_id', eventId); else params.set('keyword', keyword);
   if(dateFrom) params.set('date_from', dateFrom);
   if(dateTo) params.set('date_to', dateTo);
   const r = await api(`/api/sales/event-search?${params}`);
@@ -5664,8 +5693,12 @@ async function loadEventSales(){
     return;
   }
   const s = r.summary;
+  const evMeta = eventId ? evRegisteredEvents.find(e=>String(e.id)===String(eventId)) : null;
+  const warnHtml = (evMeta && !evMeta.note_tags)
+    ? `<div style="background:#FFFBEB;border:1px solid #FDE68A;border-radius:10px;padding:10px 14px;margin-bottom:12px;font-size:11.5px;color:#92400E">⚠ 이 행사는 아직 "비고 표기 분류"가 등록되지 않아서 행사명 전체로만 매칭해요. 같은 기간에 겹치는 다른 행사가 있다면 "행사 관리"에서 정확한 비고 표기를 등록해주는 게 좋아요.</div>`
+    : '';
   if(!s.row_count){
-    el.innerHTML = `<div style="text-align:center;padding:40px;color:var(--t-300);font-size:12px">"${keyword}"가 포함된 특이사항(비고)의 판매 건이 없어요</div>`;
+    el.innerHTML = warnHtml + `<div style="text-align:center;padding:40px;color:var(--t-300);font-size:12px">"${r.keyword}"${evMeta&&evMeta.note_tags?' 비고 표기':''}가 포함된 특이사항(비고)의 판매 건이 없어요</div>`;
     return;
   }
   el.innerHTML = `
@@ -5775,10 +5808,10 @@ async function loadPromoEventList(){
     return;
   }
   list.innerHTML = r.events.map(e=>`
-    <div onclick="openPromoEventDetail(${e.id}, '${e.name.replace(/'/g,"\\'")}', '${e.date_start}', '${e.date_end}')"
+    <div onclick="openPromoEventDetail(${e.id}, '${e.name.replace(/'/g,"\\'")}', '${e.date_start}', '${e.date_end}', '${(e.note_tags||'').replace(/'/g,"\\'").replace(/\n/g,'\\n')}')"
       style="display:flex;justify-content:space-between;align-items:center;padding:10px 12px;background:var(--bg);border-radius:8px;cursor:pointer">
       <div>
-        <div style="font-size:12.5px;font-weight:700;color:var(--t-800)">${e.name}</div>
+        <div style="font-size:12.5px;font-weight:700;color:var(--t-800)">${e.name}${e.note_tags?' <span style="color:var(--p);font-weight:600">✓ 비고 등록됨</span>':''}</div>
         <div style="font-size:11px;color:var(--t-400)">${e.date_start} ~ ${e.date_end} · 제품 ${e.product_count}개 등록됨</div>
       </div>
       <button onclick="event.stopPropagation();deletePromoEvent(${e.id})" style="background:none;border:none;color:var(--red);cursor:pointer;font-size:11px">삭제</button>
@@ -5793,7 +5826,7 @@ async function createPromoEvent(){
   const r = await api('/api/promo-events', {method:'POST', body:{name, date_start, date_end}});
   if(r?.ok){
     toast(`"${name}" 행사를 만들었어요`);
-    openPromoEventDetail(r.id, name, date_start, date_end);
+    openPromoEventDetail(r.id, name, date_start, date_end, '');
   }
 }
 
@@ -5810,15 +5843,30 @@ function closePromoEventDetail(){
   loadPromoEventList();
 }
 
-async function openPromoEventDetail(id, name, dateStart, dateEnd){
+async function openPromoEventDetail(id, name, dateStart, dateEnd, noteTags){
   promoCurrentEventId = id;
   document.getElementById('promo-event-list-view').style.display = 'none';
   document.getElementById('promo-event-new-form').style.display = 'none';
   document.getElementById('promo-event-detail-view').style.display = 'block';
+  const ntVal = (noteTags||'').replace(/\\n/g,'\n');
   document.getElementById('promo-event-detail-header').innerHTML =
-    `<div style="font-size:13px;font-weight:800;color:var(--t-800)">${name}</div><div style="font-size:11px;color:var(--t-400)">${dateStart} ~ ${dateEnd}</div>`;
+    `<div style="font-size:13px;font-weight:800;color:var(--t-800)">${name}</div><div style="font-size:11px;color:var(--t-400);margin-bottom:10px">${dateStart} ~ ${dateEnd}</div>
+    <div style="background:var(--bg);border-radius:10px;padding:10px 12px">
+      <div style="font-size:11.5px;font-weight:700;color:var(--t-700);margin-bottom:4px">비고(특이사항) 표기 분류</div>
+      <div style="font-size:10.5px;color:var(--t-400);margin-bottom:6px">판매 데이터의 비고란에 이 행사가 실제로 어떤 글자로 표기되는지 적어주세요. 여러 표기가 있다면 줄바꿈으로 구분해주세요. (예: 레카로행사). 등록해두면 "행사별 실적"에서 같은 날 겹치는 다른 행사와 섞이지 않고 정확하게 매칭돼요.</div>
+      <textarea id="pe-note-tags" rows="2" placeholder="예: 레카로행사" style="width:100%;border:1px solid var(--border-md);border-radius:6px;padding:6px 8px;font-size:11.5px;resize:vertical">${ntVal.replace(/</g,'&lt;')}</textarea>
+      <button onclick="savePromoEventNoteTags()" class="btn btn-dark btn-sm" style="margin-top:6px">저장</button>
+    </div>`;
   await loadPromoRateRows();
   await loadPromoMissingProducts();
+}
+
+async function savePromoEventNoteTags(){
+  if(!promoCurrentEventId) return;
+  const note_tags = document.getElementById('pe-note-tags').value.trim();
+  const r = await api(`/api/promo-events/${promoCurrentEventId}/note-tags`, {method:'POST', body:{note_tags}});
+  if(r?.ok){ toast('비고 표기 분류를 저장했어요'); loadEventPicker(); }
+  else toast(r?.msg || '저장에 실패했습니다', false);
 }
 
 async function loadPromoMissingProducts(){
@@ -5922,11 +5970,13 @@ async function uploadPromoRateFile(){
 }
 
 function downloadEventReport(){
+  const eventId = document.getElementById('event-picker').value;
   const keyword = document.getElementById('event-keyword').value.trim();
   const dateFrom = document.getElementById('event-date-from').value;
   const dateTo = document.getElementById('event-date-to').value;
-  if(!keyword){ toast('검색할 키워드를 먼저 입력해주세요', false); return; }
-  const params = new URLSearchParams({keyword});
+  if(!eventId && !keyword){ toast('행사를 선택하거나 검색할 키워드를 먼저 입력해주세요', false); return; }
+  const params = new URLSearchParams();
+  if(eventId) params.set('event_id', eventId); else params.set('keyword', keyword);
   if(dateFrom) params.set('date_from', dateFrom);
   if(dateTo) params.set('date_to', dateTo);
   window.open(`/api/export/xlsx/event-report?${params}`, '_blank');

@@ -530,6 +530,31 @@ def init_db():
     except Exception:
         pass
 
+    # 행사(비고) 표기 분류 — 실제 기초데이터 비고란에는 행사 '전체 이름'이 아니라 "줄즈행사"처럼
+    # 축약된 태그가 찍혀 있어서, 비고 매칭이 이름 전체와 비교하면 실패하고 날짜만으로 행사를 찾는
+    # 폴백으로 빠져 같은 날 겹치는 다른 행사(다른 브랜드)까지 섞여버리는 문제가 있었다.
+    # note_tags에 실제 비고에 쓰인 정확한 표기를 등록해두면 그 표기와 정확히 일치하는 판매건만 잡는다.
+    try:
+        pe_cols = [r[1] for r in conn.execute("PRAGMA table_info(promo_event)").fetchall()]
+        if 'note_tags' not in pe_cols:
+            conn.execute("ALTER TABLE promo_event ADD COLUMN note_tags TEXT DEFAULT ''")
+    except Exception:
+        pass
+
+    # 알려주신 3개 행사의 비고 표기를 1회성으로 시딩 (이미 등록돼 있으면 건드리지 않음, idempotent)
+    _NOTE_TAG_SEEDS = [
+        ('%줄즈%', '%코엑스페어%', '2026-10-23', '줄즈행사'),
+        ('%ADAC%', '%레카로%', '2026-10-23', '레카로행사'),
+        ('%줄즈%', '%레카로%', '2026-10-23', '줄레행사'),
+    ]
+    try:
+        for name_like1, name_like2, dstart, tag in _NOTE_TAG_SEEDS:
+            conn.execute("""UPDATE promo_event SET note_tags=?
+                WHERE name LIKE ? AND name LIKE ? AND date_start=? AND (note_tags IS NULL OR note_tags='')""",
+                (tag, name_like1, name_like2, dstart))
+    except Exception:
+        pass
+
     # '추석위크'(2026-09-18~27) 행사 4개 브랜드 공급조건 PDF를 근거로 한 초기값 —
     # 같은 브랜드라도 할인이 적용된 제품과 안 된 제품이 섞여 있어 제품 단위로 넣었다.
     # 제품명은 실제 판매현황에 찍히는 모델명 그대로 맞췄다(레카로는 '토론1'/'액시언1'/'제논1'처럼
@@ -1610,6 +1635,8 @@ STORE_MERGE_RULES = {
                             '베이비하우스울산점', '울산 베이비하우스_용품', '울산 베이비하우스 용품'],
     '베이비하우스 안동점': ['에뜨와 안동점', '에뜨와 안동', '에뜨와안동점', '에뜨와_안동점', '베이비하우스 안동', '베이비하우스_안동점'],
     '베이비세븐 아산점':   ['주식회사 베이비세븐', '베이비세븐 아산', '베이비세븐_아산점'],
+    '베이비하우스 용인점': ['주식회사 디에스와이아이씨', '디에스와이아이씨', '주식회사디에스와이아이씨',
+                            '베이비하우스 용인', '베이비하우스_용인점', '베이비하우스용인점'],
 }
 
 # 새로 저장해줄 판매처 정보 (한 번만 반영 — 이후 화면에서 수정한 값은 덮어쓰지 않는다)
@@ -3793,7 +3820,7 @@ def _promo_product_key(item_name):
 def _find_promo_events(date_from='', date_to=''):
     """검색 기간과 겹치는 행사(이벤트) 목록 — 기간을 안 주면 전체 행사를 반환"""
     conn = get_db()
-    q = "SELECT id, name, date_start, date_end, note FROM promo_event"
+    q = "SELECT id, name, date_start, date_end, note, note_tags FROM promo_event"
     params = []
     if date_from or date_to:
         q += " WHERE date_start<=? AND date_end>=?"
@@ -3802,6 +3829,20 @@ def _find_promo_events(date_from='', date_to=''):
     rows = [dict(r) for r in conn.execute(q, params).fetchall()]
     conn.close()
     return rows
+
+
+def _promo_event_tags(ev):
+    """행사의 '비고 매칭용 표기' 목록 — note_tags에 등록된 정확한 표기(줄바꿈/쉼표 구분)가 있으면
+    그걸 쓰고, 없으면 예전 방식대로 행사 이름 전체를 그대로 쓴다(과거 행사와의 호환용).
+    note_tags가 등록된 행사는 '정확히 그 표기가 비고에 포함돼야만' 매칭되므로, 같은 날 겹치는
+    다른 행사(다른 브랜드)의 판매건이 날짜만 보고 잘못 섞여 들어가는 일이 없어진다."""
+    import re as _re_tags
+    raw = (ev.get('note_tags') or '').strip()
+    if raw:
+        tags = [t.strip() for t in _re_tags.split(r'[\n,]+', raw) if t.strip()]
+        if tags:
+            return tags
+    return [ev['name']] if ev.get('name') else []
 
 
 def _load_event_rate_map(event_ids):
@@ -3923,8 +3964,8 @@ def _compute_promo_margins(rows, date_from='', date_to=''):
         qty = r.get('quantity') or 0
         total_incl_vat = r.get('total') or 0   # 부가세 포함 합계 — 정상/행사 공급가(부가세 포함)와 같은 기준
 
-        by_name = [e for e in events if e['name'] and e['name'] in note_text]
-        matching_events = by_name if by_name else [e for e in events if e['date_start'] <= sale_date <= e['date_end']]
+        by_tag = [e for e in events if any(tag in note_text for tag in _promo_event_tags(e))]
+        matching_events = by_tag if by_tag else [e for e in events if e['date_start'] <= sale_date <= e['date_end']]
         if not matching_events:
             continue
         for ev in matching_events:
@@ -3981,11 +4022,29 @@ def _compute_promo_margins(rows, date_from='', date_to=''):
 def api_promo_events_list():
     """행사 목록 — 각 행사에 등록된 제품 수도 함께 내려준다"""
     conn = get_db()
-    rows = conn.execute("""SELECT e.id, e.name, e.date_start, e.date_end, e.note,
+    rows = conn.execute("""SELECT e.id, e.name, e.date_start, e.date_end, e.note, e.note_tags,
                                   (SELECT COUNT(*) FROM promo_event_rate WHERE event_id=e.id) product_count
                            FROM promo_event e ORDER BY e.date_start DESC""").fetchall()
     conn.close()
     return jsonify({'ok': True, 'events': [dict(r) for r in rows]})
+
+
+@app.route("/api/promo-events/<int:event_id>/note-tags", methods=["POST"])
+@login_required
+def api_promo_event_note_tags_save(event_id):
+    """행사의 '비고 표기 분류' 저장 — 실제 기초데이터 비고란에 찍히는 정확한 표기를 등록해두면
+    (예: 줄즈행사 / 레카로행사 / 줄레행사) 이후 모든 매칭(검색·추가마진 계산·보고서)이 이 표기와
+    정확히 일치하는 판매건만 잡는다. 같은 날 겹치는 다른 행사와 절대 섞이지 않도록 하기 위함."""
+    d = request.json or {}
+    note_tags = (d.get('note_tags') or '').strip()
+    conn = get_db()
+    ev = conn.execute("SELECT id FROM promo_event WHERE id=?", (event_id,)).fetchone()
+    if not ev:
+        conn.close()
+        return jsonify({'ok': False, 'msg': '행사를 찾을 수 없습니다'}), 404
+    conn.execute("UPDATE promo_event SET note_tags=? WHERE id=?", (note_tags, event_id))
+    conn.commit(); conn.close()
+    return jsonify({'ok': True})
 
 
 @app.route("/api/promo-events", methods=["POST"])
@@ -4033,12 +4092,15 @@ def api_promo_event_missing_products(event_id):
     브랜드·제품을 실제 판매수량·매출과 함께 찾아준다 — '분명 파일을 올렸는데 왜 반영이 안 됐지'
     싶을 때, 어떤 제품이 정말 빠져 있는지 바로 확인할 수 있게 하기 위한 기능이다."""
     conn = get_db()
-    ev = conn.execute("SELECT id, name, date_start, date_end FROM promo_event WHERE id=?", (event_id,)).fetchone()
+    ev = conn.execute("SELECT id, name, date_start, date_end, note_tags FROM promo_event WHERE id=?", (event_id,)).fetchone()
     if not ev:
         conn.close()
         return jsonify({'ok': False, 'msg': '행사를 찾을 수 없습니다'}), 404
-    rows = conn.execute("SELECT real_seller, item_name, item_group, quantity, total, note, sale_date FROM sales_data WHERE note LIKE ?",
-                         (f"%{ev['name']}%",)).fetchall()
+    ev = dict(ev)
+    tags = _promo_event_tags(ev)
+    where_clause = " OR ".join(["note LIKE ?"] * len(tags)) or "0"
+    rows = conn.execute(f"SELECT real_seller, item_name, item_group, quantity, total, note, sale_date FROM sales_data WHERE {where_clause}",
+                         [f"%{t}%" for t in tags]).fetchall()
     registered = {(r[0], r[1]) for r in conn.execute(
         "SELECT brand, product_name FROM promo_event_rate WHERE event_id=?", (event_id,)).fetchall()}
     registered_keys = {(b, _promo_product_key(p)) for b, p in registered}
@@ -4292,16 +4354,36 @@ def api_promo_event_rates_upload(event_id):
 @login_required
 def api_sales_event_search():
     """행사별 판매실적 — 기초데이터의 특이사항(비고)란에 특정 키워드가 포함된 건만 모아서 집계.
-    예: '브랜드위크'로 검색하면 비고에 '브랜드위크'가 들어간 판매건만 모아 브랜드별/매장별로 정리."""
+    예: '브랜드위크'로 검색하면 비고에 '브랜드위크'가 들어간 판매건만 모아 브랜드별/매장별로 정리.
+
+    event_id가 주어지면(화면에서 "등록된 행사에서 선택"으로 고른 경우) 자유 키워드 대신 그 행사에
+    등록된 정확한 비고 표기(note_tags)로만 매칭한다 — 같은 날 겹치는 다른 행사(다른 브랜드)가
+    섞여 들어오지 않도록 하기 위함. 등록된 표기가 없으면 예전처럼 행사 이름으로 매칭한다."""
+    event_id = request.args.get('event_id', type=int)
     keyword = request.args.get('keyword', '').strip()
     date_from = request.args.get('date_from', '').strip()
     date_to = request.args.get('date_to', '').strip()
+
+    tags_for_search = None
+    if event_id:
+        conn0 = get_db()
+        ev_row = conn0.execute("SELECT id, name, note_tags FROM promo_event WHERE id=?", (event_id,)).fetchone()
+        conn0.close()
+        if not ev_row:
+            return jsonify({'ok': False, 'msg': '행사를 찾을 수 없습니다'}), 404
+        tags_for_search = _promo_event_tags(dict(ev_row))
+        keyword = ev_row['name']  # 화면 표시/보고서 파일명용
     if not keyword:
         return jsonify({'ok': False, 'msg': '검색할 키워드(비고 내용)를 입력해주세요'}), 400
 
     conn = get_db()
-    q = "SELECT sale_date, real_seller, item_name, item_group, quantity, unit_price, total, note, channel FROM sales_data WHERE note LIKE ?"
-    params = [f"%{keyword}%"]
+    if tags_for_search:
+        where_clause = " OR ".join(["note LIKE ?"] * len(tags_for_search))
+        q = f"SELECT sale_date, real_seller, item_name, item_group, quantity, unit_price, total, note, channel FROM sales_data WHERE ({where_clause})"
+        params = [f"%{t}%" for t in tags_for_search]
+    else:
+        q = "SELECT sale_date, real_seller, item_name, item_group, quantity, unit_price, total, note, channel FROM sales_data WHERE note LIKE ?"
+        params = [f"%{keyword}%"]
     if date_from: q += " AND sale_date >= ?"; params.append(date_from)
     if date_to: q += " AND sale_date <= ?"; params.append(date_to)
     q += " ORDER BY sale_date"
@@ -4365,15 +4447,31 @@ def export_xlsx_event_report():
     매장별 실적 옆에는 브랜드별로 실제 팔린 제품들을 서브컬럼으로 나눠 매장별 판매수량까지 보여준다."""
     from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
     from openpyxl.utils import get_column_letter
+    event_id = request.args.get('event_id', type=int)
     keyword = request.args.get('keyword', '').strip()
     date_from = request.args.get('date_from', '').strip()
     date_to = request.args.get('date_to', '').strip()
+
+    tags_for_search = None
+    if event_id:
+        conn0 = get_db()
+        ev_row = conn0.execute("SELECT id, name, note_tags FROM promo_event WHERE id=?", (event_id,)).fetchone()
+        conn0.close()
+        if not ev_row:
+            return jsonify({'ok': False, 'msg': '행사를 찾을 수 없습니다'}), 404
+        tags_for_search = _promo_event_tags(dict(ev_row))
+        keyword = ev_row['name']
     if not keyword:
         return jsonify({'ok': False, 'msg': '검색할 키워드를 입력해주세요'}), 400
 
     conn = get_db()
-    q = "SELECT sale_date, real_seller, item_name, item_group, quantity, unit_price, total, note, channel FROM sales_data WHERE note LIKE ?"
-    params = [f"%{keyword}%"]
+    if tags_for_search:
+        where_clause = " OR ".join(["note LIKE ?"] * len(tags_for_search))
+        q = f"SELECT sale_date, real_seller, item_name, item_group, quantity, unit_price, total, note, channel FROM sales_data WHERE ({where_clause})"
+        params = [f"%{t}%" for t in tags_for_search]
+    else:
+        q = "SELECT sale_date, real_seller, item_name, item_group, quantity, unit_price, total, note, channel FROM sales_data WHERE note LIKE ?"
+        params = [f"%{keyword}%"]
     if date_from: q += " AND sale_date >= ?"; params.append(date_from)
     if date_to: q += " AND sale_date <= ?"; params.append(date_to)
     q += " ORDER BY sale_date, real_seller"
@@ -7653,6 +7751,40 @@ def _format_our_content(content, requests_list):
     return "\n\n".join(parts).strip()
 
 
+def _parse_our_content_categories(text):
+    """"[카테고리]\\n내용..." 형태로 저장된 자사/타사 주요내용 텍스트를
+    {카테고리: [블록텍스트, ...]} 형태로 되돌려 화면(날짜별 보기·매장카드)에서 쓸 수 있게 한다.
+    카테고리 헤더가 전혀 없는 옛날/단순 메모는 '방문내용' 한 칸으로 감싼다."""
+    text = (text or '').strip()
+    if not text:
+        return {}
+    parts = _re_visit.split(r'(?m)^\[([^\[\]]+)\]\s*$', text)
+    if len(parts) == 1:
+        return {'방문내용': [text]}
+    result = {}
+    preamble = parts[0].strip()
+    if preamble:
+        result['방문내용'] = [preamble]
+    for i in range(1, len(parts), 2):
+        header = parts[i].strip()
+        body = parts[i + 1].strip() if i + 1 < len(parts) else ''
+        if body:
+            result.setdefault(header, []).append(body)
+    return result
+
+
+def _split_out_requests(content):
+    """content 딕셔너리에 "요청사항" 카테고리(업로드분 보고서에만 존재)가 있으면
+    별도의 requests 리스트로 분리해서 반환 — (주요내용 카테고리에서 제외된 content, requests 리스트)."""
+    content = dict(content or {})
+    requests_list = []
+    for key in list(content.keys()):
+        if key.strip() == '요청사항':
+            for block in content.pop(key):
+                requests_list.extend([ln.strip() for ln in str(block).split('\n') if ln.strip()])
+    return content, requests_list
+
+
 def _upsert_visit_log(conn, *, store_name, visit_date, our_content='', competitor_trend='', action_item='',
                        manager='', author='', purpose='', contact_person='', due_date='', status='',
                        expense_type='', expense_amount=0, expense_note='', source='manual', source_report_id=None):
@@ -7685,9 +7817,13 @@ def _upsert_visit_log(conn, *, store_name, visit_date, our_content='', competito
 
 
 def _polish_visit_text(our_content, competitor_trend, action_item):
-    """보고서작성 폼에 대충 적은 방문 메모를 전문가적인 영업 보고서 문체로 다듬는다 (수정사항3).
-    기존 업로드 보고서들의 '[카테고리] / * 브랜드 / L 세부포인트' 구조와 같은 느낌으로 재구성하되,
-    사실관계는 절대 추가·왜곡하지 않고 표현·구조만 다듬는다. API 키가 없거나 호출이 실패하면
+    """보고서작성 폼에 대충 적은 방문 메모를 전문가적인 영업 보고서 문체로 다듬는다 (수정사항3·7).
+
+    수정사항7: "자사 주요내용"은 항상 [유모차]/[카시트]/[웨건]/[하이체어] 중 실제로 언급된 카테고리로만
+    묶고, 그 안에서 브랜드별로 "* 브랜드 / L 한줄요약 / 설명" 구조로 정리한다. 자사 브랜드(OUR_BRAND_LIST)가
+    아닌 경쟁사 얘기가 "자사 주요내용"에 섞여 들어와 있으면 그 부분만 걸러내 "타사 동향"으로 옮기고
+    (같은 [카테고리]/* 브랜드/L 구조로), 자사 주요내용에는 자사 브랜드 얘기만 남긴다.
+    사실관계는 절대 추가·왜곡하지 않고 표현·구조·배치만 다듬는다. API 키가 없거나 호출이 실패하면
     원문을 그대로 반환한다 — 이 함수는 저장을 절대 막지 않는다."""
     api_key = os.environ.get('ANTHROPIC_API_KEY', '')
     raw = {
@@ -7699,24 +7835,39 @@ def _polish_visit_text(our_content, competitor_trend, action_item):
         return our_content, competitor_trend, action_item
     try:
         import requests
+        our_brands = '、'.join(OUR_BRAND_LIST)
         prompt = f"""당신은 유아용품 B2B 영업사원이 매장을 방문하고 남긴 메모를 사내 보고서용 문장으로 정리하는 전문 에디터입니다.
+우리 회사(엔픽스)가 유통하는 자사 브랜드는 다음과 같습니다: {our_brands}
+이 목록에 없는 브랜드(싸이벡스, 브라이텍스, 뉴나, 시그마다이치, 비세이프 등)는 전부 "경쟁사(타사)"입니다.
+
 아래는 영업사원이 현장에서 대충 적은 방문 메모 3개 항목입니다. 각 항목을 아래 규칙에 따라 다듬어주세요.
 
 [규칙]
 1. 사실을 절대 추가하거나 과장하지 마세요. 적힌 내용만 다듬습니다. 메모에 없는 내용은 절대 만들어내지 마세요.
-2. 메모에 여러 주제(제품명/브랜드/이슈)가 섞여 있으면 "[주제]" 형태의 대괄호 제목으로 묶고, 그 아래 "* 브랜드명" 또는 "* 소주제"로 나눈 뒤,
-   각 세부 포인트는 "L 한 줄 요약"을 적고 바로 다음 줄에 두 칸 들여써서 자세한 설명 문장을 붙이는 구조로 정리하세요. 실제 예시:
+
+2. "자사 주요내용"은 반드시 아래 4개 제품 카테고리 중 실제로 언급된 것만 골라 "[카테고리]" 대괄호 제목으로 묶으세요
+   (언급 안 된 카테고리는 아예 쓰지 않습니다. 이 4개 외 다른 제목은 만들지 마세요): [유모차] [카시트] [웨건] [하이체어]
+   각 카테고리 안에서 자사 브랜드별로 "* 브랜드명"으로 나누고, 그 아래 세부 포인트마다
+   "L 한 줄 요약"을 적고 바로 다음 줄에 두 칸 들여써서 자세한 설명 문장을 붙이세요. 실제 예시:
    [카시트]
    * 레카로
    L 유격이 없음
      흔들었을 때 유격이 거의 없어 다른 카시트와 비교하며 설명하기 좋다.
-   * 싸이벡스
-   L 주니어 라인 어깨 확장 기능
-     주니어 라인이 꾸준히 판매되는 이유는 어깨 확장 기능 때문으로 보인다.
-3. 메모가 한 가지 주제뿐이거나 짧으면 억지로 카테고리를 만들지 말고, 자연스러운 완결 문장(구어체→문어체, 오탈자·비문 정리)으로만 다듬으세요.
-4. 항목이 비어 있으면 빈 문자열 그대로 두세요.
-5. 과장하거나 영업성 멘트를 추가하지 말고, 담백하고 전문적인 보고서 톤을 유지하세요.
-6. 가격, 수치, 고유명사는 메모에 적힌 그대로 유지하세요.
+   네 카테고리 중 어디에도 해당하지 않는 자사 제품/일반 매장 얘기(예: 매장 운영, 진열, 행사 등)는
+   "[기타]" 카테고리로 묶으세요.
+
+3. "자사 주요내용" 메모 안에 경쟁사(위 자사 브랜드 목록에 없는 브랜드) 얘기가 섞여 있으면,
+   그 부분은 "자사 주요내용"에서 완전히 빼내서 "타사 동향" 쪽으로 옮기세요. 옮길 때도 같은
+   "[카테고리]\\n* 브랜드명\\nL 한줄요약\\n  설명" 구조를 그대로 적용합니다. 원래 "타사 동향"에
+   이미 내용이 있었다면 그 내용 뒤에 이어서 정리하세요(겹치는 내용은 중복으로 쓰지 말고 한 번만).
+
+4. 메모가 한 가지 주제뿐이거나 매우 짧아서 억지로 카테고리를 나누기 애매하면, 카테고리 구조를
+   생략하고 자연스러운 완결 문장(구어체→문어체, 오탈자·비문 정리)으로만 다듬으세요. "조치사항·후속"
+   항목은 카테고리 구조를 적용하지 말고, 자연스러운 문장으로만 다듬으세요(체크리스트면 줄바꿈으로
+   항목만 나열).
+5. 항목이 비어 있으면(이동시킬 내용도 없다면) 빈 문자열 그대로 두세요.
+6. 과장하거나 영업성 멘트를 추가하지 말고, 담백하고 전문적인 보고서 톤을 유지하세요.
+7. 가격, 수치, 고유명사는 메모에 적힌 그대로 유지하세요.
 
 [자사 주요내용]
 {raw['자사 주요내용'] or '(없음)'}
@@ -7727,24 +7878,27 @@ def _polish_visit_text(our_content, competitor_trend, action_item):
 [조치사항·후속]
 {raw['조치사항·후속'] or '(없음)'}
 
-다음 JSON 형식으로만 답하세요 (설명 없이 JSON만, 각 값은 다듬어진 텍스트 문자열이며 항목이 원래 비어 있었다면 빈 문자열로 둡니다):
+다음 JSON 형식으로만 답하세요 (설명 없이 JSON만, 각 값은 다듬어진 텍스트 문자열이며 내용이 없으면 빈 문자열로 둡니다):
 {{"our_content": "...", "competitor_trend": "...", "action_item": "..."}}"""
         resp = requests.post(
             "https://api.anthropic.com/v1/messages",
             headers={"x-api-key": api_key, "anthropic-version": "2023-06-01", "content-type": "application/json"},
-            json={"model": "claude-sonnet-4-6", "max_tokens": 1400,
+            json={"model": "claude-sonnet-4-6", "max_tokens": 1800,
                   "messages": [{"role": "user", "content": prompt}]},
-            timeout=20,
+            timeout=25,
         )
         if resp.status_code == 200:
             data = resp.json()
             text_blocks = [b.get('text', '') for b in data.get('content', []) if b.get('type') == 'text']
             raw_json = ''.join(text_blocks).strip().replace('```json', '').replace('```', '').strip()
             parsed = json.loads(raw_json)
+            # 수정사항7: 경쟁사 내용이 자사→타사로 옮겨질 수 있으므로, 원래 해당 항목이 비어있었는지와
+            # 무관하게 AI가 돌려준 값을 그대로 신뢰한다(세 항목 모두 프롬프트에 넣었으므로 빈 값은 모델이
+            # ''로 정확히 반환하도록 규칙 5에 명시돼 있다).
             return (
-                parsed.get('our_content', our_content) if raw['자사 주요내용'] else our_content,
-                parsed.get('competitor_trend', competitor_trend) if raw['타사 동향'] else competitor_trend,
-                parsed.get('action_item', action_item) if raw['조치사항·후속'] else action_item,
+                parsed.get('our_content', our_content),
+                parsed.get('competitor_trend', competitor_trend),
+                parsed.get('action_item', action_item),
             )
     except Exception:
         pass
@@ -7844,11 +7998,12 @@ def _build_store_card_data(store_name, year=None, author_name=''):
     carried_brands = {b: sorted(ps) for b, ps in carried_brands.items()}
 
     # 방문·영업활동비 현황 (store_visit_log 자동 집계)
+    # 수정사항6: 누적 히스토리를 차례차례 볼 수 있도록 날짜 오름차순(과거→최신, 최신이 맨 아래)으로 정렬
     visit_rows = [dict(r) for r in conn.execute(
-        "SELECT * FROM store_visit_log WHERE store_name=? ORDER BY visit_date DESC, id DESC",
+        "SELECT * FROM store_visit_log WHERE store_name=? ORDER BY visit_date ASC, id ASC",
         (store_name,)).fetchall()]
     total_visits = len(visit_rows)
-    latest_visit = visit_rows[0]['visit_date'] if visit_rows else ''
+    latest_visit = visit_rows[-1]['visit_date'] if visit_rows else ''
     ongoing_actions = sum(1 for v in visit_rows if (v.get('status') or '') == '진행중')
     total_expense = sum(v.get('expense_amount') or 0 for v in visit_rows)
     cur_ym = datetime.now().strftime('%Y-%m')
@@ -7994,7 +8149,14 @@ def api_visit_report_upload():
 @app.route("/api/visit-report/list")
 @login_required
 def api_visit_report_list():
-    """방문 보고서 목록 조회 — 날짜별/매장별 필터, 정렬, 키워드 검색 지원"""
+    """방문 보고서 목록 조회 — 날짜별/매장별 필터, 정렬, 키워드 검색 지원.
+
+    수정(2026-11): store_visit_log(업로드분 + 보고서작성 수동 입력분 + 과거 마이그레이션분을 모두
+    포함하는 단일 누적 테이블)을 기준으로 조회하도록 변경했다. 예전에는 store_visit_report만 조회해서
+    "보고서작성" 화면에서 저장한 기록이 날짜별 보기·매장별 누적 현황 어디에도 나타나지 않는 문제가
+    있었다 (저장은 되는데 목록에 안 보여서 "저장이 안 된 것 같다"는 증상으로 이어짐). brand/region/
+    직원현황/매장규모처럼 store_visit_log에 없는 필드는 업로드 출처면 원본 store_visit_report에서,
+    그 외에는 판매처관리(branches)·매장현황(store_profile)에서 보조로 가져온다."""
     store = request.args.get('store', '').strip()
     brand = request.args.get('brand', '').strip()
     date_from = request.args.get('date_from', '').strip()
@@ -8003,33 +8165,49 @@ def api_visit_report_list():
     group_by = request.args.get('group_by', 'date')  # 'date' or 'store'
 
     conn = get_db()
-    q = "SELECT * FROM store_visit_report WHERE 1=1"
+    q = """SELECT
+             l.id, l.store_name, l.visit_date, l.manager, l.author, l.purpose, l.contact_person,
+             l.our_content, l.competitor_trend, l.action_item, l.due_date, l.status,
+             l.expense_type, l.expense_amount, l.expense_note, l.source, l.source_report_id,
+             COALESCE(NULLIF(sr.brand, ''),
+               (SELECT r2.brand FROM store_visit_report r2
+                  WHERE r2.store_name = l.store_name AND r2.brand != ''
+                  ORDER BY r2.visit_date DESC LIMIT 1), '') AS brand,
+             COALESCE(NULLIF(sr.region, ''), b.region, '') AS region,
+             COALESCE(sr.store_rank, '') AS store_rank,
+             COALESCE(NULLIF(sr.staff_info, ''), sp.staff_status, '') AS staff_info,
+             COALESCE(NULLIF(sr.store_size, ''), sp.store_status, '') AS store_size
+           FROM store_visit_log l
+           LEFT JOIN store_visit_report sr ON sr.id = l.source_report_id
+           LEFT JOIN branches b ON b.name = l.store_name
+           LEFT JOIN store_profile sp ON sp.store_name = l.store_name
+           WHERE 1=1"""
     params = []
-    if store: q += " AND store_name LIKE ?"; params.append(f"%{store}%")
-    if brand: q += " AND brand=?"; params.append(brand)
-    if date_from: q += " AND visit_date>=?"; params.append(date_from)
-    if date_to: q += " AND visit_date<=?"; params.append(date_to)
+    if store: q += " AND l.store_name LIKE ?"; params.append(f"%{store}%")
+    if date_from: q += " AND l.visit_date>=?"; params.append(date_from)
+    if date_to: q += " AND l.visit_date<=?"; params.append(date_to)
     if keyword:
-        # 매장명/담당자/주요내용/요청사항/후속조치/직원현황/매장규모 전체에서 검색
+        # 매장명/담당자/작성자/자사 주요내용/타사 동향/조치사항 전체에서 검색
         q += """ AND (
-            store_name LIKE ? OR manager LIKE ? OR author LIKE ?
-            OR content_json LIKE ? OR request_json LIKE ? OR followup_text LIKE ?
-            OR staff_info LIKE ? OR store_size LIKE ?
+            l.store_name LIKE ? OR l.manager LIKE ? OR l.author LIKE ?
+            OR l.our_content LIKE ? OR l.competitor_trend LIKE ? OR l.action_item LIKE ?
         )"""
         kw = f"%{keyword}%"
-        params += [kw, kw, kw, kw, kw, kw, kw, kw]
-    q += " ORDER BY visit_date DESC" if group_by == 'date' else " ORDER BY store_name, visit_date DESC"
+        params += [kw, kw, kw, kw, kw, kw]
+    q += " ORDER BY l.visit_date DESC, l.id DESC" if group_by == 'date' else " ORDER BY l.store_name, l.visit_date DESC"
     rows = [dict(r) for r in conn.execute(q, params).fetchall()]
     conn.close()
 
     for r in rows:
-        try: r['content'] = json.loads(r.get('content_json') or '{}')
-        except: r['content'] = {}
-        try: r['requests'] = json.loads(r.get('request_json') or '[]')
-        except: r['requests'] = []
+        content = _parse_our_content_categories(r.get('our_content'))
+        r['content'], r['requests'] = _split_out_requests(content)
+        r['followup_text'] = r.get('competitor_trend') or ''
         # 수정: 검색어가 어떤 항목에 매치됐는지 프론트에서 하이라이트/미리보기용으로 표시
         if keyword:
             r['keyword_match'] = _find_keyword_context(r, keyword)
+
+    if brand:
+        rows = [r for r in rows if r.get('brand') == brand]
 
     return jsonify(rows)
 
@@ -8043,7 +8221,8 @@ def _find_keyword_context(report, keyword):
         ('작성자', report.get('author', '')),
         ('직원현황', report.get('staff_info', '')),
         ('매장규모', report.get('store_size', '')),
-        ('후속조치/타사프로모션', report.get('followup_text', '')),
+        ('타사 동향', report.get('competitor_trend', '')),
+        ('조치사항·후속', report.get('action_item', '')),
     ]
     for cat, texts in (report.get('content') or {}).items():
         fields_to_check.append((f'주요내용({cat})', ' '.join(texts) if isinstance(texts, list) else str(texts)))
@@ -8219,25 +8398,47 @@ def api_visit_log_purpose_options():
 @app.route("/api/visit-report/<int:rid>")
 @login_required
 def api_visit_report_detail(rid):
-    """방문 보고서 상세 조회"""
+    """방문 보고서 상세 조회 — 날짜별 보기 카드를 클릭했을 때. 목록(api_visit_report_list)과
+    동일하게 store_visit_log 기준으로 조회한다 (id가 store_visit_log.id)."""
     conn = get_db()
-    row = conn.execute("SELECT * FROM store_visit_report WHERE id=?", (rid,)).fetchone()
+    row = conn.execute("""
+        SELECT
+          l.id, l.store_name, l.visit_date, l.manager, l.author, l.purpose, l.contact_person,
+          l.our_content, l.competitor_trend, l.action_item, l.due_date, l.status,
+          l.expense_type, l.expense_amount, l.expense_note, l.source, l.source_report_id,
+          COALESCE(NULLIF(sr.brand, ''),
+            (SELECT r2.brand FROM store_visit_report r2
+               WHERE r2.store_name = l.store_name AND r2.brand != ''
+               ORDER BY r2.visit_date DESC LIMIT 1), '') AS brand,
+          COALESCE(NULLIF(sr.region, ''), b.region, '') AS region,
+          COALESCE(sr.store_rank, '') AS store_rank,
+          COALESCE(NULLIF(sr.staff_info, ''), sp.staff_status, '') AS staff_info,
+          COALESCE(NULLIF(sr.store_size, ''), sp.store_status, '') AS store_size
+        FROM store_visit_log l
+        LEFT JOIN store_visit_report sr ON sr.id = l.source_report_id
+        LEFT JOIN branches b ON b.name = l.store_name
+        LEFT JOIN store_profile sp ON sp.store_name = l.store_name
+        WHERE l.id=?""", (rid,)).fetchone()
     conn.close()
     if not row:
         return jsonify({'ok': False, 'msg': '찾을 수 없습니다'}), 404
     r = dict(row)
-    try: r['content'] = json.loads(r.get('content_json') or '{}')
-    except: r['content'] = {}
-    try: r['requests'] = json.loads(r.get('request_json') or '[]')
-    except: r['requests'] = []
+    content = _parse_our_content_categories(r.get('our_content'))
+    r['content'], r['requests'] = _split_out_requests(content)
+    r['followup_text'] = r.get('competitor_trend') or ''
     return jsonify(r)
 
 
 @app.route("/api/visit-report/<int:rid>", methods=["DELETE"])
 @login_required
 def api_visit_report_delete(rid):
+    """날짜별 보기 카드 삭제 — store_visit_log.id 기준 (id가 upload 출처면 원본
+    store_visit_report도 함께 지워 '매장별 누적 현황'에 고아 레코드가 남지 않게 한다)."""
     conn = get_db()
-    conn.execute("DELETE FROM store_visit_report WHERE id=?", (rid,))
+    row = conn.execute("SELECT source_report_id FROM store_visit_log WHERE id=?", (rid,)).fetchone()
+    conn.execute("DELETE FROM store_visit_log WHERE id=?", (rid,))
+    if row and row[0]:
+        conn.execute("DELETE FROM store_visit_report WHERE id=?", (row[0],))
     conn.commit(); conn.close()
     return jsonify({'ok': True})
 
@@ -8444,16 +8645,22 @@ def _write_store_info_sheet(wb, ws, data, FNAME):
     from openpyxl.chart.shapes import GraphicalProperties
     from openpyxl.utils import get_column_letter
 
-    # ── 컬러 팔레트 (화면 UI와 톤을 맞춘 인디고/슬레이트 계열) ──
+    # ── 컬러 팔레트 (수정사항5: 색이 너무 다양해 어지럽다는 피드백에 따라 전체를 단색조로 단순화)
+    # 거의 모든 배경은 NAVY(포인트 1개) + LABEL_BG(옅은 회색, 소제목용) 두 가지만 쓰고,
+    # 브랜드 구분이 "꼭" 필요한 차트(브랜드별 매출 비율)에서만 화면 매장분석 카드와 동일한
+    # 브랜드 컬러를 그대로 가져와 쓴다(그래야 화면과 엑셀이 같은 브랜드=같은 색으로 보인다).
     NAVY = '1E293B'; PRIMARY = '4F46E5'; PRIMARY_LT = 'EEF2FF'
     LABEL_BG = 'F8FAFC'; BORDER_C = 'E2E8F0'; ZEBRA = 'FAFBFC'
-    BRAND_COLORS = {'줄즈': '2563EB', '레카로': '16A34A', 'ABC디자인': '7C3AED', '원더폴드': 'D97706',
-                     '카오스': 'DC2626', '엔픽스': '0891B2', '타프토이즈': '9CA3AF', '(미분류)': '94A3B8'}
+    # 화면(매장분석 카드)의 VR_SC_BRAND_COLORS와 동일한 매핑 — 브랜드별 매출 비율 차트 전용
+    BRAND_COLORS = {'줄즈': '2563EB', '카오스': 'DC2626', 'ABC디자인': '7C3AED', '원더폴드': 'D97706',
+                     '레카로': '16A34A', '엔픽스': '0891B2', '타프토이즈': '9CA3AF', '(미분류)': '94A3B8'}
     PIE_PALETTE = ['4F46E5', '0EA5E9', '16A34A', 'D97706', 'DC2626', '7C3AED', '0891B2', '94A3B8']
 
     def mf(h): return PatternFill("solid", fgColor=h)
     thin = Side(style='thin', color=BORDER_C)
+    dot = Side(style='dotted', color='CBD5E1')
     bdr  = Border(left=thin, right=thin, top=thin, bottom=thin)
+    bdr_dot = Border(left=thin, right=thin, top=dot, bottom=dot)  # 소제목 아래 본문 행 — 점선으로 가볍게 구분
     ctr  = Alignment(horizontal='center', vertical='center', wrap_text=True)
     left = Alignment(horizontal='left', vertical='center', wrap_text=True)
     left_top = Alignment(horizontal='left', vertical='top', wrap_text=True)
@@ -8489,6 +8696,7 @@ def _write_store_info_sheet(wb, ws, data, FNAME):
         ws.row_dimensions[row].height = height
 
     def label_value(label_rng, label_text, value_rng, value, bold_value=False, number_format=None):
+        # 수정사항5: 소제목(라벨) 칸만 옅은 회색 + 실선, 내용(값) 칸은 점선으로 가볍게 구분
         band(label_rng, label_text, f_label, LABEL_BG, align=left)
         ws.merge_cells(value_rng)
         c0 = value_rng.split(':')[0]
@@ -8498,15 +8706,15 @@ def _write_store_info_sheet(wb, ws, data, FNAME):
         for row in ws[value_rng]:
             for cell in row:
                 cell.font = f_value_b if bold_value else f_value
-                cell.fill = mf('FFFFFF'); cell.border = bdr; cell.alignment = left
+                cell.fill = mf('FFFFFF'); cell.border = bdr_dot; cell.alignment = left
 
-    # ── 제목 ──
-    band('B1:Q2', '오프라인 매장 정보 카드', f_title, NAVY)
+    # ── 제목 ── (수정사항2: "카드"를 떼고 "오프라인 매장 정보"로)
+    band('B1:Q2', '오프라인 매장 정보', f_title, NAVY)
     ws.row_dimensions[1].height = 22; ws.row_dimensions[2].height = 22
     spacer(3, 8)
 
     # ── 1. 기본 정보 ──
-    band('B4:Q4', '1. 기본 정보', f_section, PRIMARY_LT, align=left, height=22)
+    band('B4:Q4', '1. 기본 정보', f_section, LABEL_BG, align=left, height=22)
     today = datetime.now().strftime('%Y-%m-%d')
     store_label = f"{data['store_name']}  ({data['store_rank']})" if data['store_rank'] else data['store_name']
     label_value('B5:C5', '최종 수정일', 'D5:H5', today)
@@ -8546,9 +8754,10 @@ def _write_store_info_sheet(wb, ws, data, FNAME):
         pie.add_data(vals, titles_from_data=True)
         pie.set_categories(cats)
         series = pie.series[0]
+        # 수정사항2: 매장분석 화면(Chart.js 도넛)과 같은 브랜드=같은 색이 되도록 BRAND_COLORS를 우선 사용
         series.data_points = [
             DataPoint(idx=i, spPr=GraphicalProperties(
-                solidFill=PIE_PALETTE[i % len(PIE_PALETTE)]))
+                solidFill=BRAND_COLORS.get(data['brand_breakdown'][i]['brand'], PIE_PALETTE[i % len(PIE_PALETTE)])))
             for i in range(n_brand)
         ]
         series.dLbls = DataLabelList()
@@ -8626,9 +8835,40 @@ def _write_store_info_sheet(wb, ws, data, FNAME):
     ws.add_chart(bar, f'B{CHART2_TOP}')
     spacer(CHART2_BOT + 1, 8)
 
+    # ── 월별 매출액 상세 (수정사항4: 숨겨져있던 월별 매출액을 가독성 높은 표로 그대로 노출) ──
+    detail_row = CHART2_BOT + 2
+    band(f'B{detail_row}:Q{detail_row}', '월별 매출액 상세', f_subhdr, LABEL_BG, align=left, height=20)
+    dr = detail_row + 1
+    months = data['monthly_trend']
+    for i in range(0, 12, 2):
+        m1 = months[i]
+        label_value(f'B{dr}:C{dr}', f"{m1['month']}월", f'D{dr}:F{dr}', m1['amount'], number_format='#,##0"원"')
+        if i + 1 < 12:
+            m2 = months[i + 1]
+            label_value(f'G{dr}:H{dr}', f"{m2['month']}월", f'I{dr}:Q{dr}', m2['amount'], number_format='#,##0"원"')
+        ws.row_dimensions[dr].height = 18
+        dr += 1
+    spacer(dr, 8)
+    dr += 1
+
+    # ── 브랜드별 매출액 상세 (수정사항4: 숨겨져있던 브랜드별 매출액을 가독성 높은 표로 그대로 노출) ──
+    band(f'B{dr}:Q{dr}', '브랜드별 매출액 상세', f_subhdr, LABEL_BG, align=left, height=20)
+    dr += 1
+    if data['brand_breakdown']:
+        for g in data['brand_breakdown'][:8]:
+            label_value(f'B{dr}:D{dr}', g['brand'], f'E{dr}:Q{dr}',
+                        f"{g['amount']:,}원   ({g['pct']}%)")
+            ws.row_dimensions[dr].height = 18
+            dr += 1
+    else:
+        label_value(f'B{dr}:D{dr}', '—', f'E{dr}:Q{dr}', '판매 데이터가 없습니다')
+        ws.row_dimensions[dr].height = 18
+        dr += 1
+    spacer(dr, 8)
+
     # ── 2. 매장 현황 ──
-    section3_row = CHART2_BOT + 2
-    band(f'B{section3_row}:Q{section3_row}', '2. 매장 현황', f_section, PRIMARY_LT, align=left, height=22)
+    section3_row = dr + 1
+    band(f'B{section3_row}:Q{section3_row}', '2. 매장 현황', f_section, LABEL_BG, align=left, height=22)
     r1 = section3_row + 1
     status_rows = [
         ('직원현황', data['staff_status'], 2),
@@ -8649,7 +8889,7 @@ def _write_store_info_sheet(wb, ws, data, FNAME):
         vc.fill = mf('FFFFFF'); vc.alignment = left_top
         for rr in range(cur, cur + span):
             for col_letter in [get_column_letter(ci) for ci in range(4, 18)]:
-                ws[f'{col_letter}{rr}'].border = bdr
+                ws[f'{col_letter}{rr}'].border = bdr_dot
         cur += span
     spacer(cur, 8)
     cur += 1
@@ -8671,7 +8911,7 @@ def _write_store_info_sheet(wb, ws, data, FNAME):
     yoy_cell.font = f_value; yoy_cell.fill = mf('FFFFFF'); yoy_cell.alignment = left_top
     for rr in range(yoy_row, yoy_row + yoy_span):
         for col_letter in [get_column_letter(ci) for ci in range(2, 18)]:
-            ws[f'{col_letter}{rr}'].border = bdr
+            ws[f'{col_letter}{rr}'].border = bdr if col_letter in ('B', 'C') else bdr_dot
             if col_letter in ('B', 'C'):
                 ws[f'{col_letter}{rr}'].fill = mf(LABEL_BG)
         ws.row_dimensions[rr].height = 18
@@ -8693,8 +8933,10 @@ def _write_store_info_sheet(wb, ws, data, FNAME):
         ws.merge_cells(f'{l0}{brand_hdr_row+1}:{l1}{brand_hdr_row+1}')
         hc = ws[f'{l0}{brand_hdr_row+1}']
         hc.value = b
-        hc.font = Font(name=FNAME, size=9.5, bold=True, color='FFFFFF')
-        hc.fill = mf(BRAND_COLORS.get(b, '94A3B8')); hc.border = bdr; hc.alignment = ctr
+        # 수정사항5: 브랜드마다 진한 색을 입혀 "너무 다양해서 어지럽다"던 부분 — 소제목처럼
+        # 옅은 회색 배경 + 네이비 텍스트로 전부 통일하고, 브랜드 구분은 글자 자체로만 한다.
+        hc.font = Font(name=FNAME, size=9.5, bold=True, color=NAVY)
+        hc.fill = mf(LABEL_BG); hc.border = bdr; hc.alignment = ctr
         products = data['carried_brands'].get(b, [])
         for pi in range(5):
             rr = brand_hdr_row + 2 + pi
@@ -8703,7 +8945,7 @@ def _write_store_info_sheet(wb, ws, data, FNAME):
             cell.value = products[pi] if pi < len(products) else ''
             cell.font = Font(name=FNAME, size=9, color='1E293B')
             cell.fill = mf(ZEBRA if pi % 2 else 'FFFFFF')
-            cell.border = bdr; cell.alignment = ctr
+            cell.border = bdr_dot; cell.alignment = ctr
         if not products:
             ws.merge_cells(f'{l0}{brand_hdr_row+2}:{l1}{brand_hdr_row+2}')
             ec = ws[f'{l0}{brand_hdr_row+2}']
@@ -8713,7 +8955,7 @@ def _write_store_info_sheet(wb, ws, data, FNAME):
     cur += 1
 
     # ── 3. 방문 · 영업활동비 현황 ──
-    band(f'B{cur}:Q{cur}', '3. 방문 · 영업활동비 현황  (방문이력 시트 자동 집계)', f_section, PRIMARY_LT,
+    band(f'B{cur}:Q{cur}', '3. 방문 · 영업활동비 현황  (방문이력 시트 자동 집계)', f_section, LABEL_BG,
          align=left, height=22)
     cur += 1
     label_value(f'B{cur}:C{cur}', '총 방문 횟수', f'D{cur}:H{cur}', f"{data['total_visits']}회", bold_value=True)
@@ -8810,7 +9052,7 @@ def _write_visit_dropdown_sheet(ws, FNAME):
 @login_required
 def api_export_visit_report_by_store():
     """선택한 매장들의 매장정보 카드 + 누적 방문이력을 새 양식(첨부해주신 엑셀과 동일한 구조)으로 다운로드.
-    매장마다 '매장정보'/'방문이력' 시트 한 쌍씩 생성하고, 맨 뒤에 드롭다운용 '목록' 시트를 하나 공유한다."""
+    매장마다 '정보'/'이력' 시트 한 쌍씩 생성한다. (수정사항7: 드롭다운용 '목록' 시트는 더 이상 만들지 않음)"""
     d = request.json or {}
     store_names = d.get('store_names', [])
     year = d.get('year') or datetime.now().year
@@ -8838,9 +9080,6 @@ def api_export_visit_report_by_store():
         _write_store_info_sheet(wb, ws_info, data, FNAME)
         ws_hist = wb.create_sheet(title=hist_name)
         _write_visit_log_sheet(ws_hist, data, FNAME)
-
-    ws_list = wb.create_sheet(title='목록')
-    _write_visit_dropdown_sheet(ws_list, FNAME)
 
     buf = io.BytesIO(); wb.save(buf); buf.seek(0)
     fname = f"매장방문보고서_{'_'.join(store_names[:3])}.xlsx"
