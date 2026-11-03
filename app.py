@@ -306,6 +306,44 @@ def init_db():
                 conn.execute(f"ALTER TABLE store_visit_report ADD COLUMN {col} {typ}")
     except Exception:
         pass
+    # ── 매장 방문이력 누적 로그 (수정사항5) ── 매장 방문 보고서 탭의 새 양식.
+    # 수동 입력(보고서작성 폼)과 기존 업로드 보고서 이관분이 함께 쌓이는 단일 테이블.
+    conn.execute("""CREATE TABLE IF NOT EXISTS store_visit_log (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        store_name TEXT NOT NULL,
+        visit_date TEXT NOT NULL,
+        purpose TEXT DEFAULT '',
+        contact_person TEXT DEFAULT '',
+        our_content TEXT DEFAULT '',
+        competitor_trend TEXT DEFAULT '',
+        action_item TEXT DEFAULT '',
+        due_date TEXT DEFAULT '',
+        status TEXT DEFAULT '',
+        expense_type TEXT DEFAULT '',
+        expense_amount INTEGER DEFAULT 0,
+        expense_note TEXT DEFAULT '',
+        manager TEXT DEFAULT '',
+        author TEXT DEFAULT '',
+        source TEXT DEFAULT 'manual',
+        source_report_id INTEGER,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT DEFAULT ''
+    )""")
+    try:
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_svl_store ON store_visit_log(store_name, visit_date)")
+    except Exception:
+        pass
+
+    # ── 매장현황 자유 입력 (직원현황/매장현황/지역상품권) — 현우가 직접 관리 (수정사항3) ──
+    conn.execute("""CREATE TABLE IF NOT EXISTS store_profile (
+        store_name TEXT PRIMARY KEY,
+        staff_status TEXT DEFAULT '',
+        store_status TEXT DEFAULT '',
+        voucher_info TEXT DEFAULT '',
+        updated_by TEXT DEFAULT '',
+        updated_at TEXT DEFAULT ''
+    )""")
+
     conn.execute("""CREATE TABLE IF NOT EXISTS store_communication (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         seller_name TEXT NOT NULL,
@@ -695,6 +733,48 @@ def init_db():
     # Railway 재배포 후 비밀번호가 달라졌을 경우를 위해 강제 보장
     conn.execute("UPDATE users SET password=? WHERE email=? AND role='admin'",
         ("hwkim123!", "hwkim@enfix.com"))
+
+    # 수정5: 기존에 업로드돼 있던 방문 보고서(store_visit_report)를 새 누적 방문이력
+    # (store_visit_log)으로 1회 이관 — 이미 이관된 적 있으면(=store_visit_log에 source='migrated' 행이
+    # 하나라도 있으면) 다시 돌리지 않는다.
+    try:
+        already = conn.execute("SELECT 1 FROM store_visit_log WHERE source='migrated' LIMIT 1").fetchone()
+        if not already:
+            old_rows = conn.execute("SELECT * FROM store_visit_report").fetchall()
+            for r in old_rows:
+                r = dict(r)
+                our_content, competitor_trend, action_item = '', '', ''
+                # raw_xlsx_b64가 남아있으면 원본을 다시 파싱해서 "타사 동향"/"조치사항"을 분리해낸다
+                # (DB에는 이미 합쳐진 followup_text만 남아있어서, 가능하면 원본에서 다시 뽑는 게 더 정확함)
+                if r.get('raw_xlsx_b64'):
+                    try:
+                        import base64 as _b64
+                        src_bytes = _b64.b64decode(r['raw_xlsx_b64'])
+                        src_wb = openpyxl.load_workbook(io.BytesIO(src_bytes), data_only=True)
+                        src_ws = src_wb[src_wb.sheetnames[0]]
+                        reparsed = _parse_visit_report_sheet(src_ws, r.get('source_filename', ''))
+                        if reparsed:
+                            our_content = _format_our_content(reparsed['content'], reparsed['requests'])
+                            competitor_trend = reparsed.get('competitor_text', '')
+                            action_item = reparsed.get('action_text', '')
+                    except Exception:
+                        pass
+                if not our_content and not competitor_trend and not action_item:
+                    # 원본 재파싱이 안 되면 DB에 저장된 값으로 대체 (자사내용/타사동향+조치사항 합본)
+                    try:
+                        content = json.loads(r.get('content_json') or '{}')
+                        requests_list = json.loads(r.get('request_json') or '[]')
+                    except Exception:
+                        content, requests_list = {}, []
+                    our_content = _format_our_content(content, requests_list)
+                    action_item = r.get('followup_text', '') or ''
+                _upsert_visit_log(conn, store_name=r['store_name'], visit_date=r['visit_date'],
+                                   our_content=our_content, competitor_trend=competitor_trend,
+                                   action_item=action_item, manager=r.get('manager', ''),
+                                   author=r.get('author', ''), source='migrated', source_report_id=r['id'])
+    except Exception:
+        pass
+
     conn.commit(); conn.close()
 
 # ── 인증 ──────────────────────────────────────
@@ -7551,9 +7631,192 @@ def _parse_visit_report_sheet(ws, source_filename=''):
         'store_rank': store_rank, 'staff_info': staff_info, 'store_size': store_size,
         'content': content, 'requests': requests_list,
         'followup_text': (promo_text + '\n' + followup_text).strip(),
+        # 수정5: 새 방문이력 양식은 "타사 동향"과 "조치사항/후속"을 별도 칼럼으로 나누므로,
+        # 합쳐진 followup_text 대신 두 원본을 따로도 반환해서 store_visit_log 이관 시 분리해 넣을 수 있게 한다.
+        'competitor_text': promo_text.strip(),
+        'action_text': followup_text.strip(),
         'source_filename': source_filename,
         'raw_grid': raw_grid, 'merged_cells': merged_ranges,
         'sheet_title': ws.title,
+    }
+
+
+def _format_our_content(content, requests_list):
+    """store_visit_report의 content(카테고리별 텍스트)+requests를 새 방문이력 양식의
+    "자사 주요내용 (매장 의견·요청)" 한 칸짜리 텍스트로 합친다."""
+    parts = []
+    for cat, items in (content or {}).items():
+        if not items: continue
+        parts.append(f"[{cat}]\n" + "\n".join(str(i) for i in items))
+    if requests_list:
+        parts.append("[요청사항]\n" + "\n".join(str(i) for i in requests_list))
+    return "\n\n".join(parts).strip()
+
+
+def _upsert_visit_log(conn, *, store_name, visit_date, our_content='', competitor_trend='', action_item='',
+                       manager='', author='', purpose='', contact_person='', due_date='', status='',
+                       expense_type='', expense_amount=0, expense_note='', source='manual', source_report_id=None):
+    """store_visit_log에 한 건 반영 — upload/migrated 출처는 같은 (매장,방문일,출처) 건이면 덮어쓰고,
+    manual(보고서작성 폼) 입력은 같은 날 여러 번 방문해도 각각 별개 행으로 쌓이게 둔다."""
+    now_str = datetime.now().strftime('%Y-%m-%d %H:%M')
+    existing = None
+    if source != 'manual':
+        existing = conn.execute(
+            "SELECT id FROM store_visit_log WHERE store_name=? AND visit_date=? AND source=?",
+            (store_name, visit_date, source)).fetchone()
+    if existing:
+        conn.execute("""UPDATE store_visit_log SET
+            purpose=?, contact_person=?, our_content=?, competitor_trend=?, action_item=?, due_date=?, status=?,
+            expense_type=?, expense_amount=?, expense_note=?, manager=?, author=?, source_report_id=?, updated_at=?
+            WHERE id=?""",
+            (purpose, contact_person, our_content, competitor_trend, action_item, due_date, status,
+             expense_type, expense_amount, expense_note, manager, author, source_report_id, now_str, existing[0]))
+        return existing[0]
+    else:
+        cur = conn.execute("""INSERT INTO store_visit_log
+            (store_name, visit_date, purpose, contact_person, our_content, competitor_trend, action_item,
+             due_date, status, expense_type, expense_amount, expense_note, manager, author, source,
+             source_report_id, created_at, updated_at)
+            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (store_name, visit_date, purpose, contact_person, our_content, competitor_trend, action_item,
+             due_date, status, expense_type, expense_amount, expense_note, manager, author, source,
+             source_report_id, now_str, now_str))
+        return cur.lastrowid
+
+
+def _build_store_card_data(store_name, year=None, author_name=''):
+    """매장정보 카드에 필요한 모든 값을 판매처관리(branches)+판매실적(sales_data)+store_visit_log+
+    store_profile에서 실시간으로 계산해 한 번에 반환한다. 엑셀 다운로드와 화면 상세보기 양쪽에서 공용으로 쓴다."""
+    year = year or datetime.now().year
+    cur_month = datetime.now().month if year == datetime.now().year else 12
+    conn = get_db()
+
+    branch = conn.execute(
+        "SELECT * FROM branches WHERE name=?", (store_name,)).fetchone()
+    branch = dict(branch) if branch else {}
+
+    # ── 매장 순위 (해당 연도 누적매출 기준, 전체 거래처 대비) ──
+    rank_rows = conn.execute("""SELECT real_seller, SUM(total) t FROM sales_data
+        WHERE sale_date LIKE ? AND real_seller!='' GROUP BY real_seller ORDER BY t DESC""",
+        (f'{year}%',)).fetchall()
+    total_store_count = len(rank_rows)
+    rank = next((i+1 for i, r in enumerate(rank_rows) if r[0] == store_name), 0)
+    year_total = next((r[1] for r in rank_rows if r[0] == store_name), 0) or 0
+
+    # ── 활성 개월 수 (해당 연도에 매출이 찍힌 달의 수) → 월평균 매출 ──
+    active_months = conn.execute("""SELECT COUNT(DISTINCT substr(sale_date,1,7)) FROM sales_data
+        WHERE real_seller=? AND sale_date LIKE ?""", (store_name, f'{year}%')).fetchone()[0] or 0
+    monthly_avg = (year_total / active_months) if active_months else 0
+
+    # ── 해당 매장의 올해 판매 전체 행 (브랜드 비율/베스트제품/월별추이에 공용으로 사용) ──
+    sale_rows = [dict(r) for r in conn.execute("""SELECT sale_date, item_name, item_group, quantity, total
+        FROM sales_data WHERE real_seller=? AND sale_date LIKE ?""", (store_name, f'{year}%')).fetchall()]
+
+    # 브랜드별 매출 비율
+    brand_map = {}
+    for r in sale_rows:
+        b = remap_group(r.get('item_group') or '', r.get('item_name') or '') or '(미분류)'
+        g = brand_map.setdefault(b, {'brand': b, 'amount': 0})
+        g['amount'] += r['total'] or 0
+    brand_breakdown = sorted(brand_map.values(), key=lambda x: -x['amount'])
+    for g in brand_breakdown:
+        g['pct'] = round(g['amount'] / year_total * 100, 1) if year_total else 0
+
+    # 베스트 제품 TOP5 (수량·금액·비중)
+    product_map = {}
+    for r in sale_rows:
+        pname = _display_product_name(r.get('item_name'))
+        g = product_map.setdefault(pname, {'product': pname, 'qty': 0, 'amount': 0})
+        g['qty'] += r['quantity'] or 0
+        g['amount'] += r['total'] or 0
+    top5 = sorted(product_map.values(), key=lambda x: -x['amount'])[:5]
+    for g in top5:
+        g['pct'] = round(g['amount'] / year_total * 100, 1) if year_total else 0
+
+    # 월별 판매 추이 (1~12월)
+    monthly_trend = [{'month': m, 'amount': 0} for m in range(1, 13)]
+    for r in sale_rows:
+        try:
+            m = int(r['sale_date'][5:7])
+            monthly_trend[m-1]['amount'] += r['total'] or 0
+        except Exception:
+            pass
+
+    # 브랜드/제품별 월별 판매추이 (수정사항2 — 화면에서 브랜드·제품 선택해 보는 용도)
+    brand_monthly = {}
+    product_monthly = {}
+    for r in sale_rows:
+        try:
+            m = int(r['sale_date'][5:7])
+        except Exception:
+            continue
+        b = remap_group(r.get('item_group') or '', r.get('item_name') or '') or '(미분류)'
+        p = _display_product_name(r.get('item_name'))
+        bm = brand_monthly.setdefault(b, [0]*12); bm[m-1] += r['total'] or 0
+        pm = product_monthly.setdefault(p, [0]*12); pm[m-1] += r['total'] or 0
+
+    # 연도별 매출 비교 (올해 1~현재월 vs 작년 1~현재월, 작년 연간 전체)
+    def _period_total(y, m_from, m_to):
+        row = conn.execute("""SELECT SUM(total), COUNT(*) FROM sales_data
+            WHERE real_seller=? AND sale_date>=? AND sale_date<?""",
+            (store_name, f'{y}-{m_from:02d}-01', f'{y}-{m_to+1:02d}-01' if m_to < 12 else f'{y+1}-01-01')).fetchone()
+        return row[0] or 0, row[1] or 0
+    this_year_ytd, this_year_cnt = _period_total(year, 1, cur_month)
+    last_year_ytd, last_year_cnt = _period_total(year-1, 1, cur_month)
+    last_year_full, last_year_full_cnt = _period_total(year-1, 1, 12)
+    yoy_pct = round((this_year_ytd - last_year_ytd) / last_year_ytd * 100, 1) if last_year_ytd else None
+
+    # 자사입점브랜드 — 이 매장이 실제로 판매한 적 있는 브랜드별 제품 목록 (전체 기간 기준)
+    all_sale_rows = conn.execute("""SELECT DISTINCT item_name, item_group FROM sales_data
+        WHERE real_seller=?""", (store_name,)).fetchall()
+    carried_brands = {}
+    for item_name, item_group in all_sale_rows:
+        b = remap_group(item_group or '', item_name or '') or '(미분류)'
+        p = _display_product_name(item_name)
+        carried_brands.setdefault(b, set()).add(p)
+    carried_brands = {b: sorted(ps) for b, ps in carried_brands.items()}
+
+    # 방문·영업활동비 현황 (store_visit_log 자동 집계)
+    visit_rows = [dict(r) for r in conn.execute(
+        "SELECT * FROM store_visit_log WHERE store_name=? ORDER BY visit_date DESC, id DESC",
+        (store_name,)).fetchall()]
+    total_visits = len(visit_rows)
+    latest_visit = visit_rows[0]['visit_date'] if visit_rows else ''
+    ongoing_actions = sum(1 for v in visit_rows if (v.get('status') or '') == '진행중')
+    total_expense = sum(v.get('expense_amount') or 0 for v in visit_rows)
+    cur_ym = datetime.now().strftime('%Y-%m')
+    this_month_expense = sum(v.get('expense_amount') or 0 for v in visit_rows if (v.get('visit_date') or '').startswith(cur_ym))
+
+    profile = conn.execute("SELECT * FROM store_profile WHERE store_name=?", (store_name,)).fetchone()
+    profile = dict(profile) if profile else {'staff_status': '', 'store_status': '', 'voucher_info': ''}
+
+    conn.close()
+
+    return {
+        'store_name': store_name,
+        'store_rank': f'{rank}위/{total_store_count}위' if rank else '',
+        'region': branch.get('region', ''),
+        'manager': branch.get('manager', ''),
+        'author': author_name or branch.get('manager', ''),
+        'year': year,
+        'year_total': year_total,
+        'monthly_avg': monthly_avg,
+        'active_months': active_months,
+        'brand_breakdown': brand_breakdown,
+        'top5_products': top5,
+        'monthly_trend': monthly_trend,
+        'brand_monthly': brand_monthly,
+        'product_monthly': product_monthly,
+        'this_year_ytd': this_year_ytd, 'this_year_cnt': this_year_cnt,
+        'last_year_ytd': last_year_ytd, 'last_year_cnt': last_year_cnt,
+        'last_year_full': last_year_full, 'last_year_full_cnt': last_year_full_cnt,
+        'yoy_pct': yoy_pct, 'cur_month': cur_month,
+        'carried_brands': carried_brands,
+        'visit_log': visit_rows,
+        'total_visits': total_visits, 'latest_visit': latest_visit,
+        'ongoing_actions': ongoing_actions, 'total_expense': total_expense, 'this_month_expense': this_month_expense,
+        'staff_status': profile.get('staff_status', ''), 'store_status': profile.get('store_status', ''),
+        'voucher_info': profile.get('voucher_info', ''),
     }
 
 
@@ -7620,6 +7883,19 @@ def api_visit_report_upload():
                      parsed['source_filename'], now_str, raw_grid_json, merged_cells_json, sheet_title,
                      raw_xlsx_b64))
                 inserted += 1
+
+            # 수정5: 업로드된 보고서도 새 누적 방문이력(store_visit_log)에 함께 반영 —
+            # 방문목적/면담자/완료예정일/진행상태/활동비는 업로드 양식엔 없던 정보라 비워두고
+            # 추후 화면에서 직접 보완할 수 있게 한다.
+            report_id = existing[0] if existing else conn.execute(
+                "SELECT id FROM store_visit_report WHERE visit_date=? AND store_name=?",
+                (parsed['visit_date'], parsed['store_name'])).fetchone()[0]
+            _upsert_visit_log(conn, store_name=parsed['store_name'], visit_date=parsed['visit_date'],
+                               our_content=_format_our_content(parsed['content'], parsed['requests']),
+                               competitor_trend=parsed.get('competitor_text', ''),
+                               action_item=parsed.get('action_text', ''),
+                               manager=parsed['manager'], author=parsed['author'],
+                               source='upload', source_report_id=report_id)
 
     for f in files:
         fname = f.filename or ''
@@ -7737,6 +8013,118 @@ def api_visit_report_stores():
         r['dates_list'] = dates
         r['dates'] = ', '.join(d[5:].replace('-', '/') for d in dates if d)
     return jsonify(rows)
+
+
+@app.route("/api/visit-report/store-card")
+@login_required
+def api_visit_report_store_card():
+    """매장정보 카드(수정사항1~3) — 판매처관리·판매실적·방문이력에서 실시간으로 계산한 값 전체 반환.
+    화면 상세보기와 엑셀 다운로드 양쪽에서 이 데이터를 그대로 쓴다."""
+    store = request.args.get('store', '').strip()
+    year = request.args.get('year', type=int) or datetime.now().year
+    if not store:
+        return jsonify({'ok': False, 'msg': '매장명이 필요합니다'}), 400
+    author_name = (session.get('user') or {}).get('name', '')
+    data = _build_store_card_data(store, year=year, author_name=author_name)
+    data['ok'] = True
+    return jsonify(data)
+
+
+@app.route("/api/store-profile/save", methods=["POST"])
+@login_required
+def api_store_profile_save():
+    """매장현황(직원현황/매장현황/지역상품권) 자유 텍스트 저장 — 현우가 직접 관리 (수정사항3)"""
+    d = request.json or {}
+    store_name = (d.get('store_name') or '').strip()
+    if not store_name:
+        return jsonify({'ok': False, 'msg': '매장명이 필요합니다'}), 400
+    now_str = datetime.now().strftime('%Y-%m-%d %H:%M')
+    updated_by = (session.get('user') or {}).get('name', '')
+    conn = get_db()
+    conn.execute("""INSERT INTO store_profile (store_name, staff_status, store_status, voucher_info, updated_by, updated_at)
+        VALUES (?,?,?,?,?,?)
+        ON CONFLICT(store_name) DO UPDATE SET
+            staff_status=excluded.staff_status, store_status=excluded.store_status,
+            voucher_info=excluded.voucher_info, updated_by=excluded.updated_by, updated_at=excluded.updated_at""",
+        (store_name, d.get('staff_status', ''), d.get('store_status', ''), d.get('voucher_info', ''),
+         updated_by, now_str))
+    conn.commit(); conn.close()
+    return jsonify({'ok': True})
+
+
+@app.route("/api/visit-log/save", methods=["POST"])
+@login_required
+def api_visit_log_save():
+    """보고서작성 폼 저장 (수정사항5) — 매장 방문이력 수동 입력. id가 있으면 수정, 없으면 신규 등록."""
+    d = request.json or {}
+    store_name = (d.get('store_name') or '').strip()
+    visit_date = (d.get('visit_date') or '').strip()
+    if not store_name or not visit_date:
+        return jsonify({'ok': False, 'msg': '매장명과 방문일은 필수입니다'}), 400
+
+    log_id = d.get('id')
+    manager_name = (session.get('user') or {}).get('name', '')
+    now_str = datetime.now().strftime('%Y-%m-%d %H:%M')
+    try:
+        expense_amount = int(d.get('expense_amount') or 0)
+    except Exception:
+        expense_amount = 0
+
+    conn = get_db()
+    if log_id:
+        existing = conn.execute("SELECT id FROM store_visit_log WHERE id=?", (log_id,)).fetchone()
+        if not existing:
+            conn.close()
+            return jsonify({'ok': False, 'msg': '해당 방문이력을 찾을 수 없습니다'}), 404
+        conn.execute("""UPDATE store_visit_log SET
+            store_name=?, visit_date=?, purpose=?, contact_person=?, our_content=?, competitor_trend=?,
+            action_item=?, due_date=?, status=?, expense_type=?, expense_amount=?, expense_note=?, updated_at=?
+            WHERE id=?""",
+            (store_name, visit_date, d.get('purpose',''), d.get('contact_person',''), d.get('our_content',''),
+             d.get('competitor_trend',''), d.get('action_item',''), d.get('due_date',''), d.get('status',''),
+             d.get('expense_type',''), expense_amount, d.get('expense_note',''), now_str, log_id))
+        conn.commit(); conn.close()
+        return jsonify({'ok': True, 'id': log_id})
+    else:
+        branch = conn.execute("SELECT manager FROM branches WHERE name=?", (store_name,)).fetchone()
+        manager_field = branch[0] if branch else manager_name
+        new_id = _upsert_visit_log(conn, store_name=store_name, visit_date=visit_date,
+                                    purpose=d.get('purpose',''), contact_person=d.get('contact_person',''),
+                                    our_content=d.get('our_content',''), competitor_trend=d.get('competitor_trend',''),
+                                    action_item=d.get('action_item',''), due_date=d.get('due_date',''),
+                                    status=d.get('status',''), expense_type=d.get('expense_type',''),
+                                    expense_amount=expense_amount, expense_note=d.get('expense_note',''),
+                                    manager=manager_field, author=manager_name, source='manual')
+        conn.commit(); conn.close()
+        return jsonify({'ok': True, 'id': new_id})
+
+
+@app.route("/api/visit-log/<int:log_id>", methods=["DELETE"])
+@login_required
+def api_visit_log_delete(log_id):
+    conn = get_db()
+    conn.execute("DELETE FROM store_visit_log WHERE id=?", (log_id,))
+    conn.commit(); conn.close()
+    return jsonify({'ok': True})
+
+
+@app.route("/api/visit-log/<int:log_id>")
+@login_required
+def api_visit_log_get(log_id):
+    conn = get_db()
+    row = conn.execute("SELECT * FROM store_visit_log WHERE id=?", (log_id,)).fetchone()
+    conn.close()
+    if not row:
+        return jsonify({'ok': False, 'msg': '찾을 수 없습니다'}), 404
+    return jsonify({'ok': True, **dict(row)})
+
+
+@app.route("/api/visit-log/purpose-options")
+@login_required
+def api_visit_log_purpose_options():
+    """보고서작성 폼의 드롭다운 목록(방문목적/진행상태/활동비구분)"""
+    return jsonify({'ok': True, 'purpose': _VISIT_PURPOSE_LIST, 'status': _VISIT_STATUS_LIST,
+                     'expense_type': _VISIT_EXPENSE_TYPE_LIST})
 
 
 @app.route("/api/visit-report/<int:rid>")
@@ -7951,79 +8339,282 @@ def api_export_visit_report_xlsx():
         as_attachment=True, download_name=fname)
 
 
-@app.route("/api/export/xlsx/visit-report/by-store", methods=["POST"])
-@login_required
-def api_export_visit_report_by_store():
-    """선택한 매장들만 원본 그대로 시트 분리하여 엑셀 다운로드"""
+_VISIT_PURPOSE_LIST = ['정기방문', '행사·프로모션', '신제품 안내', '재고·발주', '클레임 대응', '교육', '기타']
+_VISIT_STATUS_LIST = ['진행중', '완료', '보류', '해당없음']
+_VISIT_EXPENSE_TYPE_LIST = ['식사', '회식', '간식·음료', '기타(매장 접대)']
+
+
+def _write_store_info_sheet(wb, ws, data, FNAME):
+    """매장정보 카드 시트 — 수정사항1~3: 첨부해주신 양식과 동일한 레이아웃으로,
+    모든 값을 판매처관리·판매실적·방문이력에서 실시간 계산한 데이터로 채운다."""
     from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
+    from openpyxl.chart import PieChart, BarChart, Reference
+    from openpyxl.utils import get_column_letter
 
-    d = request.json or {}
-    store_names = d.get('store_names', [])
-    if not store_names:
-        return jsonify({'ok': False, 'msg': '매장을 선택해주세요'}), 400
+    def mf(h): return PatternFill("solid", fgColor=h)
+    thin = Side(style='thin', color='E5E7EB')
+    bdr  = Border(left=thin, right=thin, top=thin, bottom=thin)
+    ctr  = Alignment(horizontal='center', vertical='center', wrap_text=True)
+    left = Alignment(horizontal='left', vertical='center', wrap_text=True)
+    f_title = Font(name=FNAME, size=18, bold=True)
+    f_section = Font(name=FNAME, size=12, bold=True)
+    f_label = Font(name=FNAME, size=10, bold=True, color='1F1F1F')
+    f_value = Font(name=FNAME, size=10)
 
-    conn = get_db()
-    placeholders = ','.join('?' for _ in store_names)
-    rows = [dict(r) for r in conn.execute(
-        f"SELECT * FROM store_visit_report WHERE store_name IN ({placeholders}) ORDER BY store_name, visit_date",
-        store_names).fetchall()]
-    conn.close()
+    for col, w in [('A', 2), ('B', 11), ('C', 10), ('D', 12), ('E', 11), ('F', 11), ('G', 12),
+                   ('H', 12), ('I', 12), ('J', 11), ('K', 11), ('L', 11), ('M', 13), ('N', 11),
+                   ('O', 11), ('P', 11), ('Q', 11)]:
+        ws.column_dimensions[col].width = w
 
-    if not rows:
-        return jsonify({'ok': False, 'msg': '해당 매장의 방문 보고서가 없습니다'}), 404
+    def band(rng, text, font, fill_hex, align=ctr):
+        ws.merge_cells(rng)
+        c0 = rng.split(':')[0]
+        ws[c0] = text
+        for row in ws[rng]:
+            for cell in row:
+                cell.font = font; cell.fill = mf(fill_hex); cell.border = bdr; cell.alignment = align
 
-    FNAME = '맑은 고딕'
+    def label_value(label_rng, label_text, value_rng, value):
+        band(label_rng, label_text, f_label, 'F2F2F2')
+        ws.merge_cells(value_rng)
+        c0 = value_rng.split(':')[0]
+        ws[c0] = value
+        for row in ws[value_rng]:
+            for cell in row:
+                cell.font = f_value; cell.fill = mf('FFFFFF'); cell.border = bdr; cell.alignment = left
+
+    band('B1:Q2', '오프라인 매장 정보 카드', f_title, 'EFEFEF')
+    ws.row_dimensions[1].height = 28
+    band('B3:Q3', '1. 기본 정보', f_section, 'EFEFEF')
+
+    today = datetime.now().strftime('%Y-%m-%d')
+    store_label = f"{data['store_name']} ({data['store_rank']})" if data['store_rank'] else data['store_name']
+    label_value('B4:C4', '최종 수정일', 'D4:H4', today)
+    label_value('I4:J4', '최근 방문일', 'K4:Q4', data['latest_visit'] or '방문 기록 없음')
+    label_value('B5:C5', '매장명', 'D5:H5', store_label)
+    label_value('I5:J5', '지역', 'K5:Q5', data['region'] or '')
+    label_value('B6:C6', '담당자', 'D6:H6', data['manager'] or '')
+    label_value('I6:J6', '작성자', 'K6:Q6', data['author'] or '')
+    label_value('B7:C7', f"엔픽스 {str(data['year'])[2:]}' 누적 매출", 'D7:H7', data['year_total'])
+    label_value('I7:J7', '엔픽스 월 평균 매출', 'K7:Q7', round(data['monthly_avg']))
+    ws['D7'].number_format = '#,##0"원"'; ws['K7'].number_format = '#,##0"원"'
+
+    band('B8:J8', '브랜드별 매출 비율', f_label, 'F2F2F2')
+    band('K8:Q8', '베스트 제품 TOP5', f_label, 'F2F2F2')
+    ws.merge_cells('B9:J15')
+
+    # ── 브랜드별 매출비율 보조 데이터(차트 소스) — 화면 밖(S열부터)에 적어두고 차트가 참조 ──
+    ws['S1'] = '브랜드'; ws['T1'] = '매출액'
+    for i, g in enumerate(data['brand_breakdown'][:8]):
+        ws.cell(row=2+i, column=19, value=g['brand'])
+        ws.cell(row=2+i, column=20, value=g['amount'])
+    if data['brand_breakdown']:
+        pie = PieChart()
+        pie.title = '브랜드별 매출 비율'
+        n = min(len(data['brand_breakdown']), 8)
+        vals = Reference(ws, min_col=20, min_row=1, max_row=1+n)
+        cats = Reference(ws, min_col=19, min_row=2, max_row=1+n)
+        pie.add_data(vals, titles_from_data=True)
+        pie.set_categories(cats)
+        pie.height = 8.5; pie.width = 15.5
+        ws.add_chart(pie, 'B9')
+    else:
+        ws['B9'] = '올해 판매 데이터가 없습니다'; ws['B9'].font = f_value; ws['B9'].alignment = ctr
+
+    circled = ['①','②','③','④','⑤']
+    for i in range(5):
+        r = 10 + i
+        if i < len(data['top5_products']):
+            p = data['top5_products'][i]
+            ws.cell(row=r, column=12, value=circled[i])
+            ws.cell(row=r, column=13, value=p['product'])
+            ws.cell(row=r, column=14, value=f"{p['qty']}개 · {p['amount']:,}원 ({p['pct']}%)")
+        for ci in (12, 13, 14):
+            cell = ws.cell(row=r, column=ci)
+            cell.font = f_value; cell.border = bdr
+            cell.alignment = ctr if ci == 12 else left
+
+    band('B16:Q16', '월별 판매 추이', f_label, 'F2F2F2')
+    ws.merge_cells('B17:Q23')
+    ws['S10'] = '월'; ws['T10'] = '매출액'
+    for i, m in enumerate(data['monthly_trend']):
+        ws.cell(row=11+i, column=19, value=f"{m['month']}월")
+        ws.cell(row=11+i, column=20, value=m['amount'])
+    bar = BarChart()
+    bar.type = 'col'; bar.title = '월별 판매 추이'
+    vals = Reference(ws, min_col=20, min_row=10, max_row=22)
+    cats = Reference(ws, min_col=19, min_row=11, max_row=22)
+    bar.add_data(vals, titles_from_data=True)
+    bar.set_categories(cats)
+    bar.height = 8.5; bar.width = 24
+    bar.legend = None
+    ws.add_chart(bar, 'B17')
+
+    band('B24:Q24', '2. 매장 현황', f_section, 'EFEFEF')
+    band('B25:C25', '구분', f_label, 'EFEFEF')
+    for addr, txt in [('D25','내용')]:
+        ws.merge_cells('D25:Q25'); ws['D25'] = txt
+        for row in ws['D25:Q25']:
+            for cell in row: cell.font = f_label; cell.fill = mf('EFEFEF'); cell.border = bdr; cell.alignment = ctr
+    ws.merge_cells('B26:B29'); ws['B26'] = '직원현황'
+    ws.merge_cells('C26:Q29'); ws['C26'] = data['staff_status'] or '(미입력 — 화면에서 직접 입력해주세요)'
+    ws.merge_cells('B30:B31'); ws['B30'] = '매장현황'
+    ws.merge_cells('C30:Q31'); ws['C30'] = data['store_status'] or '(미입력 — 화면에서 직접 입력해주세요)'
+    ws.merge_cells('B32:B33'); ws['B32'] = '지역상품권\n관련'
+    ws.merge_cells('C32:Q33'); ws['C32'] = data['voucher_info'] or '(미입력 — 화면에서 직접 입력해주세요)'
+    for addr in ['B26','B30','B32','C26','C30','C32']:
+        ws[addr].font = f_label if addr.startswith('B') else f_value
+        ws[addr].fill = mf('F2F2F2') if addr.startswith('B') else mf('FFFFFF')
+        ws[addr].border = bdr
+        ws[addr].alignment = ctr if addr.startswith('B') else left
+
+    band('B34:B34', '연도별 매출 비교', f_label, 'F2F2F2')
+    yoy_line = (f"  {data['year']}년 1~{data['cur_month']}월: {data['this_year_ytd']:,}원  ({data['this_year_cnt']}개)\n"
+                f"  {data['year']-1}년 1~{data['cur_month']}월: {data['last_year_ytd']:,}원  ({data['last_year_cnt']}개)"
+                + (f"  {'▲' if data['yoy_pct']>=0 else '▼'} {abs(data['yoy_pct'])}% ({'증가' if data['yoy_pct']>=0 else '감소'})" if data['yoy_pct'] is not None else '')
+                + f"\n  {data['year']-1}년 연간 전체: {data['last_year_full']:,}원")
+    ws.merge_cells('C34:Q34'); ws['C34'] = yoy_line
+    ws['C34'].font = f_value; ws['C34'].fill = mf('FFFFFF'); ws['C34'].border = bdr
+    ws['C34'].alignment = Alignment(horizontal='left', vertical='center', wrap_text=True)
+    ws.row_dimensions[34].height = 48
+
+    ws.merge_cells('B35:B40'); ws['B35'] = '자사입점브랜드'
+    ws['B35'].font = f_label; ws['B35'].fill = mf('F2F2F2'); ws['B35'].border = bdr; ws['B35'].alignment = ctr
+    brand_cols = ['줄즈', '카오스', '원더폴드', '레카로', 'ABC디자인', '엔픽스', '타프토이즈']
+    for ci, b in enumerate(brand_cols):
+        col_letter = get_column_letter(3 + ci)  # C부터
+        ws[f'{col_letter}35'] = b
+        ws[f'{col_letter}35'].font = f_label; ws[f'{col_letter}35'].fill = mf('F2F2F2')
+        ws[f'{col_letter}35'].border = bdr; ws[f'{col_letter}35'].alignment = ctr
+        products = data['carried_brands'].get(b, [])
+        for pi, pname in enumerate(products[:5]):
+            cell = ws[f'{col_letter}{36+pi}']
+            cell.value = pname; cell.font = f_value; cell.border = bdr; cell.alignment = ctr
+
+    band('B41:Q41', '3. 방문 · 영업활동비 현황  (방문이력 시트에서 자동 집계)', f_section, 'EFEFEF')
+    label_value('B42:C42', '총 방문 횟수', 'D42:H42', f"{data['total_visits']}회")
+    label_value('I42:J42', '진행중 조치', 'K42:Q42', f"{data['ongoing_actions']}건")
+    label_value('B43:C43', '누적 영업활동비', 'D43:H43', data['total_expense'])
+    label_value('I43:J43', '이번 달 활동비', 'K43:Q43', data['this_month_expense'])
+    ws['D43'].number_format = '#,##0"원"'; ws['K43'].number_format = '#,##0"원"'
+
+    ws.sheet_view.showGridLines = False
+
+
+def _write_visit_log_sheet(ws, data, FNAME):
+    """방문이력 시트 — 수정사항5: store_visit_log 누적 로그를 한 행씩 그대로 출력."""
+    from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
     def mf(h): return PatternFill("solid", fgColor=h)
     thin = Side(style='thin', color='E5E7EB')
     bdr  = Border(left=thin, right=thin, top=thin, bottom=thin)
     ctr  = Alignment(horizontal='center', vertical='center', wrap_text=True)
     left = Alignment(horizontal='left', vertical='top', wrap_text=True)
+    f_title = Font(name=FNAME, size=16, bold=True)
+    f_sub = Font(name=FNAME, size=10, bold=True)
+    f_hdr = Font(name=FNAME, size=10, bold=True)
+    f_val = Font(name=FNAME, size=10)
 
+    widths = {'A':2,'B':11,'C':12,'D':13,'E':46,'F':30,'G':36,'H':11,'I':9,'J':12,'K':11,'L':24}
+    for col, w in widths.items():
+        ws.column_dimensions[col].width = w
+
+    ws.merge_cells('B2:L2'); ws['B2'] = '매장 방문이력'; ws['B2'].font = f_title
+    store_label = f"{data['store_name']} ({data['store_rank']})" if data['store_rank'] else data['store_name']
+    ws.merge_cells('B3:L3'); ws['B3'] = f"{store_label}  ·  담당 {data['manager'] or ''}"
+    ws['B3'].font = f_sub
+
+    ws.merge_cells('B5:C5'); ws['B5'] = f"총 방문  {data['total_visits']}회"
+    ws.merge_cells('D5:E5'); ws['D5'] = f"최근 방문일  {data['latest_visit'] or '-'}"
+    ws.merge_cells('F5:G5'); ws['F5'] = f"진행중 조치  {data['ongoing_actions']}건"
+    ws.merge_cells('H5:J5'); ws['H5'] = f"누적 활동비  {data['total_expense']:,}원"
+    ws.merge_cells('K5:L5'); ws['K5'] = f"이번 달 활동비  {data['this_month_expense']:,}원"
+    for addr in ('B5','D5','F5','H5','K5'):
+        ws[addr].font = f_sub
+
+    ws.merge_cells('B6:I6'); ws['B6'] = '방문 내용'
+    ws.merge_cells('J6:L6'); ws['J6'] = '영업활동비 (식사 · 회식 · 간식 등)'
+    for addr in ('B6','J6'):
+        ws[addr].font = f_sub; ws[addr].fill = mf('F2F2F2'); ws[addr].border = bdr; ws[addr].alignment = ctr
+
+    headers = ['방문일', '방문목적', '면담자', '자사 주요내용 (매장 의견 · 요청)', '타사 동향',
+               '조치사항 / 후속', '완료(예정)일', '진행상태', '활동비 구분', '활동비 금액', '활동비 내용 (사용처·참석자)']
+    for i, h in enumerate(headers):
+        c = ws.cell(row=7, column=2+i, value=h)
+        c.font = f_hdr; c.fill = mf('EFEFEF'); c.border = bdr; c.alignment = ctr
+    ws.row_dimensions[7].height = 24
+
+    for i, v in enumerate(data['visit_log']):
+        r = 8 + i
+        vals = [v['visit_date'], v.get('purpose',''), v.get('contact_person',''), v.get('our_content',''),
+                v.get('competitor_trend',''), v.get('action_item',''), v.get('due_date',''), v.get('status',''),
+                v.get('expense_type',''), v.get('expense_amount') or '', v.get('expense_note','')]
+        for ci, val in enumerate(vals):
+            c = ws.cell(row=r, column=2+ci, value=val)
+            c.font = f_val; c.border = bdr
+            c.alignment = left if ci in (3, 4, 5, 10) else ctr
+            if ci == 9 and val != '':
+                c.number_format = '#,##0"원"'
+        ws.row_dimensions[r].height = 90 if (v.get('our_content') or v.get('competitor_trend') or v.get('action_item')) else 20
+
+    if not data['visit_log']:
+        ws.merge_cells('B8:L8'); ws['B8'] = '등록된 방문 이력이 없습니다. "보고서작성"으로 첫 방문 기록을 남겨보세요.'
+        ws['B8'].font = f_val; ws['B8'].alignment = ctr
+    ws.sheet_view.showGridLines = False
+
+
+def _write_visit_dropdown_sheet(ws, FNAME):
+    from openpyxl.styles import Font
+    ws['A1'] = '방문목적'; ws['B1'] = '진행상태'; ws['C1'] = '활동비구분'
+    for addr in ('A1','B1','C1'):
+        ws[addr].font = Font(name=FNAME, bold=True)
+    for i, v in enumerate(_VISIT_PURPOSE_LIST):
+        ws.cell(row=2+i, column=1, value=v)
+    for i, v in enumerate(_VISIT_STATUS_LIST):
+        ws.cell(row=2+i, column=2, value=v)
+    for i, v in enumerate(_VISIT_EXPENSE_TYPE_LIST):
+        ws.cell(row=2+i, column=3, value=v)
+    for col, w in [('A', 14), ('B', 12), ('C', 16)]:
+        ws.column_dimensions[col].width = w
+
+
+@app.route("/api/export/xlsx/visit-report/by-store", methods=["POST"])
+@login_required
+def api_export_visit_report_by_store():
+    """선택한 매장들의 매장정보 카드 + 누적 방문이력을 새 양식(첨부해주신 엑셀과 동일한 구조)으로 다운로드.
+    매장마다 '매장정보'/'방문이력' 시트 한 쌍씩 생성하고, 맨 뒤에 드롭다운용 '목록' 시트를 하나 공유한다."""
+    d = request.json or {}
+    store_names = d.get('store_names', [])
+    year = d.get('year') or datetime.now().year
+    if not store_names:
+        return jsonify({'ok': False, 'msg': '매장을 선택해주세요'}), 400
+
+    FNAME = '맑은 고딕'
+    author_name = (session.get('user') or {}).get('name', '')
     wb = openpyxl.Workbook()
-    ws_dash = wb.active; ws_dash.title = '매장별_방문현황'
-    _write_dashboard_sheet(ws_dash, rows, FNAME, mf, bdr, ctr, left)
+    wb.remove(wb.active)
 
     used_names = set()
-    for r in rows:
-        base_name = f"{r['store_name']}_{r['visit_date'][5:].replace('-','')}"[:28]
-        sheet_name = base_name
+    for store_name in store_names[:30]:
+        data = _build_store_card_data(store_name, year=year, author_name=author_name)
+        base = store_name[:20]
+        info_name = f"{base}_정보"[:31]
+        hist_name = f"{base}_이력"[:31]
         suffix = 1
-        while sheet_name in used_names:
-            sheet_name = f"{base_name}_{suffix}"[:31]; suffix += 1
-        used_names.add(sheet_name)
-        ws = wb.create_sheet(title=sheet_name)
+        while info_name in used_names or hist_name in used_names:
+            base2 = f"{base[:16]}_{suffix}"
+            info_name = f"{base2}_정보"[:31]; hist_name = f"{base2}_이력"[:31]; suffix += 1
+        used_names.add(info_name); used_names.add(hist_name)
 
-        raw_xlsx_b64 = r.get('raw_xlsx_b64')
-        if raw_xlsx_b64:
-            try:
-                import base64
-                src_bytes = base64.b64decode(raw_xlsx_b64)
-                src_wb = _load_workbook_resilient(src_bytes)
-                if src_wb is None: raise ValueError("원본 로드 실패")
-                src_ws = src_wb[src_wb.sheetnames[0]]
-                # 수식이 다른 시트(브랜드별 매출 비율/월별 판매 추이 등 계산용 시트)를 참조하는 경우
-                # 그 시트 없이 복사하면 #VALUE!/#REF!가 뜨므로, 계산된 결과값(data_only)을 대신 넣는다
-                value_ws = None
-                try:
-                    value_wb = _load_workbook_resilient(src_bytes, data_only=True)
-                    if value_wb is not None:
-                        value_ws = value_wb[value_wb.sheetnames[0]]
-                except Exception:
-                    pass
-                _copy_sheet_with_style(src_ws, ws, value_ws=value_ws)
-                continue
-            except Exception:
-                pass
-        try:
-            raw_grid = json.loads(r.get('raw_grid_json') or '[]')
-            merged_cells = json.loads(r.get('merged_cells_json') or '[]')
-        except Exception:
-            raw_grid, merged_cells = [], []
-        if raw_grid:
-            _write_raw_grid_sheet(ws, raw_grid, merged_cells, FNAME)
+        ws_info = wb.create_sheet(title=info_name)
+        _write_store_info_sheet(wb, ws_info, data, FNAME)
+        ws_hist = wb.create_sheet(title=hist_name)
+        _write_visit_log_sheet(ws_hist, data, FNAME)
+
+    ws_list = wb.create_sheet(title='목록')
+    _write_visit_dropdown_sheet(ws_list, FNAME)
 
     buf = io.BytesIO(); wb.save(buf); buf.seek(0)
-    fname = f"방문보고서_매장별_{'_'.join(store_names[:3])}.xlsx"
+    fname = f"매장방문보고서_{'_'.join(store_names[:3])}.xlsx"
     return send_file(buf, mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
         as_attachment=True, download_name=fname)
 
