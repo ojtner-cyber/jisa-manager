@@ -7684,6 +7684,73 @@ def _upsert_visit_log(conn, *, store_name, visit_date, our_content='', competito
         return cur.lastrowid
 
 
+def _polish_visit_text(our_content, competitor_trend, action_item):
+    """보고서작성 폼에 대충 적은 방문 메모를 전문가적인 영업 보고서 문체로 다듬는다 (수정사항3).
+    기존 업로드 보고서들의 '[카테고리] / * 브랜드 / L 세부포인트' 구조와 같은 느낌으로 재구성하되,
+    사실관계는 절대 추가·왜곡하지 않고 표현·구조만 다듬는다. API 키가 없거나 호출이 실패하면
+    원문을 그대로 반환한다 — 이 함수는 저장을 절대 막지 않는다."""
+    api_key = os.environ.get('ANTHROPIC_API_KEY', '')
+    raw = {
+        '자사 주요내용': (our_content or '').strip(),
+        '타사 동향': (competitor_trend or '').strip(),
+        '조치사항·후속': (action_item or '').strip(),
+    }
+    if not api_key or not any(raw.values()):
+        return our_content, competitor_trend, action_item
+    try:
+        import requests
+        prompt = f"""당신은 유아용품 B2B 영업사원이 매장을 방문하고 남긴 메모를 사내 보고서용 문장으로 정리하는 전문 에디터입니다.
+아래는 영업사원이 현장에서 대충 적은 방문 메모 3개 항목입니다. 각 항목을 아래 규칙에 따라 다듬어주세요.
+
+[규칙]
+1. 사실을 절대 추가하거나 과장하지 마세요. 적힌 내용만 다듬습니다. 메모에 없는 내용은 절대 만들어내지 마세요.
+2. 메모에 여러 주제(제품명/브랜드/이슈)가 섞여 있으면 "[주제]" 형태의 대괄호 제목으로 묶고, 그 아래 "* 브랜드명" 또는 "* 소주제"로 나눈 뒤,
+   각 세부 포인트는 "L 한 줄 요약"을 적고 바로 다음 줄에 두 칸 들여써서 자세한 설명 문장을 붙이는 구조로 정리하세요. 실제 예시:
+   [카시트]
+   * 레카로
+   L 유격이 없음
+     흔들었을 때 유격이 거의 없어 다른 카시트와 비교하며 설명하기 좋다.
+   * 싸이벡스
+   L 주니어 라인 어깨 확장 기능
+     주니어 라인이 꾸준히 판매되는 이유는 어깨 확장 기능 때문으로 보인다.
+3. 메모가 한 가지 주제뿐이거나 짧으면 억지로 카테고리를 만들지 말고, 자연스러운 완결 문장(구어체→문어체, 오탈자·비문 정리)으로만 다듬으세요.
+4. 항목이 비어 있으면 빈 문자열 그대로 두세요.
+5. 과장하거나 영업성 멘트를 추가하지 말고, 담백하고 전문적인 보고서 톤을 유지하세요.
+6. 가격, 수치, 고유명사는 메모에 적힌 그대로 유지하세요.
+
+[자사 주요내용]
+{raw['자사 주요내용'] or '(없음)'}
+
+[타사 동향]
+{raw['타사 동향'] or '(없음)'}
+
+[조치사항·후속]
+{raw['조치사항·후속'] or '(없음)'}
+
+다음 JSON 형식으로만 답하세요 (설명 없이 JSON만, 각 값은 다듬어진 텍스트 문자열이며 항목이 원래 비어 있었다면 빈 문자열로 둡니다):
+{{"our_content": "...", "competitor_trend": "...", "action_item": "..."}}"""
+        resp = requests.post(
+            "https://api.anthropic.com/v1/messages",
+            headers={"x-api-key": api_key, "anthropic-version": "2023-06-01", "content-type": "application/json"},
+            json={"model": "claude-sonnet-4-6", "max_tokens": 1400,
+                  "messages": [{"role": "user", "content": prompt}]},
+            timeout=20,
+        )
+        if resp.status_code == 200:
+            data = resp.json()
+            text_blocks = [b.get('text', '') for b in data.get('content', []) if b.get('type') == 'text']
+            raw_json = ''.join(text_blocks).strip().replace('```json', '').replace('```', '').strip()
+            parsed = json.loads(raw_json)
+            return (
+                parsed.get('our_content', our_content) if raw['자사 주요내용'] else our_content,
+                parsed.get('competitor_trend', competitor_trend) if raw['타사 동향'] else competitor_trend,
+                parsed.get('action_item', action_item) if raw['조치사항·후속'] else action_item,
+            )
+    except Exception:
+        pass
+    return our_content, competitor_trend, action_item
+
+
 def _build_store_card_data(store_name, year=None, author_name=''):
     """매장정보 카드에 필요한 모든 값을 판매처관리(branches)+판매실적(sales_data)+store_visit_log+
     store_profile에서 실시간으로 계산해 한 번에 반환한다. 엑셀 다운로드와 화면 상세보기 양쪽에서 공용으로 쓴다."""
@@ -7997,21 +8064,38 @@ def _find_keyword_context(report, keyword):
 @app.route("/api/visit-report/stores")
 @login_required
 def api_visit_report_stores():
-    """매장별 방문 누적 현황 (요청하신 '매장별 방문현황' 첫 탭 형태 재현)"""
+    """매장별 방문 누적 현황 (요청하신 '매장별 방문현황' 첫 탭 형태 재현)
+
+    주의: store_visit_log가 업로드분+수동 작성분(보고서작성)+과거 마이그레이션분을 모두 포함하는
+    단일 소스이므로 이 테이블을 기준으로 집계한다. 예전에는 store_visit_report만 집계해서
+    '보고서작성'으로 입력한 수동 방문 기록이 이 목록·방문횟수에 전혀 반영되지 않는 문제가 있었다
+    (저장은 되지만 목록에 안 보여서 "저장이 안 된 것 같다"는 증상으로 나타남) — 이번에 수정.
+    브랜드(플랫폼) 정보는 store_visit_log에 없으므로 해당 매장의 가장 최근 store_visit_report에서
+    보조로 가져온다(없으면 빈 값)."""
     brand = request.args.get('brand', '').strip()
     conn = get_db()
-    q = """SELECT store_name, brand, region, COUNT(*) cnt,
-                  GROUP_CONCAT(visit_date) dates, MAX(visit_date) last_date
-           FROM store_visit_report WHERE 1=1"""
-    params = []
-    if brand: q += " AND brand=?"; params.append(brand)
-    q += " GROUP BY store_name, brand ORDER BY cnt DESC, store_name"
-    rows = [dict(r) for r in conn.execute(q, params).fetchall()]
+    q = """SELECT
+             l.store_name AS store_name,
+             COALESCE(b.region, '') AS region,
+             (SELECT r.brand FROM store_visit_report r
+                WHERE r.store_name = l.store_name AND r.brand != ''
+                ORDER BY r.visit_date DESC LIMIT 1) AS brand,
+             COUNT(*) AS cnt,
+             GROUP_CONCAT(l.visit_date) AS dates,
+             MAX(l.visit_date) AS last_date
+           FROM store_visit_log l
+           LEFT JOIN branches b ON b.name = l.store_name
+           GROUP BY l.store_name"""
+    rows = [dict(r) for r in conn.execute(q).fetchall()]
     conn.close()
     for r in rows:
+        r['brand'] = r.get('brand') or ''
         dates = sorted((r['dates'] or '').split(','))
         r['dates_list'] = dates
         r['dates'] = ', '.join(d[5:].replace('-', '/') for d in dates if d)
+    if brand:
+        rows = [r for r in rows if r['brand'] == brand]
+    rows.sort(key=lambda r: (-r['cnt'], r['store_name']))
     return jsonify(rows)
 
 
@@ -8088,10 +8172,15 @@ def api_visit_log_save():
     else:
         branch = conn.execute("SELECT manager FROM branches WHERE name=?", (store_name,)).fetchone()
         manager_field = branch[0] if branch else manager_name
+        # 신규 작성 건은 기본적으로 AI가 전문가 문체로 다듬어서 저장 (수정사항3).
+        # polish=false로 명시한 경우(예: 이미 다듬어진 내용을 다시 저장)에는 건너뛴다.
+        our_content, competitor_trend, action_item = d.get('our_content',''), d.get('competitor_trend',''), d.get('action_item','')
+        if d.get('polish', True):
+            our_content, competitor_trend, action_item = _polish_visit_text(our_content, competitor_trend, action_item)
         new_id = _upsert_visit_log(conn, store_name=store_name, visit_date=visit_date,
                                     purpose=d.get('purpose',''), contact_person=d.get('contact_person',''),
-                                    our_content=d.get('our_content',''), competitor_trend=d.get('competitor_trend',''),
-                                    action_item=d.get('action_item',''), due_date=d.get('due_date',''),
+                                    our_content=our_content, competitor_trend=competitor_trend,
+                                    action_item=action_item, due_date=d.get('due_date',''),
                                     status=d.get('status',''), expense_type=d.get('expense_type',''),
                                     expense_amount=expense_amount, expense_note=d.get('expense_note',''),
                                     manager=manager_field, author=manager_name, source='manual')
@@ -8345,160 +8434,300 @@ _VISIT_EXPENSE_TYPE_LIST = ['식사', '회식', '간식·음료', '기타(매장
 
 
 def _write_store_info_sheet(wb, ws, data, FNAME):
-    """매장정보 카드 시트 — 수정사항1~3: 첨부해주신 양식과 동일한 레이아웃으로,
-    모든 값을 판매처관리·판매실적·방문이력에서 실시간 계산한 데이터로 채운다."""
+    """매장정보 카드 시트 — 수정사항1~3: 첨부해주신 양식 기반이되, 대표 보고용으로 쓸 수 있도록
+    전문적인 디자인(여백·정렬·차트 스타일)으로 재구성. 모든 값은 판매처관리·판매실적·방문이력에서
+    실시간 계산한 데이터로 채운다."""
     from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
     from openpyxl.chart import PieChart, BarChart, Reference
+    from openpyxl.chart.label import DataLabelList
+    from openpyxl.chart.marker import DataPoint
+    from openpyxl.chart.shapes import GraphicalProperties
     from openpyxl.utils import get_column_letter
 
+    # ── 컬러 팔레트 (화면 UI와 톤을 맞춘 인디고/슬레이트 계열) ──
+    NAVY = '1E293B'; PRIMARY = '4F46E5'; PRIMARY_LT = 'EEF2FF'
+    LABEL_BG = 'F8FAFC'; BORDER_C = 'E2E8F0'; ZEBRA = 'FAFBFC'
+    BRAND_COLORS = {'줄즈': '2563EB', '레카로': '16A34A', 'ABC디자인': '7C3AED', '원더폴드': 'D97706',
+                     '카오스': 'DC2626', '엔픽스': '0891B2', '타프토이즈': '9CA3AF', '(미분류)': '94A3B8'}
+    PIE_PALETTE = ['4F46E5', '0EA5E9', '16A34A', 'D97706', 'DC2626', '7C3AED', '0891B2', '94A3B8']
+
     def mf(h): return PatternFill("solid", fgColor=h)
-    thin = Side(style='thin', color='E5E7EB')
+    thin = Side(style='thin', color=BORDER_C)
     bdr  = Border(left=thin, right=thin, top=thin, bottom=thin)
     ctr  = Alignment(horizontal='center', vertical='center', wrap_text=True)
     left = Alignment(horizontal='left', vertical='center', wrap_text=True)
-    f_title = Font(name=FNAME, size=18, bold=True)
-    f_section = Font(name=FNAME, size=12, bold=True)
-    f_label = Font(name=FNAME, size=10, bold=True, color='1F1F1F')
-    f_value = Font(name=FNAME, size=10)
+    left_top = Alignment(horizontal='left', vertical='top', wrap_text=True)
+    f_title = Font(name=FNAME, size=18, bold=True, color='FFFFFF')
+    f_section = Font(name=FNAME, size=12, bold=True, color=NAVY)
+    f_subhdr = Font(name=FNAME, size=10, bold=True, color=NAVY)
+    f_label = Font(name=FNAME, size=10, bold=True, color='475569')
+    f_value = Font(name=FNAME, size=10, color='1E293B')
+    f_value_b = Font(name=FNAME, size=10.5, bold=True, color=PRIMARY)
+    f_note = Font(name=FNAME, size=9, italic=True, color='94A3B8')
 
     for col, w in [('A', 2), ('B', 11), ('C', 10), ('D', 12), ('E', 11), ('F', 11), ('G', 12),
-                   ('H', 12), ('I', 12), ('J', 11), ('K', 11), ('L', 11), ('M', 13), ('N', 11),
-                   ('O', 11), ('P', 11), ('Q', 11)]:
+                   ('H', 12), ('I', 12), ('J', 11), ('K', 9), ('L', 15), ('M', 9), ('N', 16),
+                   ('O', 9), ('P', 9), ('Q', 2)]:
         ws.column_dimensions[col].width = w
+    # 차트 소스 데이터는 화면에 보이지 않도록 완전히 숨긴 열(S~)에 둔다 — 예전엔 안 숨겨져서
+    # "매출액/월별 매출액이 옆에 덩그러니" 보이던 문제의 원인이었다.
+    for col in ('S', 'T'):
+        ws.column_dimensions[col].hidden = True
 
-    def band(rng, text, font, fill_hex, align=ctr):
+    def band(rng, text, font, fill_hex, align=ctr, height=None):
         ws.merge_cells(rng)
         c0 = rng.split(':')[0]
         ws[c0] = text
         for row in ws[rng]:
             for cell in row:
                 cell.font = font; cell.fill = mf(fill_hex); cell.border = bdr; cell.alignment = align
+        if height:
+            r0 = int(''.join(ch for ch in c0 if ch.isdigit()))
+            ws.row_dimensions[r0].height = height
 
-    def label_value(label_rng, label_text, value_rng, value):
-        band(label_rng, label_text, f_label, 'F2F2F2')
+    def spacer(row, height=7):
+        ws.row_dimensions[row].height = height
+
+    def label_value(label_rng, label_text, value_rng, value, bold_value=False, number_format=None):
+        band(label_rng, label_text, f_label, LABEL_BG, align=left)
         ws.merge_cells(value_rng)
         c0 = value_rng.split(':')[0]
         ws[c0] = value
+        if number_format:
+            ws[c0].number_format = number_format
         for row in ws[value_rng]:
             for cell in row:
-                cell.font = f_value; cell.fill = mf('FFFFFF'); cell.border = bdr; cell.alignment = left
+                cell.font = f_value_b if bold_value else f_value
+                cell.fill = mf('FFFFFF'); cell.border = bdr; cell.alignment = left
 
-    band('B1:Q2', '오프라인 매장 정보 카드', f_title, 'EFEFEF')
-    ws.row_dimensions[1].height = 28
-    band('B3:Q3', '1. 기본 정보', f_section, 'EFEFEF')
+    # ── 제목 ──
+    band('B1:Q2', '오프라인 매장 정보 카드', f_title, NAVY)
+    ws.row_dimensions[1].height = 22; ws.row_dimensions[2].height = 22
+    spacer(3, 8)
 
+    # ── 1. 기본 정보 ──
+    band('B4:Q4', '1. 기본 정보', f_section, PRIMARY_LT, align=left, height=22)
     today = datetime.now().strftime('%Y-%m-%d')
-    store_label = f"{data['store_name']} ({data['store_rank']})" if data['store_rank'] else data['store_name']
-    label_value('B4:C4', '최종 수정일', 'D4:H4', today)
-    label_value('I4:J4', '최근 방문일', 'K4:Q4', data['latest_visit'] or '방문 기록 없음')
-    label_value('B5:C5', '매장명', 'D5:H5', store_label)
-    label_value('I5:J5', '지역', 'K5:Q5', data['region'] or '')
-    label_value('B6:C6', '담당자', 'D6:H6', data['manager'] or '')
-    label_value('I6:J6', '작성자', 'K6:Q6', data['author'] or '')
-    label_value('B7:C7', f"엔픽스 {str(data['year'])[2:]}' 누적 매출", 'D7:H7', data['year_total'])
-    label_value('I7:J7', '엔픽스 월 평균 매출', 'K7:Q7', round(data['monthly_avg']))
-    ws['D7'].number_format = '#,##0"원"'; ws['K7'].number_format = '#,##0"원"'
+    store_label = f"{data['store_name']}  ({data['store_rank']})" if data['store_rank'] else data['store_name']
+    label_value('B5:C5', '최종 수정일', 'D5:H5', today)
+    label_value('I5:J5', '최근 방문일', 'K5:Q5', data['latest_visit'] or '방문 기록 없음')
+    label_value('B6:C6', '매장명', 'D6:H6', store_label, bold_value=True)
+    label_value('I6:J6', '지역', 'K6:Q6', data['region'] or '—')
+    label_value('B7:C7', '담당자', 'D7:H7', data['manager'] or '—')
+    label_value('I7:J7', '작성자', 'K7:Q7', data['author'] or '—')
+    label_value('B8:C8', f"엔픽스 {str(data['year'])[2:]}' 누적 매출", 'D8:H8', data['year_total'],
+                bold_value=True, number_format='#,##0"원"')
+    label_value('I8:J8', '엔픽스 월 평균 매출', 'K8:Q8', round(data['monthly_avg']),
+                bold_value=True, number_format='#,##0"원"')
+    for r in (5, 6, 7, 8):
+        ws.row_dimensions[r].height = 19
+    spacer(9, 8)
 
-    band('B8:J8', '브랜드별 매출 비율', f_label, 'F2F2F2')
-    band('K8:Q8', '베스트 제품 TOP5', f_label, 'F2F2F2')
-    ws.merge_cells('B9:J15')
+    # ── 브랜드별 매출 비율 + 베스트 제품 TOP5 (같은 높이로 나란히) ──
+    CHART1_TOP, CHART1_BOT = 11, 17   # 7 rows ≈ 8.3cm, 차트 높이와 맞춤
+    band('B10:J10', '브랜드별 매출 비율', f_subhdr, LABEL_BG, align=left)
+    band('K10:Q10', '베스트 제품 TOP5', f_subhdr, LABEL_BG, align=left)
+    ws.merge_cells(f'B{CHART1_TOP}:J{CHART1_BOT}')
+    for r in range(CHART1_TOP, CHART1_BOT + 1):
+        ws.row_dimensions[r].height = 34
 
-    # ── 브랜드별 매출비율 보조 데이터(차트 소스) — 화면 밖(S열부터)에 적어두고 차트가 참조 ──
+    # ── 차트 소스 데이터 (숨김 열 S/T) ──
     ws['S1'] = '브랜드'; ws['T1'] = '매출액'
+    n_brand = min(len(data['brand_breakdown']), 8)
     for i, g in enumerate(data['brand_breakdown'][:8]):
-        ws.cell(row=2+i, column=19, value=g['brand'])
-        ws.cell(row=2+i, column=20, value=g['amount'])
-    if data['brand_breakdown']:
+        ws.cell(row=2 + i, column=19, value=g['brand'])
+        ws.cell(row=2 + i, column=20, value=g['amount'])
+
+    if n_brand:
         pie = PieChart()
-        pie.title = '브랜드별 매출 비율'
-        n = min(len(data['brand_breakdown']), 8)
-        vals = Reference(ws, min_col=20, min_row=1, max_row=1+n)
-        cats = Reference(ws, min_col=19, min_row=2, max_row=1+n)
+        pie.title = None
+        vals = Reference(ws, min_col=20, min_row=1, max_row=1 + n_brand)
+        cats = Reference(ws, min_col=19, min_row=2, max_row=1 + n_brand)
         pie.add_data(vals, titles_from_data=True)
         pie.set_categories(cats)
-        pie.height = 8.5; pie.width = 15.5
-        ws.add_chart(pie, 'B9')
+        series = pie.series[0]
+        series.data_points = [
+            DataPoint(idx=i, spPr=GraphicalProperties(
+                solidFill=PIE_PALETTE[i % len(PIE_PALETTE)]))
+            for i in range(n_brand)
+        ]
+        series.dLbls = DataLabelList()
+        series.dLbls.showPercent = True
+        series.dLbls.showVal = False
+        series.dLbls.showCatName = False
+        pie.legend.position = 'b'
+        pie.visible_cells_only = False  # S/T열을 숨김 처리했으므로 반드시 꺼줘야 차트가 빈 화면으로 안 나온다
+        pie.height = 8.1; pie.width = 19.2
+        ws.add_chart(pie, f'B{CHART1_TOP}')
     else:
-        ws['B9'] = '올해 판매 데이터가 없습니다'; ws['B9'].font = f_value; ws['B9'].alignment = ctr
+        ws[f'B{CHART1_TOP}'] = '올해 판매 데이터가 없습니다'
+        ws[f'B{CHART1_TOP}'].font = f_note; ws[f'B{CHART1_TOP}'].alignment = ctr
 
-    circled = ['①','②','③','④','⑤']
+    # TOP5 미니 테이블 (순위 / 제품명 / 수량 / 매출액 / 비중)
+    top5_hdr_row = CHART1_TOP
+    for col_letter, h in [('K', '순위'), ('L', '제품명'), ('M', '수량'), ('N', '매출액'), ('O', '비중')]:
+        c = ws[f'{col_letter}{top5_hdr_row}']
+        c.value = h; c.font = Font(name=FNAME, size=9, bold=True, color='64748B')
+        c.fill = mf(LABEL_BG); c.border = bdr; c.alignment = ctr
+    ws.merge_cells(f'P{top5_hdr_row}:Q{top5_hdr_row}')
+    ws[f'P{top5_hdr_row}'].fill = mf(LABEL_BG); ws[f'P{top5_hdr_row}'].border = bdr
+    circled = ['①', '②', '③', '④', '⑤']
     for i in range(5):
-        r = 10 + i
+        r = CHART1_TOP + 1 + i
+        row_fill = ZEBRA if i % 2 else 'FFFFFF'
         if i < len(data['top5_products']):
             p = data['top5_products'][i]
-            ws.cell(row=r, column=12, value=circled[i])
-            ws.cell(row=r, column=13, value=p['product'])
-            ws.cell(row=r, column=14, value=f"{p['qty']}개 · {p['amount']:,}원 ({p['pct']}%)")
-        for ci in (12, 13, 14):
-            cell = ws.cell(row=r, column=ci)
-            cell.font = f_value; cell.border = bdr
-            cell.alignment = ctr if ci == 12 else left
+            ws[f'K{r}'] = circled[i]
+            ws[f'L{r}'] = p['product']
+            ws[f'M{r}'] = p['qty']; ws[f'M{r}'].number_format = '#,##0"개"'
+            ws[f'N{r}'] = p['amount']; ws[f'N{r}'].number_format = '#,##0"원"'
+            ws[f'O{r}'] = p['pct']; ws[f'O{r}'].number_format = '0.0"%"'
+        for col_letter in ('K', 'L', 'M', 'N', 'O'):
+            cell = ws[f'{col_letter}{r}']
+            cell.font = f_value_b if col_letter == 'K' else f_value
+            cell.border = bdr; cell.fill = mf(row_fill)
+            cell.alignment = ctr if col_letter in ('K', 'M', 'O') else (left if col_letter == 'L' else Alignment(horizontal='right', vertical='center'))
+        ws.merge_cells(f'P{r}:Q{r}')
+        ws[f'P{r}'].fill = mf(row_fill); ws[f'P{r}'].border = bdr
+    if not data['top5_products']:
+        ws.merge_cells(f'K{CHART1_TOP+1}:Q{CHART1_TOP+1}')
+        ws[f'K{CHART1_TOP+1}'] = '판매 데이터가 없습니다'
+        ws[f'K{CHART1_TOP+1}'].font = f_note; ws[f'K{CHART1_TOP+1}'].alignment = ctr
+    spacer(CHART1_BOT + 1, 8)
 
-    band('B16:Q16', '월별 판매 추이', f_label, 'F2F2F2')
-    ws.merge_cells('B17:Q23')
-    ws['S10'] = '월'; ws['T10'] = '매출액'
+    # ── 월별 판매 추이 ──
+    section2_row = CHART1_BOT + 2
+    band(f'B{section2_row}:Q{section2_row}', '월별 판매 추이', f_subhdr, LABEL_BG, align=left)
+    CHART2_TOP = section2_row + 1
+    CHART2_BOT = CHART2_TOP + 6
+    ws.merge_cells(f'B{CHART2_TOP}:Q{CHART2_BOT}')
+    for r in range(CHART2_TOP, CHART2_BOT + 1):
+        ws.row_dimensions[r].height = 34
+
+    ws['S11'] = '월'; ws['T11'] = '매출액'
     for i, m in enumerate(data['monthly_trend']):
-        ws.cell(row=11+i, column=19, value=f"{m['month']}월")
-        ws.cell(row=11+i, column=20, value=m['amount'])
+        ws.cell(row=12 + i, column=19, value=f"{m['month']}월")
+        ws.cell(row=12 + i, column=20, value=m['amount'])
     bar = BarChart()
-    bar.type = 'col'; bar.title = '월별 판매 추이'
-    vals = Reference(ws, min_col=20, min_row=10, max_row=22)
-    cats = Reference(ws, min_col=19, min_row=11, max_row=22)
+    bar.type = 'col'; bar.title = None
+    vals = Reference(ws, min_col=20, min_row=11, max_row=23)
+    cats = Reference(ws, min_col=19, min_row=12, max_row=23)
     bar.add_data(vals, titles_from_data=True)
     bar.set_categories(cats)
-    bar.height = 8.5; bar.width = 24
+    bar.series[0].graphicalProperties = GraphicalProperties(solidFill=PRIMARY)
+    bar.y_axis.numFmt = '#,##0'
+    from openpyxl.drawing.line import LineProperties
+    bar.y_axis.majorGridlines.spPr = GraphicalProperties(ln=LineProperties(solidFill='EEF2FF'))
+    bar.x_axis.delete = False; bar.y_axis.delete = False
+    bar.gapWidth = 60
     bar.legend = None
-    ws.add_chart(bar, 'B17')
+    bar.visible_cells_only = False  # S/T열을 숨김 처리했으므로 반드시 꺼줘야 차트가 빈 화면으로 안 나온다
+    bar.height = 8.1; bar.width = 28.6
+    ws.add_chart(bar, f'B{CHART2_TOP}')
+    spacer(CHART2_BOT + 1, 8)
 
-    band('B24:Q24', '2. 매장 현황', f_section, 'EFEFEF')
-    band('B25:C25', '구분', f_label, 'EFEFEF')
-    for addr, txt in [('D25','내용')]:
-        ws.merge_cells('D25:Q25'); ws['D25'] = txt
-        for row in ws['D25:Q25']:
-            for cell in row: cell.font = f_label; cell.fill = mf('EFEFEF'); cell.border = bdr; cell.alignment = ctr
-    ws.merge_cells('B26:B29'); ws['B26'] = '직원현황'
-    ws.merge_cells('C26:Q29'); ws['C26'] = data['staff_status'] or '(미입력 — 화면에서 직접 입력해주세요)'
-    ws.merge_cells('B30:B31'); ws['B30'] = '매장현황'
-    ws.merge_cells('C30:Q31'); ws['C30'] = data['store_status'] or '(미입력 — 화면에서 직접 입력해주세요)'
-    ws.merge_cells('B32:B33'); ws['B32'] = '지역상품권\n관련'
-    ws.merge_cells('C32:Q33'); ws['C32'] = data['voucher_info'] or '(미입력 — 화면에서 직접 입력해주세요)'
-    for addr in ['B26','B30','B32','C26','C30','C32']:
-        ws[addr].font = f_label if addr.startswith('B') else f_value
-        ws[addr].fill = mf('F2F2F2') if addr.startswith('B') else mf('FFFFFF')
-        ws[addr].border = bdr
-        ws[addr].alignment = ctr if addr.startswith('B') else left
+    # ── 2. 매장 현황 ──
+    section3_row = CHART2_BOT + 2
+    band(f'B{section3_row}:Q{section3_row}', '2. 매장 현황', f_section, PRIMARY_LT, align=left, height=22)
+    r1 = section3_row + 1
+    status_rows = [
+        ('직원현황', data['staff_status'], 2),
+        ('매장현황', data['store_status'], 2),
+        ('지역상품권 관련', data['voucher_info'], 2),
+    ]
+    cur = r1
+    for label_txt, val, span in status_rows:
+        ws.merge_cells(f'B{cur}:C{cur+span-1}')
+        c = ws[f'B{cur}']; c.value = label_txt
+        c.font = f_label; c.fill = mf(LABEL_BG); c.border = bdr; c.alignment = ctr
+        for rr in range(cur, cur + span):
+            for col_letter in ('B', 'C'):
+                ws[f'{col_letter}{rr}'].border = bdr; ws[f'{col_letter}{rr}'].fill = mf(LABEL_BG)
+        ws.merge_cells(f'D{cur}:Q{cur+span-1}')
+        vc = ws[f'D{cur}']; vc.value = val or '(미입력 — 화면에서 직접 입력해주세요)'
+        vc.font = f_value if val else f_note
+        vc.fill = mf('FFFFFF'); vc.alignment = left_top
+        for rr in range(cur, cur + span):
+            for col_letter in [get_column_letter(ci) for ci in range(4, 18)]:
+                ws[f'{col_letter}{rr}'].border = bdr
+        cur += span
+    spacer(cur, 8)
+    cur += 1
 
-    band('B34:B34', '연도별 매출 비교', f_label, 'F2F2F2')
-    yoy_line = (f"  {data['year']}년 1~{data['cur_month']}월: {data['this_year_ytd']:,}원  ({data['this_year_cnt']}개)\n"
-                f"  {data['year']-1}년 1~{data['cur_month']}월: {data['last_year_ytd']:,}원  ({data['last_year_cnt']}개)"
-                + (f"  {'▲' if data['yoy_pct']>=0 else '▼'} {abs(data['yoy_pct'])}% ({'증가' if data['yoy_pct']>=0 else '감소'})" if data['yoy_pct'] is not None else '')
-                + f"\n  {data['year']-1}년 연간 전체: {data['last_year_full']:,}원")
-    ws.merge_cells('C34:Q34'); ws['C34'] = yoy_line
-    ws['C34'].font = f_value; ws['C34'].fill = mf('FFFFFF'); ws['C34'].border = bdr
-    ws['C34'].alignment = Alignment(horizontal='left', vertical='center', wrap_text=True)
-    ws.row_dimensions[34].height = 48
+    # ── 연도별 매출 비교 ──
+    yoy_row = cur
+    yoy_span = 3  # 3줄(올해/작년 동기/작년 전체)이 잘리지 않도록 3행 확보
+    band(f'B{yoy_row}:C{yoy_row+yoy_span-1}', '연도별 매출 비교', f_label, LABEL_BG, align=left)
+    ws.merge_cells(f'D{yoy_row}:Q{yoy_row+yoy_span-1}')
+    yoy_cell = ws[f'D{yoy_row}']
+    lines = [
+        f"{data['year']}년 1~{data['cur_month']}월   {data['this_year_ytd']:,}원  ({data['this_year_cnt']}건)",
+        f"{data['year']-1}년 1~{data['cur_month']}월   {data['last_year_ytd']:,}원  ({data['last_year_cnt']}건)"
+        + (f"   {'▲' if data['yoy_pct'] >= 0 else '▼'} {abs(data['yoy_pct'])}% ({'증가' if data['yoy_pct'] >= 0 else '감소'})"
+           if data['yoy_pct'] is not None else ''),
+        f"{data['year']-1}년 연간 전체   {data['last_year_full']:,}원",
+    ]
+    yoy_cell.value = '\n'.join(lines)
+    yoy_cell.font = f_value; yoy_cell.fill = mf('FFFFFF'); yoy_cell.alignment = left_top
+    for rr in range(yoy_row, yoy_row + yoy_span):
+        for col_letter in [get_column_letter(ci) for ci in range(2, 18)]:
+            ws[f'{col_letter}{rr}'].border = bdr
+            if col_letter in ('B', 'C'):
+                ws[f'{col_letter}{rr}'].fill = mf(LABEL_BG)
+        ws.row_dimensions[rr].height = 18
+    cur += yoy_span
+    spacer(cur, 8)
+    cur += 1
 
-    ws.merge_cells('B35:B40'); ws['B35'] = '자사입점브랜드'
-    ws['B35'].font = f_label; ws['B35'].fill = mf('F2F2F2'); ws['B35'].border = bdr; ws['B35'].alignment = ctr
+    # ── 자사입점브랜드 ──
+    brand_hdr_row = cur
+    band(f'B{brand_hdr_row}:Q{brand_hdr_row}', '자사입점브랜드', f_subhdr, LABEL_BG, align=left, height=20)
     brand_cols = ['줄즈', '카오스', '원더폴드', '레카로', 'ABC디자인', '엔픽스', '타프토이즈']
+    col_w = 16 // len(brand_cols)  # B~Q(16칸)를 7개 브랜드가 나눠 쓰도록 폭 배분용(정보용 주석)
+    first_col = 2  # B
+    span = 16 // len(brand_cols)
     for ci, b in enumerate(brand_cols):
-        col_letter = get_column_letter(3 + ci)  # C부터
-        ws[f'{col_letter}35'] = b
-        ws[f'{col_letter}35'].font = f_label; ws[f'{col_letter}35'].fill = mf('F2F2F2')
-        ws[f'{col_letter}35'].border = bdr; ws[f'{col_letter}35'].alignment = ctr
+        c0 = first_col + ci * span
+        c1 = c0 + span - 1 if ci < len(brand_cols) - 1 else 17  # 마지막 브랜드가 Q열까지 채움
+        l0, l1 = get_column_letter(c0), get_column_letter(c1)
+        ws.merge_cells(f'{l0}{brand_hdr_row+1}:{l1}{brand_hdr_row+1}')
+        hc = ws[f'{l0}{brand_hdr_row+1}']
+        hc.value = b
+        hc.font = Font(name=FNAME, size=9.5, bold=True, color='FFFFFF')
+        hc.fill = mf(BRAND_COLORS.get(b, '94A3B8')); hc.border = bdr; hc.alignment = ctr
         products = data['carried_brands'].get(b, [])
-        for pi, pname in enumerate(products[:5]):
-            cell = ws[f'{col_letter}{36+pi}']
-            cell.value = pname; cell.font = f_value; cell.border = bdr; cell.alignment = ctr
+        for pi in range(5):
+            rr = brand_hdr_row + 2 + pi
+            ws.merge_cells(f'{l0}{rr}:{l1}{rr}')
+            cell = ws[f'{l0}{rr}']
+            cell.value = products[pi] if pi < len(products) else ''
+            cell.font = Font(name=FNAME, size=9, color='1E293B')
+            cell.fill = mf(ZEBRA if pi % 2 else 'FFFFFF')
+            cell.border = bdr; cell.alignment = ctr
+        if not products:
+            ws.merge_cells(f'{l0}{brand_hdr_row+2}:{l1}{brand_hdr_row+2}')
+            ec = ws[f'{l0}{brand_hdr_row+2}']
+            ec.value = '—'; ec.font = f_note; ec.fill = mf('FFFFFF'); ec.border = bdr; ec.alignment = ctr
+    cur = brand_hdr_row + 7
+    spacer(cur, 8)
+    cur += 1
 
-    band('B41:Q41', '3. 방문 · 영업활동비 현황  (방문이력 시트에서 자동 집계)', f_section, 'EFEFEF')
-    label_value('B42:C42', '총 방문 횟수', 'D42:H42', f"{data['total_visits']}회")
-    label_value('I42:J42', '진행중 조치', 'K42:Q42', f"{data['ongoing_actions']}건")
-    label_value('B43:C43', '누적 영업활동비', 'D43:H43', data['total_expense'])
-    label_value('I43:J43', '이번 달 활동비', 'K43:Q43', data['this_month_expense'])
-    ws['D43'].number_format = '#,##0"원"'; ws['K43'].number_format = '#,##0"원"'
+    # ── 3. 방문 · 영업활동비 현황 ──
+    band(f'B{cur}:Q{cur}', '3. 방문 · 영업활동비 현황  (방문이력 시트 자동 집계)', f_section, PRIMARY_LT,
+         align=left, height=22)
+    cur += 1
+    label_value(f'B{cur}:C{cur}', '총 방문 횟수', f'D{cur}:H{cur}', f"{data['total_visits']}회", bold_value=True)
+    label_value(f'I{cur}:J{cur}', '진행중 조치', f'K{cur}:Q{cur}', f"{data['ongoing_actions']}건", bold_value=True)
+    ws.row_dimensions[cur].height = 19
+    cur += 1
+    label_value(f'B{cur}:C{cur}', '누적 영업활동비', f'D{cur}:H{cur}', data['total_expense'],
+                bold_value=True, number_format='#,##0"원"')
+    label_value(f'I{cur}:J{cur}', '이번 달 활동비', f'K{cur}:Q{cur}', data['this_month_expense'],
+                bold_value=True, number_format='#,##0"원"')
+    ws.row_dimensions[cur].height = 19
 
     ws.sheet_view.showGridLines = False
+    ws.print_area = f'A1:Q{cur}'
 
 
 def _write_visit_log_sheet(ws, data, FNAME):

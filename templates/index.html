@@ -2782,11 +2782,22 @@ async function downloadVrStoreXlsx(storeName){
 // ── 방문 기록 작성/수정 모달 ────────────────────────────────
 let vrEntryEditId = null;
 let vrEntryOptions = null;
+let vrBranchNames = null;
+
+async function vrLoadBranchNames(){
+  if(vrBranchNames) return vrBranchNames;
+  try{
+    const list = await api('/api/branches');
+    vrBranchNames = (list||[]).map(b=>b.name).filter(Boolean).sort();
+  }catch(e){ vrBranchNames = []; }
+  return vrBranchNames;
+}
 
 async function openVrEntryModal(prefillStore){
   if(!vrEntryOptions){
     vrEntryOptions = await api('/api/visit-log/purpose-options');
   }
+  await vrLoadBranchNames();
   vrEntryEditId = null;
   const overlay = document.getElementById('vr-entry-overlay');
   const body = document.getElementById('vr-entry-body');
@@ -2799,6 +2810,7 @@ async function editVrEntry(logId){
   const r = await api(`/api/visit-log/${logId}`);
   if(!r || r.ok === false){ toast('불러오지 못했습니다', false); return; }
   if(!vrEntryOptions){ vrEntryOptions = await api('/api/visit-log/purpose-options'); }
+  await vrLoadBranchNames();
   vrEntryEditId = logId;
   const overlay = document.getElementById('vr-entry-overlay');
   const body = document.getElementById('vr-entry-body');
@@ -2821,8 +2833,9 @@ function vrEntryFormHtml(r){
     </div>
     <div style="padding:18px 22px;display:flex;flex-direction:column;gap:12px">
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
-        <div><label style="font-size:11px;color:var(--t-500);font-weight:600">매장명 *</label>
-          <input id="ve-store" class="fs" style="width:100%" value="${vrAttr(r.store_name||'')}" ${vrEntryEditId?'readonly':''}></div>
+        <div><label style="font-size:11px;color:var(--t-500);font-weight:600">매장명 * <span style="font-weight:400;color:var(--t-300)">(목록에서 정확한 매장명을 선택해주세요)</span></label>
+          <input id="ve-store" class="fs" style="width:100%" list="ve-store-list" autocomplete="off" value="${vrAttr(r.store_name||'')}" ${vrEntryEditId?'readonly':''}>
+          <datalist id="ve-store-list">${(vrBranchNames||[]).map(n=>`<option value="${vrAttr(n)}">`).join('')}</datalist></div>
         <div><label style="font-size:11px;color:var(--t-500);font-weight:600">방문일 *</label>
           <input id="ve-date" type="date" class="fs" style="width:100%" value="${vrAttr(r.visit_date||'')}"></div>
       </div>
@@ -2854,7 +2867,7 @@ function vrEntryFormHtml(r){
       </div>
       <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:8px">
         <button class="btn btn-ghost btn-sm" onclick="closeVrEntryModal()">취소</button>
-        <button class="btn btn-primary btn-sm" onclick="saveVrEntry()">저장</button>
+        <button class="btn btn-primary btn-sm" id="ve-save-btn" onclick="saveVrEntry()">저장</button>
       </div>
     </div>`;
 }
@@ -2875,18 +2888,26 @@ async function saveVrEntry(){
     expense_note: document.getElementById('ve-exp-note').value,
   };
   if(!payload.store_name || !payload.visit_date){ toast('매장명과 방문일은 필수입니다', false); return; }
+  if(vrBranchNames && vrBranchNames.length && !vrBranchNames.includes(payload.store_name)){
+    if(!confirm(`"${payload.store_name}"은(는) 판매처관리에 등록된 매장명과 일치하지 않습니다.\n이 이름으로 그대로 저장하면 해당 매장 카드에서 조회가 안 될 수 있습니다.\n계속 저장하시겠습니까?`)) return;
+  }
   if(vrEntryEditId) payload.id = vrEntryEditId;
-  const r = await api('/api/visit-log/save', {method:'POST', body: payload});
+  const saveBtn = document.getElementById('ve-save-btn');
+  if(saveBtn){ saveBtn.disabled = true; saveBtn.textContent = 'AI가 내용을 다듬는 중...'; }
+  let r;
+  try{
+    r = await api('/api/visit-log/save', {method:'POST', body: payload});
+  } finally {
+    if(saveBtn){ saveBtn.disabled = false; saveBtn.textContent = '저장'; }
+  }
   if(r?.ok){
-    toast('저장되었습니다');
+    toast('저장되었습니다 — 방금 작성한 매장 카드를 보여드릴게요');
     closeVrEntryModal();
-    const scOverlay = document.getElementById('vr-storecard-overlay');
-    if(scOverlay.style.display === 'flex' && vrScCurrentStore === payload.store_name){
-      loadVrStoreCard();
-    }
     reloadVisitReportView();
+    // 저장 확인을 눈으로 바로 볼 수 있도록 해당 매장 카드를 열어서 보여준다
+    openVrStoreHistory(payload.store_name, vrScCurrentYear || new Date().getFullYear());
   } else {
-    toast('저장에 실패했습니다', false);
+    toast(r?.msg || '저장에 실패했습니다', false);
   }
 }
 
