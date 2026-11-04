@@ -4027,6 +4027,36 @@ def _lookup_promo_rate(rate_map, by_brand_keys, event_id, brand, pkey):
     return None
 
 
+def _lookup_promo_rate_cross_event(rate_map, by_brand_keys, events, sale_date, brand, pkey):
+    """줄레행사(줄즈레카로통합행사)처럼 '통합' 행사 자체에는 제품별 공급가가 따로 등록돼 있지
+    않고, 같은 기간의 브랜드 전용 행사(예: ADAC 레카로 특별프로모션, 줄즈 코엑스페어 대응행사)에
+    등록돼 있는 경우를 위한 대체 조회. 등록된 모든 행사를 다 뒤져보되, 그 판매일자가 실제로 속하는
+    행사(없으면 날짜가 가장 가까운 행사)의 공급가를 우선한다 — 그냥 가장 먼저 찾아지는 걸 쓰면
+    훨씬 오래된(예: 추석위크) 행사의 옛날 공급가가, 실제로 그 날짜에 적용 중이던 공급가보다
+    먼저 걸려서 틀린 숫자가 나올 수 있다."""
+    candidates = []
+    for ev in events:
+        rc = _lookup_promo_rate(rate_map, by_brand_keys, ev['id'], brand, pkey)
+        if rc:
+            candidates.append((ev, rc))
+    if not candidates:
+        return None
+
+    def _dist(ev):
+        if ev['date_start'] <= sale_date <= ev['date_end']:
+            return (0, 0)
+        try:
+            sd = datetime.strptime(sale_date, '%Y-%m-%d')
+            d0 = abs((sd - datetime.strptime(ev['date_start'], '%Y-%m-%d')).days)
+            d1 = abs((sd - datetime.strptime(ev['date_end'], '%Y-%m-%d')).days)
+            return (1, min(d0, d1))
+        except Exception:
+            return (2, 0)
+
+    candidates.sort(key=lambda pair: _dist(pair[0]))
+    return candidates[0][1]
+
+
 def _import_rates_from_work_promotion(event_id, date_start, date_end):
     """매장관리 플랫폼(업무 탭 > 프로모션 캘린더)에 이미 업로드해둔 공급조건 PDF/엑셀의 가격표를
     그대로 가져와서 이 행사의 제품별 공급율표에 채워 넣는다 — 브랜드별로 따로 "행사 관리"에
@@ -4232,10 +4262,23 @@ def _compute_promo_margins(rows, date_from='', date_to=''):
             exclude_items = _promo_event_exclude_items(ev)
             if exclude_items and (r.get('item_group') or '') in exclude_items:
                 continue
+            is_combo_ev = any(t in _COMBO_EVENT_TAGS for t in _promo_event_tags(ev))
             rc = _lookup_promo_rate(rate_map, by_brand_keys, ev['id'], brand, pkey)
-            key = (store, ev['id'], brand, pkey)
+            if rc is None and is_combo_ev:
+                # 수정사항1: 줄레행사(통합행사) 자체엔 제품별 공급가가 등록 안 돼 있어도, 같은
+                # 기간의 브랜드 전용 행사(ADAC 레카로, 줄즈 코엑스페어 등)에 등록된 공급가를 그대로
+                # 가져와서 기본 공급율 할인 마진까지 놓치지 않고 잡는다.
+                rc = _lookup_promo_rate_cross_event(rate_map, by_brand_keys, events, sale_date, brand, pkey)
+            buyer = r.get('buyer') or ''
+            pname = (rc['product_name'] if rc else pkey)
+            # 수정사항2: 줄레행사 건은 매장 한 곳에서 여러 고객의 판매가 섞일 수 있어서, 어떤
+            # 고객님 구매 때문에 이 마진이 잡혔는지 한눈에 보이도록 제품별이 아니라 고객별로도
+            # 쪼개서(같은 제품이라도 고객이 다르면 별도 행) 제품명에 고객명을 함께 적어준다.
+            if is_combo_ev and _combo_is_direct_ship(buyer):
+                pname = f"{pname} ({buyer} 동시구매)"
+            key = (store, ev['id'], brand, pkey, buyer if is_combo_ev else None)
             g = detail.setdefault(key, {'store': store, 'event_id': ev['id'], 'event_name': ev['name'],
-                                          'brand': brand, 'product': (rc['product_name'] if rc else pkey),
+                                          'brand': brand, 'product': pname,
                                           'qty': 0, 'paid_total': 0, 'price_qty': {},
                                           'normal_price': rc.get('normal_price') if rc else None,
                                           'event_price': rc.get('event_price') if rc else None,
@@ -4280,7 +4323,9 @@ def _compute_promo_margins(rows, date_from='', date_to=''):
     for store, bonus in combo_totals.items():
         store_totals[store] = store_totals.get(store, 0) + bonus
     detail_list.extend(combo_detail)
-    detail_list.sort(key=lambda x: (-(x['extra_margin'] or 0), x['store'], x['brand']))
+    # 수정사항2: 매장별로 행이 흩어지지 않고 붙어서 한눈에 보이도록, 매장(그 매장의 총 추가마진이
+    # 큰 순) 단위로 먼저 묶고, 같은 매장 안에서는 마진이 큰 행부터 보여준다.
+    detail_list.sort(key=lambda x: (-store_totals.get(x['store'], 0), x['store'], -(x['extra_margin'] or 0), x['brand']))
     return store_totals, detail_list, events
 
 
