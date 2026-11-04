@@ -595,13 +595,18 @@ def init_db():
     _NOTE_TAG_SEEDS = [
         ('%줄즈%', '%코엑스페어%', '2026-10-23', '줄즈행사'),
         ('%ADAC%', '%레카로%', '2026-10-23', '레카로행사'),
-        ('%줄즈%', '%레카로%', '2026-10-23', '줄레행사'),
+        # 실제 기초데이터 비고에는 '줄레행사'가 아니라 '줄즈레카로행사'로 찍혀서, 두 표기를
+        # 모두 등록해둔다(한쪽만 등록돼 있으면 실제 판매건이 하나도 안 잡히는 문제가 있었음).
+        ('%줄즈%', '%레카로%', '2026-10-23', '줄레행사,줄즈레카로행사'),
     ]
     try:
         for name_like1, name_like2, dstart, tag in _NOTE_TAG_SEEDS:
             conn.execute("""UPDATE promo_event SET note_tags=?
                 WHERE name LIKE ? AND name LIKE ? AND date_start=? AND (note_tags IS NULL OR note_tags='')""",
                 (tag, name_like1, name_like2, dstart))
+        # 기존에 이미 '줄레행사'만 등록돼 있던 행사도 '줄즈레카로행사' 표기를 추가로 인식하도록 보정
+        conn.execute("""UPDATE promo_event SET note_tags='줄레행사,줄즈레카로행사'
+            WHERE note_tags='줄레행사'""")
     except Exception:
         pass
 
@@ -3870,7 +3875,7 @@ def _promo_product_key(item_name):
 def _find_promo_events(date_from='', date_to=''):
     """검색 기간과 겹치는 행사(이벤트) 목록 — 기간을 안 주면 전체 행사를 반환"""
     conn = get_db()
-    q = "SELECT id, name, date_start, date_end, note, note_tags FROM promo_event"
+    q = "SELECT id, name, date_start, date_end, note, note_tags, exclude_keywords, exclude_items FROM promo_event"
     params = []
     if date_from or date_to:
         q += " WHERE date_start<=? AND date_end>=?"
@@ -4059,6 +4064,86 @@ def api_promo_event_import_platform(event_id):
     return jsonify({'ok': True, 'imported': imported})
 
 
+# ── 줄즈·레카로 동시구매 묶음 할인(공급가 추가 인하) ──
+# 기획: 같은 매장이 같은 날짜에 줄즈 유모차와 레카로 카시트를 함께 구매하면, 등록된 공급율표와는
+# 별개로 공급가를 추가로 깎아준다. 할인액은 카시트 종류에 따라서만 달라지고(유모차가 신생아용인지
+# 휴대용인지는 할인액에 영향 없음) — 신생아카시트(컨버터블카시트)와 묶이면 5만원, 토들러·주니어
+# 카시트와 묶이면 3만원. "같은 날짜(또는 같은 거래)에 함께 산 경우만 인정"이라는 조건이 있어서(매장
+# ×행사기간 전체를 합산하는 느슨한 매칭은 명확히 거부됨), 매출 테이블엔 영수증/거래 단위 식별자가
+# 없으므로 (매장, 판매일자)로 묶어서 "그날 그 매장에서 함께 나간 것"을 거래의 대리 지표로 쓴다.
+_COMBO_STROLLER_NEWBORN_PREFIXES = ('데이5', '허브2')   # 신생아유모차
+_COMBO_STROLLER_PORTABLE_PREFIXES = ('에어2',)           # 휴대용유모차(에어2/에어2_한정판/에어2 네투시 세트 등)
+_COMBO_CARSEAT_NEWBORN_GROUPS = ('컨버터블카시트',)       # 신생아카시트
+_COMBO_CARSEAT_OTHER_GROUPS = ('토들러카시트', '주니어카시트')  # 토들러·주니어카시트
+_COMBO_EVENT_TAGS = ('줄레행사', '줄즈레카로행사')         # 줄즈레카로통합행사를 가리키는 두 표기
+_COMBO_BONUS_NEWBORN = 50000   # 유모차 + 신생아카시트
+_COMBO_BONUS_OTHER = 30000     # 유모차 + 토들러·주니어카시트
+
+
+def _combo_classify_row(r):
+    """줄즈레카로통합행사 묶음할인 판정을 위해 이 매출행이 '유모차'인지 '카시트(종류별)'인지
+    분류한다. 둘 다 아니면 None."""
+    pkey = _promo_product_key(r.get('item_name'))
+    if pkey.startswith(_COMBO_STROLLER_NEWBORN_PREFIXES) or pkey.startswith(_COMBO_STROLLER_PORTABLE_PREFIXES):
+        return 'stroller'
+    grp = r.get('item_group') or ''
+    if grp in _COMBO_CARSEAT_NEWBORN_GROUPS:
+        return 'carseat_newborn'
+    if grp in _COMBO_CARSEAT_OTHER_GROUPS:
+        return 'carseat_other'
+    return None
+
+
+def _compute_promo_combo_bonus(rows, events):
+    """'줄즈레카로통합행사' 태그가 붙은 매출행들만 모아서, (매장, 판매일자)별로 유모차·카시트
+    수량을 세고 묶음할인을 계산한다. 반환: (매장별 보너스 합계 dict, 상세 리스트)"""
+    combo_event_ids = {e['id'] for e in events
+                        if any(t in _COMBO_EVENT_TAGS for t in _promo_event_tags(e))}
+    if not combo_event_ids:
+        return {}, []
+    buckets = {}  # (store, sale_date) -> {'stroller': n, 'carseat_newborn': n, 'carseat_other': n}
+    for r in rows:
+        note_text = r.get('note') or ''
+        if not any(_note_contains_tag(note_text, t) for t in _COMBO_EVENT_TAGS):
+            continue
+        kind = _combo_classify_row(r)
+        if kind is None:
+            continue
+        store = r.get('real_seller') or '(미상)'
+        sale_date = r.get('sale_date') or ''
+        qty = r.get('quantity') or 0
+        if not qty:
+            continue
+        b = buckets.setdefault((store, sale_date), {'stroller': 0, 'carseat_newborn': 0, 'carseat_other': 0})
+        b[kind] += qty
+
+    combo_totals = {}
+    combo_detail = []
+    for (store, sale_date), b in buckets.items():
+        stroller = b['stroller']
+        if stroller <= 0:
+            continue
+        pairs_newborn = min(stroller, b['carseat_newborn'])
+        pairs_other = min(stroller - pairs_newborn, b['carseat_other'])
+        bonus = pairs_newborn * _COMBO_BONUS_NEWBORN + pairs_other * _COMBO_BONUS_OTHER
+        if bonus <= 0:
+            continue
+        combo_totals[store] = combo_totals.get(store, 0) + bonus
+        note_parts = []
+        if pairs_newborn:
+            note_parts.append(f"신생아카시트 묶음 {pairs_newborn}세트×{_COMBO_BONUS_NEWBORN:,}원")
+        if pairs_other:
+            note_parts.append(f"토들러·주니어카시트 묶음 {pairs_other}세트×{_COMBO_BONUS_OTHER:,}원")
+        combo_detail.append({
+            'store': store, 'event_id': None, 'event_name': '줄즈레카로통합행사(동시구매 묶음할인)',
+            'brand': '줄즈+레카로', 'product': f"{sale_date} 동시구매 묶음할인",
+            'qty': pairs_newborn + pairs_other, 'paid_total': 0,
+            'normal_price': None, 'event_price': None, 'actual_unit_price': None,
+            'extra_margin': bonus, 'note': ' + '.join(note_parts) + ' (같은 날짜 동시구매 기준)',
+        })
+    return combo_totals, combo_detail
+
+
 def _compute_promo_margins(rows, date_from='', date_to=''):
     """매출 행별로 '실제로 얼마에 공급됐는지'를 정상 공급가격과 직접 비교해서 추가마진을 계산한다.
     행사에 등록된 공급율(%)이나 행사 기준가는 참고용일 뿐, 계산 자체는 오직
@@ -4089,6 +4174,14 @@ def _compute_promo_margins(rows, date_from='', date_to=''):
         if not matching_events:
             continue
         for ev in matching_events:
+            # 등록된 제외 키워드/제외 품목에 해당하면(예: TAFTOYS·보행기는 줄즈/레카로 행사 대상이
+            # 아님) 태그가 일치해도 이 행사의 마진 계산에서 뺀다 — 수정사항2와 동일한 기준.
+            exclude_kw = _promo_event_exclude_keywords(ev)
+            if exclude_kw and any(kw in note_text for kw in exclude_kw):
+                continue
+            exclude_items = _promo_event_exclude_items(ev)
+            if exclude_items and (r.get('item_group') or '') in exclude_items:
+                continue
             rc = _lookup_promo_rate(rate_map, by_brand_keys, ev['id'], brand, pkey)
             key = (store, ev['id'], brand, pkey)
             g = detail.setdefault(key, {'store': store, 'event_id': ev['id'], 'event_name': ev['name'],
@@ -4133,6 +4226,10 @@ def _compute_promo_margins(rows, date_from='', date_to=''):
         detail_list.append(g2)
         if margin:
             store_totals[g['store']] = store_totals.get(g['store'], 0) + margin
+    combo_totals, combo_detail = _compute_promo_combo_bonus(rows, events)
+    for store, bonus in combo_totals.items():
+        store_totals[store] = store_totals.get(store, 0) + bonus
+    detail_list.extend(combo_detail)
     detail_list.sort(key=lambda x: (-(x['extra_margin'] or 0), x['store'], x['brand']))
     return store_totals, detail_list, events
 
