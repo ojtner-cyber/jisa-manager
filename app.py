@@ -575,6 +575,19 @@ def init_db():
         pe_cols = [r[1] for r in conn.execute("PRAGMA table_info(promo_event)").fetchall()]
         if 'note_tags' not in pe_cols:
             conn.execute("ALTER TABLE promo_event ADD COLUMN note_tags TEXT DEFAULT ''")
+        if 'exclude_keywords' not in pe_cols:
+            conn.execute("ALTER TABLE promo_event ADD COLUMN exclude_keywords TEXT DEFAULT ''")
+        if 'exclude_items' not in pe_cols:
+            conn.execute("ALTER TABLE promo_event ADD COLUMN exclude_items TEXT DEFAULT ''")
+    except Exception:
+        pass
+
+    # 수정사항2: 줄즈=유모차, 레카로=카시트인 행사들에서 TAFTOYS·보행기 품목그룹은 행사 대상이
+    # 아니므로, 비고가 우연히 일치해도 항상 빠지도록 기본 제외품목을 1회성으로 시딩한다(idempotent).
+    try:
+        conn.execute("""UPDATE promo_event SET exclude_items='TAFTOYS,보행기'
+            WHERE (exclude_items IS NULL OR exclude_items='')
+              AND note_tags IN ('줄즈행사', '레카로행사', '줄레행사')""")
     except Exception:
         pass
 
@@ -3882,6 +3895,76 @@ def _promo_event_tags(ev):
     return [ev['name']] if ev.get('name') else []
 
 
+def _promo_event_exclude_keywords(ev):
+    """이 행사에 등록된 '제외 키워드' 목록 — 비고에 이 키워드가 들어있으면 태그가 일치해도
+    제외한다(예: 다른 행사와 합쳐 표기된 특수 케이스를 수동으로 더 걸러낼 때 사용)."""
+    import re as _re_tags
+    raw = (ev.get('exclude_keywords') or '').strip()
+    if not raw:
+        return []
+    return [t.strip() for t in _re_tags.split(r'[\n,]+', raw) if t.strip()]
+
+
+def _promo_event_exclude_items(ev):
+    """이 행사에 등록된 '제외 품목(품목그룹)' 목록 — 품목그룹이 여기 해당하면 비고가 일치해도
+    제외한다(예: 줄즈/레카로 행사에서 TAFTOYS·보행기처럼 행사 대상이 아닌 품목이 같은 전표의
+    비고를 타고 함께 잡히는 문제를 막기 위함)."""
+    import re as _re_tags
+    raw = (ev.get('exclude_items') or '').strip()
+    if not raw:
+        return []
+    return [t.strip() for t in _re_tags.split(r'[\n,]+', raw) if t.strip()]
+
+
+def _tag_boundary_ok(ch):
+    """경계 문자 ch가 한글/영숫자가 아니면(또는 문자열의 시작/끝이면) True.
+    행사 비고 표기가 다른 글자와 붙어있지 않고 독립된 단어로 등장했는지 확인하는 용도."""
+    if ch is None:
+        return True
+    return not (ch.isalnum() or '가' <= ch <= '힣')
+
+
+def _note_contains_tag(note_text, tag):
+    """note_text 안에 tag가 '독립된 표기'로 포함돼 있는지 확인한다 — 단순 부분 문자열 포함(in)과
+    달리, tag 앞뒤가 한글/영숫자로 이어붙어 있으면(= 다른 긴 행사명의 일부일 뿐이면) 매칭하지 않는다.
+    예: '레카로행사' 태그는 '※레카로행사_베하평택/안전배송'(앞이 구분자 ※)에는 매칭되지만,
+    '※줄즈레카로행사_베하청주/안전배송'(앞이 한글 '즈')에는 매칭되지 않는다 — 줄즈레카로행사는
+    레카로행사와 다른 행사이기 때문이다."""
+    note_text = note_text or ''
+    if not tag:
+        return False
+    start = 0
+    while True:
+        idx = note_text.find(tag, start)
+        if idx == -1:
+            return False
+        before = note_text[idx - 1] if idx > 0 else None
+        after_idx = idx + len(tag)
+        after = note_text[after_idx] if after_idx < len(note_text) else None
+        if _tag_boundary_ok(before) and _tag_boundary_ok(after):
+            return True
+        start = idx + 1
+
+
+def _promo_filter_candidate_rows(cand_rows, ev):
+    """LIKE로 넓게 가져온 후보 판매건들을, (1) 태그 경계 정확 매칭과 (2) 등록된 제외 키워드/제외
+    품목으로 다시 걸러서 이 행사에 정말 해당하는 건들만 남긴다."""
+    tags = _promo_event_tags(ev)
+    exclude_kw = _promo_event_exclude_keywords(ev)
+    exclude_items = set(_promo_event_exclude_items(ev))
+    out = []
+    for r in cand_rows:
+        note_text = r['note'] or ''
+        if not any(_note_contains_tag(note_text, t) for t in tags):
+            continue
+        if exclude_kw and any(kw in note_text for kw in exclude_kw):
+            continue
+        if exclude_items and (r['item_group'] or '') in exclude_items:
+            continue
+        out.append(r)
+    return out
+
+
 def _load_event_rate_map(event_ids):
     """이벤트ID 목록에 속한 공급율 행 전체를 {(event_id, brand, product_key): {...}} 로 로드.
     브랜드별로 등록된 product_key 목록도 같이 반환해서, 정확히 일치하는 게 없을 때
@@ -4001,7 +4084,7 @@ def _compute_promo_margins(rows, date_from='', date_to=''):
         qty = r.get('quantity') or 0
         total_incl_vat = r.get('total') or 0   # 부가세 포함 합계 — 정상/행사 공급가(부가세 포함)와 같은 기준
 
-        by_tag = [e for e in events if any(tag in note_text for tag in _promo_event_tags(e))]
+        by_tag = [e for e in events if any(_note_contains_tag(note_text, tag) for tag in _promo_event_tags(e))]
         matching_events = by_tag if by_tag else [e for e in events if e['date_start'] <= sale_date <= e['date_end']]
         if not matching_events:
             continue
@@ -4060,6 +4143,7 @@ def api_promo_events_list():
     """행사 목록 — 각 행사에 등록된 제품 수도 함께 내려준다"""
     conn = get_db()
     rows = conn.execute("""SELECT e.id, e.name, e.date_start, e.date_end, e.note, e.note_tags,
+                                  e.exclude_keywords, e.exclude_items,
                                   (SELECT COUNT(*) FROM promo_event_rate WHERE event_id=e.id) product_count
                            FROM promo_event e ORDER BY e.date_start DESC""").fetchall()
     conn.close()
@@ -4071,15 +4155,20 @@ def api_promo_events_list():
 def api_promo_event_note_tags_save(event_id):
     """행사의 '비고 표기 분류' 저장 — 실제 기초데이터 비고란에 찍히는 정확한 표기를 등록해두면
     (예: 줄즈행사 / 레카로행사 / 줄레행사) 이후 모든 매칭(검색·추가마진 계산·보고서)이 이 표기와
-    정확히 일치하는 판매건만 잡는다. 같은 날 겹치는 다른 행사와 절대 섞이지 않도록 하기 위함."""
+    정확히 일치하는 판매건만 잡는다. 같은 날 겹치는 다른 행사와 절대 섞이지 않도록 하기 위함.
+    제외 키워드/제외 품목도 함께 저장한다 — 태그가 일치해도 이 조건에 해당하면 매칭에서 뺀다
+    (예: TAFTOYS·보행기처럼 줄즈/레카로 행사 대상이 아닌 품목을 걸러낼 때 사용)."""
     d = request.json or {}
     note_tags = (d.get('note_tags') or '').strip()
+    exclude_keywords = (d.get('exclude_keywords') or '').strip()
+    exclude_items = (d.get('exclude_items') or '').strip()
     conn = get_db()
     ev = conn.execute("SELECT id FROM promo_event WHERE id=?", (event_id,)).fetchone()
     if not ev:
         conn.close()
         return jsonify({'ok': False, 'msg': '행사를 찾을 수 없습니다'}), 404
-    conn.execute("UPDATE promo_event SET note_tags=? WHERE id=?", (note_tags, event_id))
+    conn.execute("UPDATE promo_event SET note_tags=?, exclude_keywords=?, exclude_items=? WHERE id=?",
+                 (note_tags, exclude_keywords, exclude_items, event_id))
     conn.commit(); conn.close()
     return jsonify({'ok': True})
 
@@ -4129,15 +4218,17 @@ def api_promo_event_missing_products(event_id):
     브랜드·제품을 실제 판매수량·매출과 함께 찾아준다 — '분명 파일을 올렸는데 왜 반영이 안 됐지'
     싶을 때, 어떤 제품이 정말 빠져 있는지 바로 확인할 수 있게 하기 위한 기능이다."""
     conn = get_db()
-    ev = conn.execute("SELECT id, name, date_start, date_end, note_tags FROM promo_event WHERE id=?", (event_id,)).fetchone()
+    ev = conn.execute("""SELECT id, name, date_start, date_end, note_tags, exclude_keywords, exclude_items
+                          FROM promo_event WHERE id=?""", (event_id,)).fetchone()
     if not ev:
         conn.close()
         return jsonify({'ok': False, 'msg': '행사를 찾을 수 없습니다'}), 404
     ev = dict(ev)
     tags = _promo_event_tags(ev)
     where_clause = " OR ".join(["note LIKE ?"] * len(tags)) or "0"
-    rows = conn.execute(f"SELECT real_seller, item_name, item_group, quantity, total, note, sale_date FROM sales_data WHERE {where_clause}",
-                         [f"%{t}%" for t in tags]).fetchall()
+    cand_rows = conn.execute(f"SELECT real_seller, item_name, item_group, quantity, total, note, sale_date FROM sales_data WHERE {where_clause}",
+                              [f"%{t}%" for t in tags]).fetchall()
+    rows = _promo_filter_candidate_rows(cand_rows, ev)
     registered = {(r[0], r[1]) for r in conn.execute(
         "SELECT brand, product_name FROM promo_event_rate WHERE event_id=?", (event_id,)).fetchall()}
     registered_keys = {(b, _promo_product_key(p)) for b, p in registered}
@@ -4402,13 +4493,16 @@ def api_sales_event_search():
     date_to = request.args.get('date_to', '').strip()
 
     tags_for_search = None
+    ev_for_filter = None
     if event_id:
         conn0 = get_db()
-        ev_row = conn0.execute("SELECT id, name, note_tags FROM promo_event WHERE id=?", (event_id,)).fetchone()
+        ev_row = conn0.execute("""SELECT id, name, note_tags, exclude_keywords, exclude_items
+                                   FROM promo_event WHERE id=?""", (event_id,)).fetchone()
         conn0.close()
         if not ev_row:
             return jsonify({'ok': False, 'msg': '행사를 찾을 수 없습니다'}), 404
-        tags_for_search = _promo_event_tags(dict(ev_row))
+        ev_for_filter = dict(ev_row)
+        tags_for_search = _promo_event_tags(ev_for_filter)
         keyword = ev_row['name']  # 화면 표시/보고서 파일명용
     if not keyword:
         return jsonify({'ok': False, 'msg': '검색할 키워드(비고 내용)를 입력해주세요'}), 400
@@ -4424,7 +4518,10 @@ def api_sales_event_search():
     if date_from: q += " AND sale_date >= ?"; params.append(date_from)
     if date_to: q += " AND sale_date <= ?"; params.append(date_to)
     q += " ORDER BY sale_date"
-    rows = [dict(r) for r in conn.execute(q, params).fetchall()]
+    cand_rows = conn.execute(q, params).fetchall()
+    if ev_for_filter:
+        cand_rows = _promo_filter_candidate_rows(cand_rows, ev_for_filter)
+    rows = [dict(r) for r in cand_rows]
     conn.close()
 
     total_qty = sum(r['quantity'] or 0 for r in rows)
@@ -4490,13 +4587,16 @@ def export_xlsx_event_report():
     date_to = request.args.get('date_to', '').strip()
 
     tags_for_search = None
+    ev_for_filter = None
     if event_id:
         conn0 = get_db()
-        ev_row = conn0.execute("SELECT id, name, note_tags FROM promo_event WHERE id=?", (event_id,)).fetchone()
+        ev_row = conn0.execute("""SELECT id, name, note_tags, exclude_keywords, exclude_items
+                                   FROM promo_event WHERE id=?""", (event_id,)).fetchone()
         conn0.close()
         if not ev_row:
             return jsonify({'ok': False, 'msg': '행사를 찾을 수 없습니다'}), 404
-        tags_for_search = _promo_event_tags(dict(ev_row))
+        ev_for_filter = dict(ev_row)
+        tags_for_search = _promo_event_tags(ev_for_filter)
         keyword = ev_row['name']
     if not keyword:
         return jsonify({'ok': False, 'msg': '검색할 키워드를 입력해주세요'}), 400
@@ -4512,7 +4612,10 @@ def export_xlsx_event_report():
     if date_from: q += " AND sale_date >= ?"; params.append(date_from)
     if date_to: q += " AND sale_date <= ?"; params.append(date_to)
     q += " ORDER BY sale_date, real_seller"
-    rows = [dict(r) for r in conn.execute(q, params).fetchall()]
+    cand_rows = conn.execute(q, params).fetchall()
+    if ev_for_filter:
+        cand_rows = _promo_filter_candidate_rows(cand_rows, ev_for_filter)
+    rows = [dict(r) for r in cand_rows]
 
     total_qty = sum(r['quantity'] or 0 for r in rows)
     total_amt = sum(r['total'] or 0 for r in rows)
@@ -8853,7 +8956,9 @@ def _write_store_info_sheet(wb, ws, data, FNAME):
         series.dLbls.showCatName = True  # 수정사항1: "매출액 00%"가 아니라 "브랜드명 00%"로 보이도록
         series.dLbls.showLegendKey = False
         series.dLbls.showSerName = False
-        pie.legend.position = 'b'
+        # 수정사항3: 조각마다 이미 "브랜드명 00%" 라벨이 붙어 있어서, 아래 범례(legend)는
+        # 같은 정보를 중복으로 보여줄 뿐이라 없애는 게 더 심플하고 깔끔하다.
+        pie.legend = None
         pie.visible_cells_only = False  # S/T열을 숨김 처리했으므로 반드시 꺼줘야 차트가 빈 화면으로 안 나온다
         pie.height = 8.1; pie.width = 19.2
         ws.add_chart(pie, f'B{CHART1_TOP}')
@@ -8954,8 +9059,9 @@ def _write_store_info_sheet(wb, ws, data, FNAME):
             for col_letter in ('B', 'C'):
                 ws[f'{col_letter}{rr}'].border = bdr; ws[f'{col_letter}{rr}'].fill = mf(LABEL_BG)
         ws.merge_cells(f'D{cur}:Q{cur+span-1}')
-        vc = ws[f'D{cur}']; vc.value = val or '(미입력 — 화면에서 직접 입력해주세요)'
-        vc.font = f_value if val else f_note
+        # 수정사항3: 미입력 안내문구는 빈 칸을 더 지저분해 보이게 해서 없애고, 그냥 비워둔다.
+        vc = ws[f'D{cur}']; vc.value = val or ''
+        vc.font = f_value
         vc.fill = mf('FFFFFF'); vc.alignment = left_top
         for rr in range(cur, cur + span):
             for col_letter in [get_column_letter(ci) for ci in range(4, 18)]:
@@ -9026,7 +9132,7 @@ def _write_store_info_sheet(wb, ws, data, FNAME):
     cur += 1
 
     # ── 3. 방문 · 영업활동비 현황 ──
-    band(f'B{cur}:Q{cur}', '3. 방문 · 영업활동비 현황  (방문이력 시트 자동 집계)', f_section, LABEL_BG,
+    band(f'B{cur}:Q{cur}', '3. 방문 · 영업활동비 현황', f_section, LABEL_BG,
          align=left, height=22)
     cur += 1
     label_value(f'B{cur}:C{cur}', '총 방문 횟수', f'D{cur}:H{cur}', f"{data['total_visits']}회", bold_value=True)

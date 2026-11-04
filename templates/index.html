@@ -5843,7 +5843,7 @@ async function loadPromoEventList(){
     return;
   }
   list.innerHTML = r.events.map(e=>`
-    <div onclick="openPromoEventDetail(${e.id}, '${e.name.replace(/'/g,"\\'")}', '${e.date_start}', '${e.date_end}', '${(e.note_tags||'').replace(/'/g,"\\'").replace(/\n/g,'\\n')}')"
+    <div onclick="openPromoEventDetail(${e.id}, '${e.name.replace(/'/g,"\\'")}', '${e.date_start}', '${e.date_end}', '${(e.note_tags||'').replace(/'/g,"\\'").replace(/\n/g,'\\n')}', '${(e.exclude_keywords||'').replace(/'/g,"\\'").replace(/\n/g,'\\n')}', '${(e.exclude_items||'').replace(/'/g,"\\'").replace(/\n/g,'\\n')}')"
       style="display:flex;justify-content:space-between;align-items:center;padding:10px 12px;background:var(--bg);border-radius:8px;cursor:pointer">
       <div>
         <div style="font-size:12.5px;font-weight:700;color:var(--t-800)">${e.name}${e.note_tags?' <span style="color:var(--p);font-weight:600">✓ 비고 등록됨</span>':''}</div>
@@ -5861,7 +5861,7 @@ async function createPromoEvent(){
   const r = await api('/api/promo-events', {method:'POST', body:{name, date_start, date_end}});
   if(r?.ok){
     toast(`"${name}" 행사를 만들었어요`);
-    openPromoEventDetail(r.id, name, date_start, date_end, '');
+    openPromoEventDetail(r.id, name, date_start, date_end, '', '', '');
   }
 }
 
@@ -5878,18 +5878,26 @@ function closePromoEventDetail(){
   loadPromoEventList();
 }
 
-async function openPromoEventDetail(id, name, dateStart, dateEnd, noteTags){
+async function openPromoEventDetail(id, name, dateStart, dateEnd, noteTags, excludeKeywords, excludeItems){
   promoCurrentEventId = id;
   document.getElementById('promo-event-list-view').style.display = 'none';
   document.getElementById('promo-event-new-form').style.display = 'none';
   document.getElementById('promo-event-detail-view').style.display = 'block';
   const ntVal = (noteTags||'').replace(/\\n/g,'\n');
+  const exkVal = (excludeKeywords||'').replace(/\\n/g,'\n');
+  const exiVal = (excludeItems||'').replace(/\\n/g,'\n');
   document.getElementById('promo-event-detail-header').innerHTML =
     `<div style="font-size:13px;font-weight:800;color:var(--t-800)">${name}</div><div style="font-size:11px;color:var(--t-400);margin-bottom:10px">${dateStart} ~ ${dateEnd}</div>
     <div style="background:var(--bg);border-radius:10px;padding:10px 12px">
       <div style="font-size:11.5px;font-weight:700;color:var(--t-700);margin-bottom:4px">비고(특이사항) 표기 분류</div>
       <div style="font-size:10.5px;color:var(--t-400);margin-bottom:6px">판매 데이터의 비고란에 이 행사가 실제로 어떤 글자로 표기되는지 적어주세요. 여러 표기가 있다면 줄바꿈으로 구분해주세요. (예: 레카로행사). 등록해두면 "행사별 실적"에서 같은 날 겹치는 다른 행사와 섞이지 않고 정확하게 매칭돼요.</div>
       <textarea id="pe-note-tags" rows="2" placeholder="예: 레카로행사" style="width:100%;border:1px solid var(--border-md);border-radius:6px;padding:6px 8px;font-size:11.5px;resize:vertical">${ntVal.replace(/</g,'&lt;')}</textarea>
+      <div style="font-size:11.5px;font-weight:700;color:var(--t-700);margin:10px 0 4px">제외 키워드 <span style="font-weight:400;color:var(--t-400)">(선택)</span></div>
+      <div style="font-size:10.5px;color:var(--t-400);margin-bottom:6px">비고가 위 표기와 일치해도, 비고에 이 키워드가 포함돼 있으면 이 행사에서 제외해요. 여러 개는 줄바꿈으로 구분. (예: 다른 행사와 합쳐 표기되는 경우)</div>
+      <textarea id="pe-exclude-keywords" rows="2" placeholder="예: (필요시에만 입력)" style="width:100%;border:1px solid var(--border-md);border-radius:6px;padding:6px 8px;font-size:11.5px;resize:vertical">${exkVal.replace(/</g,'&lt;')}</textarea>
+      <div style="font-size:11.5px;font-weight:700;color:var(--t-700);margin:10px 0 4px">제외 품목(품목그룹) <span style="font-weight:400;color:var(--t-400)">(선택)</span></div>
+      <div style="font-size:10.5px;color:var(--t-400);margin-bottom:6px">이 품목그룹은 비고가 일치해도 항상 이 행사에서 제외해요. 여러 개는 줄바꿈/쉼표로 구분. (예: TAFTOYS, 보행기)</div>
+      <textarea id="pe-exclude-items" rows="2" placeholder="예: TAFTOYS, 보행기" style="width:100%;border:1px solid var(--border-md);border-radius:6px;padding:6px 8px;font-size:11.5px;resize:vertical">${exiVal.replace(/</g,'&lt;')}</textarea>
       <button onclick="savePromoEventNoteTags()" class="btn btn-dark btn-sm" style="margin-top:6px">저장</button>
     </div>`;
   await loadPromoRateRows();
@@ -5899,7 +5907,9 @@ async function openPromoEventDetail(id, name, dateStart, dateEnd, noteTags){
 async function savePromoEventNoteTags(){
   if(!promoCurrentEventId) return;
   const note_tags = document.getElementById('pe-note-tags').value.trim();
-  const r = await api(`/api/promo-events/${promoCurrentEventId}/note-tags`, {method:'POST', body:{note_tags}});
+  const exclude_keywords = document.getElementById('pe-exclude-keywords').value.trim();
+  const exclude_items = document.getElementById('pe-exclude-items').value.trim();
+  const r = await api(`/api/promo-events/${promoCurrentEventId}/note-tags`, {method:'POST', body:{note_tags, exclude_keywords, exclude_items}});
   if(r?.ok){ toast('비고 표기 분류를 저장했어요'); loadEventPicker(); }
   else toast(r?.msg || '저장에 실패했습니다', false);
 }
