@@ -579,6 +579,22 @@ def init_db():
             conn.execute("ALTER TABLE promo_event ADD COLUMN exclude_keywords TEXT DEFAULT ''")
         if 'exclude_items' not in pe_cols:
             conn.execute("ALTER TABLE promo_event ADD COLUMN exclude_items TEXT DEFAULT ''")
+        if 'terms_note' not in pe_cols:
+            conn.execute("ALTER TABLE promo_event ADD COLUMN terms_note TEXT DEFAULT ''")
+    except Exception:
+        pass
+
+    # '줄즈레카로통합행사'(줄레행사) 공급가 추가 인하 조건 — 화면에서 직접 등록한 적이 없다면
+    # 기본값으로 채워둔다. 이 내용이 비어 있으면 매장 추가마진이 왜 더 붙는지 알아보기 어렵다.
+    try:
+        conn.execute("""UPDATE promo_event SET terms_note=?
+            WHERE (terms_note IS NULL OR terms_note='') AND note_tags LIKE '%줄레행사%'""",
+            ("- 공급가 추가 인하\n"
+             "1) 신생아유모차 + 신생아카시트 구매 시 5만원 공급가 할인\n"
+             "2) 신생아유모차 + 토들러,주니어카시트 구매 시 3만원 공급가 할인\n"
+             "3) 휴대용유모차 + 신생아카시트 구매 시 5만원 공급가 할인\n"
+             "4) 휴대용유모차 + 토들러,주니어카시트 구매 시 3만원 공급가 할인\n"
+             "* 단, 두 브랜드 모두 직송으로 처리되어야 함(매장재고 판매 시 할인 불가)",))
     except Exception:
         pass
 
@@ -3875,7 +3891,7 @@ def _promo_product_key(item_name):
 def _find_promo_events(date_from='', date_to=''):
     """검색 기간과 겹치는 행사(이벤트) 목록 — 기간을 안 주면 전체 행사를 반환"""
     conn = get_db()
-    q = "SELECT id, name, date_start, date_end, note, note_tags, exclude_keywords, exclude_items FROM promo_event"
+    q = "SELECT id, name, date_start, date_end, note, note_tags, exclude_keywords, exclude_items, terms_note FROM promo_event"
     params = []
     if date_from or date_to:
         q += " WHERE date_start<=? AND date_end>=?"
@@ -4111,26 +4127,25 @@ def _combo_is_direct_ship(buyer):
 
 
 def _compute_promo_combo_bonus(rows, events):
-    """'줄즈레카로통합행사' 태그가 붙은 매출행들 중, '행사 기간 내에 같은 매장에서 같은 고객에게
-    직송으로' 처리된 것들만 모아서(날짜가 꼭 같지 않아도 됨 — 수정사항1) 유모차·카시트 수량을 세고
-    묶음할인을 계산한다. 매장재고로 입고된 건(수취인이 매장명 자체)은 묶음할인 대상이 아니며,
-    서로 다른 고객의 주문은 한 매장이라도 절대 묶이지 않는다 — 수취인(고객명)까지 일치해야
-    '같은 고객이 묶음으로 구매'한 것으로 본다. 반환: (매장별 보너스 합계 dict, 상세 리스트)"""
+    """'줄즈레카로통합행사' 태그가 붙은 매출행들 중, 같은 매장에서 같은 고객에게 직송으로
+    처리된 것들만 모아서(날짜가 달라도 됨 — 수정사항1) 유모차·카시트 수량을 세고 묶음할인을
+    계산한다. 매장재고로 입고된 건(수취인이 매장명 자체)은 묶음할인 대상이 아니며, 서로 다른
+    고객의 주문은 한 매장이라도 절대 묶이지 않는다 — 수취인(고객명)까지 일치해야 '같은 고객이
+    묶음으로 구매'한 것으로 본다.
+    행사 '기간'은 등록된 promo_event.date_start~date_end로 별도 제한하지 않는다 — 비고에 찍힌
+    태그(예: ※줄레행사_..., ※줄즈레카로행사_...) 자체가 '이 건은 이 행사에 속한다'는 가장 정확한
+    표시이고(이 앱의 다른 모든 행사 매칭도 날짜보다 비고 표기를 우선한다), 실제로 등록된 행사
+    기간보다 한참 늦게까지 같은 태그로 판매가 찍히는 경우가 흔해서 날짜로 자르면 진짜 묶음구매도
+    누락된다. 반환: (매장별 보너스 합계 dict, 상세 리스트)"""
     combo_events = [e for e in events if any(t in _COMBO_EVENT_TAGS for t in _promo_event_tags(e))]
     if not combo_events:
         return {}, []
-
-    def _date_in_any_combo_event(sale_date):
-        return any(ev['date_start'] <= sale_date <= ev['date_end'] for ev in combo_events)
 
     buckets = {}  # (store, buyer) -> {'stroller': n, 'carseat_newborn': n, 'carseat_other': n, 'dates': set()}
     for r in rows:
         note_text = r.get('note') or ''
         if not any(_note_contains_tag(note_text, t) for t in _COMBO_EVENT_TAGS):
             continue
-        sale_date = r.get('sale_date') or ''
-        if not _date_in_any_combo_event(sale_date):
-            continue  # 행사 기간 밖 — 구매 시점이 행사와 무관
         buyer = r.get('buyer') or ''
         if not _combo_is_direct_ship(buyer):
             continue  # 매장재고 입고분 — 할인 대상 아님
@@ -4141,6 +4156,7 @@ def _compute_promo_combo_bonus(rows, events):
         qty = r.get('quantity') or 0
         if not qty:
             continue
+        sale_date = r.get('sale_date') or ''
         b = buckets.setdefault((store, buyer), {'stroller': 0, 'carseat_newborn': 0, 'carseat_other': 0, 'dates': set()})
         b[kind] += qty
         if sale_date:
@@ -4274,7 +4290,7 @@ def api_promo_events_list():
     """행사 목록 — 각 행사에 등록된 제품 수도 함께 내려준다"""
     conn = get_db()
     rows = conn.execute("""SELECT e.id, e.name, e.date_start, e.date_end, e.note, e.note_tags,
-                                  e.exclude_keywords, e.exclude_items,
+                                  e.exclude_keywords, e.exclude_items, e.terms_note,
                                   (SELECT COUNT(*) FROM promo_event_rate WHERE event_id=e.id) product_count
                            FROM promo_event e ORDER BY e.date_start DESC""").fetchall()
     conn.close()
@@ -4288,18 +4304,22 @@ def api_promo_event_note_tags_save(event_id):
     (예: 줄즈행사 / 레카로행사 / 줄레행사) 이후 모든 매칭(검색·추가마진 계산·보고서)이 이 표기와
     정확히 일치하는 판매건만 잡는다. 같은 날 겹치는 다른 행사와 절대 섞이지 않도록 하기 위함.
     제외 키워드/제외 품목도 함께 저장한다 — 태그가 일치해도 이 조건에 해당하면 매칭에서 뺀다
-    (예: TAFTOYS·보행기처럼 줄즈/레카로 행사 대상이 아닌 품목을 걸러낼 때 사용)."""
+    (예: TAFTOYS·보행기처럼 줄즈/레카로 행사 대상이 아닌 품목을 걸러낼 때 사용).
+    terms_note(공급가 추가 인하 조건 등 부연 설명)도 함께 저장한다 — 공급율표처럼 딱 떨어지는
+    숫자로 등록하기 애매한 조건(예: 두 브랜드 동시구매 시 추가 할인)을 적어두면, 매장별 추가마진이
+    왜 이렇게 나왔는지 행사별 판매실적 화면과 다운로드 엑셀에서 그대로 확인할 수 있다."""
     d = request.json or {}
     note_tags = (d.get('note_tags') or '').strip()
     exclude_keywords = (d.get('exclude_keywords') or '').strip()
     exclude_items = (d.get('exclude_items') or '').strip()
+    terms_note = (d.get('terms_note') or '').strip()
     conn = get_db()
     ev = conn.execute("SELECT id FROM promo_event WHERE id=?", (event_id,)).fetchone()
     if not ev:
         conn.close()
         return jsonify({'ok': False, 'msg': '행사를 찾을 수 없습니다'}), 404
-    conn.execute("UPDATE promo_event SET note_tags=?, exclude_keywords=?, exclude_items=? WHERE id=?",
-                 (note_tags, exclude_keywords, exclude_items, event_id))
+    conn.execute("UPDATE promo_event SET note_tags=?, exclude_keywords=?, exclude_items=?, terms_note=? WHERE id=?",
+                 (note_tags, exclude_keywords, exclude_items, terms_note, event_id))
     conn.commit(); conn.close()
     return jsonify({'ok': True})
 
@@ -4700,7 +4720,8 @@ def api_sales_event_search():
         'brand_breakdown': brand_breakdown, 'store_breakdown': store_breakdown,
         'product_breakdown': product_breakdown, 'rows': rows,
         'margin_breakdown': margin_breakdown, 'total_extra_margin': total_extra_margin,
-        'matched_events': [{'name': e['name'], 'date_start': e['date_start'], 'date_end': e['date_end']} for e in matched_events],
+        'matched_events': [{'name': e['name'], 'date_start': e['date_start'], 'date_end': e['date_end'],
+                             'terms_note': e.get('terms_note') or ''} for e in matched_events],
     })
 
 
@@ -5006,10 +5027,22 @@ def export_xlsx_event_report():
     ws3.merge_cells('B3:K3')
     c = ws3.cell(row=3, column=2, value="※ 추가마진 = 수량 × (정상 공급가 − 실제 공급단가, 부가세 포함 금액 기준). 행사 표준가와 다르게 공급된 경우도 실제 단가 그대로 잡혀요.")
     c.font = Font(size=9, name=FNAME, color='9CA3AF'); c.alignment = left_a
+    # 행사에 등록된 '공급가 추가 인하 조건'(terms_note) — 공급율표처럼 딱 떨어지지 않는 조건(예: 두
+    # 브랜드 동시구매 시 추가 할인)을 적어둔 게 있으면, 매장별 추가마진이 왜 이렇게 나왔는지 바로
+    # 아래에서 확인할 수 있도록 보여준다.
+    terms_texts = [f"[{e['name']}] {e['terms_note']}" for e in _matched_events if (e.get('terms_note') or '').strip()]
+    header_row = 5
+    if terms_texts:
+        terms_row = 4
+        ws3.merge_cells(f'B{terms_row}:K{terms_row}')
+        c = ws3.cell(row=terms_row, column=2, value='\n'.join(terms_texts))
+        c.font = Font(size=9, name=FNAME, color='374151'); c.alignment = Alignment(horizontal='left', vertical='top', wrap_text=True)
+        ws3.row_dimensions[terms_row].height = max(15, 13 * sum(t.count('\n') + 1 for t in terms_texts))
+        header_row = terms_row + 1
     hdrs3 = ['매장명', '행사명', '브랜드', '제품명', '판매수량', '정상 공급가', '행사 기준가', '실제 공급단가', '추가마진(원)', '비고']
     for ci, h in enumerate(hdrs3, 2):
-        c = ws3.cell(row=5, column=ci, value=h); c.font = Font(bold=True, size=9, name=FNAME, color='111827'); c.fill = mf(LGRAY); c.border = bdr; c.alignment = ctr
-    ri3 = 6
+        c = ws3.cell(row=header_row, column=ci, value=h); c.font = Font(bold=True, size=9, name=FNAME, color='111827'); c.fill = mf(LGRAY); c.border = bdr; c.alignment = ctr
+    ri3 = header_row + 1
     total_margin = 0
     for m in _margin_detail:
         vals = [m['store'], m['event_name'], m['brand'], m['product'], m['qty'],
