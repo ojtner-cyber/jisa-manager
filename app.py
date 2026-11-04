@@ -334,6 +334,43 @@ def init_db():
     except Exception:
         pass
 
+    # 수정사항5: 과거 업로드 파싱 버그로 visit_date가 "2026. 8. 2"처럼 ISO(YYYY-MM-DD)가 아닌
+    # 형식으로 남아있던 행을 정규화 — 문자열 정렬 시 '.'이 '-'보다 뒤에 와서 날짜 순서가 뒤죽박죽으로
+    # 보이던 문제의 원인이었다. 매 시작마다 돌아도 이미 정규화된 건 바로 통과하므로 가볍다(idempotent).
+    try:
+        bad_dates = conn.execute(
+            "SELECT DISTINCT visit_date FROM store_visit_log WHERE visit_date NOT GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'"
+        ).fetchall()
+        for (old_date,) in bad_dates:
+            new_date = _normalize_visit_date_str(old_date)
+            if new_date and new_date != old_date:
+                conn.execute("UPDATE store_visit_log SET visit_date=? WHERE visit_date=?", (new_date, old_date))
+        bad_dates2 = conn.execute(
+            "SELECT DISTINCT visit_date FROM store_visit_report WHERE visit_date NOT GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'"
+        ).fetchall()
+        for (old_date,) in bad_dates2:
+            new_date = _normalize_visit_date_str(old_date)
+            if new_date and new_date != old_date:
+                # store_visit_report는 (visit_date, store_name) UNIQUE라 충돌 가능 — 행 단위로 안전하게 처리
+                try:
+                    conn.execute("UPDATE store_visit_report SET visit_date=? WHERE visit_date=?", (new_date, old_date))
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
+    # 매장명 통합(_apply_store_merges)이나 중복 업로드로 store_visit_log에 완전히 똑같은
+    # (매장명·방문일·출처·내용) 행이 두 번 쌓이는 경우가 있어 — 그룹별로 가장 작은 id만 남기고 지운다.
+    try:
+        conn.execute("""DELETE FROM store_visit_log WHERE id NOT IN (
+            SELECT MIN(id) FROM store_visit_log
+            GROUP BY store_name, visit_date, source,
+                     COALESCE(purpose,''), COALESCE(contact_person,''), COALESCE(our_content,''),
+                     COALESCE(competitor_trend,''), COALESCE(action_item,'')
+        )""")
+    except Exception:
+        pass
+
     # ── 매장현황 자유 입력 (직원현황/매장현황/지역상품권) — 현우가 직접 관리 (수정사항3) ──
     conn.execute("""CREATE TABLE IF NOT EXISTS store_profile (
         store_name TEXT PRIMARY KEY,
@@ -7553,6 +7590,25 @@ def _extract_single_sheet_xlsx_b64(src_ws, raw_bytes=None, debug_errors=None):
     return base64.b64encode(buf.getvalue()).decode('ascii')
 
 
+def _normalize_visit_date_str(raw_str):
+    """"2026. 8. 2", "2026.8.2", "2026/08/02", "2026-8-2" 등 제각각인 날짜 표기를
+    "YYYY-MM-DD"(0 채움)로 정규화한다. 이게 안 맞으면 store_visit_log.visit_date의 문자열
+    정렬이 실제 날짜 순서와 어긋나서(예: "2026. 8. 2"가 '.'>'-'라 11월 기록보다 뒤로 밀림)
+    방문이력이 뒤죽박죽으로 보이는 버그가 생긴다. 못 알아보는 형식이면 원문을 10자로 잘라 반환한다
+    (완전히 못 알아보는 값이라도 최소한 예전 동작과 같게 유지)."""
+    raw_str = (raw_str or '').strip()
+    if not raw_str:
+        return raw_str
+    m = _re_visit.match(r'^(\d{4})\s*[-./년]\s*(\d{1,2})\s*[-./월]\s*(\d{1,2})\s*일?', raw_str)
+    if m:
+        yr, mo, dy = int(m.group(1)), int(m.group(2)), int(m.group(3))
+        try:
+            return f"{yr:04d}-{mo:02d}-{dy:02d}"
+        except Exception:
+            pass
+    return raw_str[:10]
+
+
 def _parse_visit_report_sheet(ws, source_filename=''):
     """오프라인 매장 방문 보고서 시트를 파싱 — 두 가지 포맷(개별 파일형 / 집계파일 내 시트형) 모두 지원"""
     def cell(r, c):
@@ -7595,7 +7651,7 @@ def _parse_visit_report_sheet(ws, source_filename=''):
             yr = int(yr_m.group(1)) if yr_m else datetime.now().year
             visit_date = f"{yr}-{mo:02d}-{dy:02d}"
         else:
-            visit_date = raw_str[:10]
+            visit_date = _normalize_visit_date_str(raw_str)
 
     # 매장명
     store_row = find_label_row(['매장명'])
@@ -7943,6 +7999,22 @@ def _build_store_card_data(store_name, year=None, author_name=''):
     for g in brand_breakdown:
         g['pct'] = round(g['amount'] / year_total * 100, 1) if year_total else 0
 
+    # 브랜드별 제품 상세 (수정사항3: 브랜드별 매출액 상세에서 제품별 판매량도 보여주기 위함).
+    # 타프토이즈는 제품 종류가 너무 많아 제품별로 쪼개지 않고 브랜드 합계만 보여준다.
+    brand_product_map = {}
+    for r in sale_rows:
+        b = remap_group(r.get('item_group') or '', r.get('item_name') or '') or '(미분류)'
+        if b == '타프토이즈':
+            continue
+        pname = _display_product_name(r.get('item_name'))
+        g = brand_product_map.setdefault(b, {}).setdefault(pname, {'product': pname, 'qty': 0, 'amount': 0})
+        g['qty'] += r['quantity'] or 0
+        g['amount'] += r['total'] or 0
+    brand_product_breakdown = {
+        b: sorted(prods.values(), key=lambda x: -x['amount'])
+        for b, prods in brand_product_map.items()
+    }
+
     # 베스트 제품 TOP5 (수량·금액·비중)
     product_map = {}
     for r in sale_rows:
@@ -8025,6 +8097,7 @@ def _build_store_card_data(store_name, year=None, author_name=''):
         'monthly_avg': monthly_avg,
         'active_months': active_months,
         'brand_breakdown': brand_breakdown,
+        'brand_product_breakdown': brand_product_breakdown,
         'top5_products': top5,
         'monthly_trend': monthly_trend,
         'brand_monthly': brand_monthly,
@@ -8315,6 +8388,19 @@ def api_store_profile_save():
     return jsonify({'ok': True})
 
 
+@app.route("/api/visit-log/polish-preview", methods=["POST"])
+@login_required
+def api_visit_log_polish_preview():
+    """'변환' 버튼 (수정사항6) — 자사 주요내용/타사 동향/조치사항·후속을 영업전문가 문체로
+    미리 다듬어서 돌려준다. DB에는 아무것도 쓰지 않는 순수 미리보기 endpoint이며,
+    사용자가 결과를 확인/수정한 뒤 '저장'을 눌러야 실제로 저장된다."""
+    d = request.json or {}
+    our_content, competitor_trend, action_item = _polish_visit_text(
+        d.get('our_content', ''), d.get('competitor_trend', ''), d.get('action_item', ''))
+    return jsonify({'ok': True, 'our_content': our_content,
+                     'competitor_trend': competitor_trend, 'action_item': action_item})
+
+
 @app.route("/api/visit-log/save", methods=["POST"])
 @login_required
 def api_visit_log_save():
@@ -8351,10 +8437,11 @@ def api_visit_log_save():
     else:
         branch = conn.execute("SELECT manager FROM branches WHERE name=?", (store_name,)).fetchone()
         manager_field = branch[0] if branch else manager_name
-        # 신규 작성 건은 기본적으로 AI가 전문가 문체로 다듬어서 저장 (수정사항3).
-        # polish=false로 명시한 경우(예: 이미 다듬어진 내용을 다시 저장)에는 건너뛴다.
+        # 수정사항6: 다듬기는 이제 '변환' 버튼(/api/visit-log/polish-preview)에서 사용자가
+        # 직접 확인 후 저장하는 방식으로 바뀌었으므로, 저장 시점에는 기본적으로 다시 다듬지 않는다.
+        # polish=true를 명시적으로 보낸 경우에만(예: 변환 단계를 건너뛴 구버전 호출 호환) 다듬는다.
         our_content, competitor_trend, action_item = d.get('our_content',''), d.get('competitor_trend',''), d.get('action_item','')
-        if d.get('polish', True):
+        if d.get('polish', False):
             our_content, competitor_trend, action_item = _polish_visit_text(our_content, competitor_trend, action_item)
         new_id = _upsert_visit_log(conn, store_name=store_name, visit_date=visit_date,
                                     purpose=d.get('purpose',''), contact_person=d.get('contact_person',''),
@@ -8763,7 +8850,9 @@ def _write_store_info_sheet(wb, ws, data, FNAME):
         series.dLbls = DataLabelList()
         series.dLbls.showPercent = True
         series.dLbls.showVal = False
-        series.dLbls.showCatName = False
+        series.dLbls.showCatName = True  # 수정사항1: "매출액 00%"가 아니라 "브랜드명 00%"로 보이도록
+        series.dLbls.showLegendKey = False
+        series.dLbls.showSerName = False
         pie.legend.position = 'b'
         pie.visible_cells_only = False  # S/T열을 숨김 처리했으므로 반드시 꺼줘야 차트가 빈 화면으로 안 나온다
         pie.height = 8.1; pie.width = 19.2
@@ -8804,39 +8893,8 @@ def _write_store_info_sheet(wb, ws, data, FNAME):
         ws[f'K{CHART1_TOP+1}'].font = f_note; ws[f'K{CHART1_TOP+1}'].alignment = ctr
     spacer(CHART1_BOT + 1, 8)
 
-    # ── 월별 판매 추이 ──
-    section2_row = CHART1_BOT + 2
-    band(f'B{section2_row}:Q{section2_row}', '월별 판매 추이', f_subhdr, LABEL_BG, align=left)
-    CHART2_TOP = section2_row + 1
-    CHART2_BOT = CHART2_TOP + 6
-    ws.merge_cells(f'B{CHART2_TOP}:Q{CHART2_BOT}')
-    for r in range(CHART2_TOP, CHART2_BOT + 1):
-        ws.row_dimensions[r].height = 34
-
-    ws['S11'] = '월'; ws['T11'] = '매출액'
-    for i, m in enumerate(data['monthly_trend']):
-        ws.cell(row=12 + i, column=19, value=f"{m['month']}월")
-        ws.cell(row=12 + i, column=20, value=m['amount'])
-    bar = BarChart()
-    bar.type = 'col'; bar.title = None
-    vals = Reference(ws, min_col=20, min_row=11, max_row=23)
-    cats = Reference(ws, min_col=19, min_row=12, max_row=23)
-    bar.add_data(vals, titles_from_data=True)
-    bar.set_categories(cats)
-    bar.series[0].graphicalProperties = GraphicalProperties(solidFill=PRIMARY)
-    bar.y_axis.numFmt = '#,##0'
-    from openpyxl.drawing.line import LineProperties
-    bar.y_axis.majorGridlines.spPr = GraphicalProperties(ln=LineProperties(solidFill='EEF2FF'))
-    bar.x_axis.delete = False; bar.y_axis.delete = False
-    bar.gapWidth = 60
-    bar.legend = None
-    bar.visible_cells_only = False  # S/T열을 숨김 처리했으므로 반드시 꺼줘야 차트가 빈 화면으로 안 나온다
-    bar.height = 8.1; bar.width = 28.6
-    ws.add_chart(bar, f'B{CHART2_TOP}')
-    spacer(CHART2_BOT + 1, 8)
-
-    # ── 월별 매출액 상세 (수정사항4: 숨겨져있던 월별 매출액을 가독성 높은 표로 그대로 노출) ──
-    detail_row = CHART2_BOT + 2
+    # ── 월별 매출액 상세 (수정사항2: 막대그래프는 삭제하고 표만 남김) ──
+    detail_row = CHART1_BOT + 2
     band(f'B{detail_row}:Q{detail_row}', '월별 매출액 상세', f_subhdr, LABEL_BG, align=left, height=20)
     dr = detail_row + 1
     months = data['monthly_trend']
@@ -8851,15 +8909,27 @@ def _write_store_info_sheet(wb, ws, data, FNAME):
     spacer(dr, 8)
     dr += 1
 
-    # ── 브랜드별 매출액 상세 (수정사항4: 숨겨져있던 브랜드별 매출액을 가독성 높은 표로 그대로 노출) ──
+    # ── 브랜드별 매출액 상세 (수정사항3: 브랜드 아래에 제품별 판매량도 함께 표시.
+    #    단, 타프토이즈는 제품 종류가 너무 많아 브랜드 합계 한 줄만 보여준다) ──
     band(f'B{dr}:Q{dr}', '브랜드별 매출액 상세', f_subhdr, LABEL_BG, align=left, height=20)
     dr += 1
+    f_prod = Font(name=FNAME, size=9, color='64748B')
     if data['brand_breakdown']:
         for g in data['brand_breakdown'][:8]:
             label_value(f'B{dr}:D{dr}', g['brand'], f'E{dr}:Q{dr}',
-                        f"{g['amount']:,}원   ({g['pct']}%)")
+                        f"{g['amount']:,}원   ({g['pct']}%)", bold_value=True)
             ws.row_dimensions[dr].height = 18
             dr += 1
+            for p in data['brand_product_breakdown'].get(g['brand'], []):
+                ws.merge_cells(f'C{dr}:F{dr}')
+                pc = ws[f'C{dr}']; pc.value = f"· {p['product']}"
+                pc.font = f_prod; pc.fill = mf('FFFFFF'); pc.border = bdr_dot; pc.alignment = left
+                ws.merge_cells(f'G{dr}:Q{dr}')
+                vc = ws[f'G{dr}']
+                vc.value = f"{p['qty']:,}개   {p['amount']:,}원"
+                vc.font = f_prod; vc.fill = mf('FFFFFF'); vc.border = bdr_dot; vc.alignment = left
+                ws.row_dimensions[dr].height = 15
+                dr += 1
     else:
         label_value(f'B{dr}:D{dr}', '—', f'E{dr}:Q{dr}', '판매 데이터가 없습니다')
         ws.row_dimensions[dr].height = 18
@@ -8900,11 +8970,12 @@ def _write_store_info_sheet(wb, ws, data, FNAME):
     band(f'B{yoy_row}:C{yoy_row+yoy_span-1}', '연도별 매출 비교', f_label, LABEL_BG, align=left)
     ws.merge_cells(f'D{yoy_row}:Q{yoy_row+yoy_span-1}')
     yoy_cell = ws[f'D{yoy_row}']
+    # 수정사항4: 증감 표시(▲▼)는 비교 기준인 올해(data['year']) 줄에 붙어야 한다 — 작년 동기 줄이 아니라.
     lines = [
-        f"{data['year']}년 1~{data['cur_month']}월   {data['this_year_ytd']:,}원  ({data['this_year_cnt']}건)",
-        f"{data['year']-1}년 1~{data['cur_month']}월   {data['last_year_ytd']:,}원  ({data['last_year_cnt']}건)"
+        f"{data['year']}년 1~{data['cur_month']}월   {data['this_year_ytd']:,}원  ({data['this_year_cnt']}건)"
         + (f"   {'▲' if data['yoy_pct'] >= 0 else '▼'} {abs(data['yoy_pct'])}% ({'증가' if data['yoy_pct'] >= 0 else '감소'})"
            if data['yoy_pct'] is not None else ''),
+        f"{data['year']-1}년 1~{data['cur_month']}월   {data['last_year_ytd']:,}원  ({data['last_year_cnt']}건)",
         f"{data['year']-1}년 연간 전체   {data['last_year_full']:,}원",
     ]
     yoy_cell.value = '\n'.join(lines)

@@ -2860,6 +2860,10 @@ function vrEntryFormHtml(r){
         <textarea id="ve-comp" class="fs" style="width:100%;min-height:50px;resize:vertical">${vrEsc(r.competitor_trend||'')}</textarea></div>
       <div><label style="font-size:11px;color:var(--t-500);font-weight:600">조치사항·후속</label>
         <textarea id="ve-action" class="fs" style="width:100%;min-height:50px;resize:vertical">${vrEsc(r.action_item||'')}</textarea></div>
+      <div style="display:flex;justify-content:flex-end;align-items:center;gap:8px;margin-top:-2px">
+        <span style="font-size:11px;color:var(--t-400)">위 세 항목을 적은 뒤, 영업전문가 문체로 다듬어보세요</span>
+        <button type="button" class="btn btn-ghost btn-sm" id="ve-polish-btn" onclick="polishVrEntry()">✨ 변환 (AI로 다듬기)</button>
+      </div>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
         <div><label style="font-size:11px;color:var(--t-500);font-weight:600">완료(예정)일</label>
           <input id="ve-due" type="date" class="fs" style="width:100%" value="${vrAttr(r.due_date||'')}"></div>
@@ -2879,6 +2883,37 @@ function vrEntryFormHtml(r){
         <button class="btn btn-primary btn-sm" id="ve-save-btn" onclick="saveVrEntry()">저장</button>
       </div>
     </div>`;
+}
+
+async function polishVrEntry(){
+  const btn = document.getElementById('ve-polish-btn');
+  const ourEl = document.getElementById('ve-our');
+  const compEl = document.getElementById('ve-comp');
+  const actionEl = document.getElementById('ve-action');
+  const payload = {
+    our_content: ourEl.value,
+    competitor_trend: compEl.value,
+    action_item: actionEl.value,
+  };
+  if(!payload.our_content.trim() && !payload.competitor_trend.trim() && !payload.action_item.trim()){
+    toast('다듬을 내용을 먼저 입력해주세요', false); return;
+  }
+  const origLabel = btn ? btn.textContent : '';
+  if(btn){ btn.disabled = true; btn.textContent = 'AI가 다듬는 중...'; }
+  let r;
+  try{
+    r = await api('/api/visit-log/polish-preview', {method:'POST', body: payload});
+  } finally {
+    if(btn){ btn.disabled = false; btn.textContent = origLabel; }
+  }
+  if(r?.ok){
+    ourEl.value = r.our_content || '';
+    compEl.value = r.competitor_trend || '';
+    actionEl.value = r.action_item || '';
+    toast('영업전문가 문체로 다듬었습니다 — 확인 후 저장해주세요');
+  } else {
+    toast(r?.msg || '변환에 실패했습니다', false);
+  }
 }
 
 async function saveVrEntry(){
@@ -2902,7 +2937,7 @@ async function saveVrEntry(){
   }
   if(vrEntryEditId) payload.id = vrEntryEditId;
   const saveBtn = document.getElementById('ve-save-btn');
-  if(saveBtn){ saveBtn.disabled = true; saveBtn.textContent = 'AI가 내용을 다듬는 중...'; }
+  if(saveBtn){ saveBtn.disabled = true; saveBtn.textContent = '저장 중...'; }
   let r;
   try{
     r = await api('/api/visit-log/save', {method:'POST', body: payload});
