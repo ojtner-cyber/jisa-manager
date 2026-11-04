@@ -4073,8 +4073,12 @@ def api_promo_event_import_platform(event_id):
 # 없으므로 (매장, 판매일자)로 묶어서 "그날 그 매장에서 함께 나간 것"을 거래의 대리 지표로 쓴다.
 _COMBO_STROLLER_NEWBORN_PREFIXES = ('데이5', '허브2')   # 신생아유모차
 _COMBO_STROLLER_PORTABLE_PREFIXES = ('에어2',)           # 휴대용유모차(에어2/에어2_한정판/에어2 네투시 세트 등)
-_COMBO_CARSEAT_NEWBORN_GROUPS = ('컨버터블카시트',)       # 신생아카시트
-_COMBO_CARSEAT_OTHER_GROUPS = ('토들러카시트', '주니어카시트')  # 토들러·주니어카시트
+_COMBO_CARSEAT_NEWBORN_PREFIXES = ('토론1', '제논1')     # 신생아카시트(컨버터블카시트) 모델명
+_COMBO_CARSEAT_OTHER_PREFIXES = ('벨릭스', '액시언1')    # 토들러·주니어카시트 모델명
+# item_group 값은 보조 판정용 — 실제 기초데이터에 '토들러카시트'가 '토틀러카시트'로 찍히는 등
+# 표기가 흔들리는 경우가 있어서(실측 확인됨), 제품명 모델명 매칭을 우선으로 쓴다.
+_COMBO_CARSEAT_NEWBORN_GROUPS = ('컨버터블카시트',)
+_COMBO_CARSEAT_OTHER_GROUPS = ('토들러카시트', '토틀러카시트', '주니어카시트')
 _COMBO_EVENT_TAGS = ('줄레행사', '줄즈레카로행사')         # 줄즈레카로통합행사를 가리키는 두 표기
 _COMBO_BONUS_NEWBORN = 50000   # 유모차 + 신생아카시트
 _COMBO_BONUS_OTHER = 30000     # 유모차 + 토들러·주니어카시트
@@ -4082,10 +4086,15 @@ _COMBO_BONUS_OTHER = 30000     # 유모차 + 토들러·주니어카시트
 
 def _combo_classify_row(r):
     """줄즈레카로통합행사 묶음할인 판정을 위해 이 매출행이 '유모차'인지 '카시트(종류별)'인지
-    분류한다. 둘 다 아니면 None."""
+    분류한다. 둘 다 아니면 None. 제품명 모델명 매칭을 먼저 시도하고(표기 흔들림에 안전),
+    그래도 안 잡히면 item_group으로 보조 판정한다."""
     pkey = _promo_product_key(r.get('item_name'))
     if pkey.startswith(_COMBO_STROLLER_NEWBORN_PREFIXES) or pkey.startswith(_COMBO_STROLLER_PORTABLE_PREFIXES):
         return 'stroller'
+    if pkey.startswith(_COMBO_CARSEAT_NEWBORN_PREFIXES):
+        return 'carseat_newborn'
+    if pkey.startswith(_COMBO_CARSEAT_OTHER_PREFIXES):
+        return 'carseat_other'
     grp = r.get('item_group') or ''
     if grp in _COMBO_CARSEAT_NEWBORN_GROUPS:
         return 'carseat_newborn'
@@ -4102,20 +4111,26 @@ def _combo_is_direct_ship(buyer):
 
 
 def _compute_promo_combo_bonus(rows, events):
-    """'줄즈레카로통합행사' 태그가 붙은 매출행들 중, '같은 매장에서 같은 날짜에 같은 고객에게
-    직송으로' 처리된 것들만 모아서 유모차·카시트 수량을 세고 묶음할인을 계산한다. 매장재고로
-    입고된 건(수취인이 매장명 자체)은 묶음할인 대상이 아니며, 서로 다른 고객의 주문은 한 매장·
-    같은 날이라도 절대 묶이지 않는다 — 수취인(고객명)까지 일치해야 '묶음으로 배송'된 것으로 본다.
-    반환: (매장별 보너스 합계 dict, 상세 리스트)"""
-    combo_event_ids = {e['id'] for e in events
-                        if any(t in _COMBO_EVENT_TAGS for t in _promo_event_tags(e))}
-    if not combo_event_ids:
+    """'줄즈레카로통합행사' 태그가 붙은 매출행들 중, '행사 기간 내에 같은 매장에서 같은 고객에게
+    직송으로' 처리된 것들만 모아서(날짜가 꼭 같지 않아도 됨 — 수정사항1) 유모차·카시트 수량을 세고
+    묶음할인을 계산한다. 매장재고로 입고된 건(수취인이 매장명 자체)은 묶음할인 대상이 아니며,
+    서로 다른 고객의 주문은 한 매장이라도 절대 묶이지 않는다 — 수취인(고객명)까지 일치해야
+    '같은 고객이 묶음으로 구매'한 것으로 본다. 반환: (매장별 보너스 합계 dict, 상세 리스트)"""
+    combo_events = [e for e in events if any(t in _COMBO_EVENT_TAGS for t in _promo_event_tags(e))]
+    if not combo_events:
         return {}, []
-    buckets = {}  # (store, sale_date, buyer) -> {'stroller': n, 'carseat_newborn': n, 'carseat_other': n}
+
+    def _date_in_any_combo_event(sale_date):
+        return any(ev['date_start'] <= sale_date <= ev['date_end'] for ev in combo_events)
+
+    buckets = {}  # (store, buyer) -> {'stroller': n, 'carseat_newborn': n, 'carseat_other': n, 'dates': set()}
     for r in rows:
         note_text = r.get('note') or ''
         if not any(_note_contains_tag(note_text, t) for t in _COMBO_EVENT_TAGS):
             continue
+        sale_date = r.get('sale_date') or ''
+        if not _date_in_any_combo_event(sale_date):
+            continue  # 행사 기간 밖 — 구매 시점이 행사와 무관
         buyer = r.get('buyer') or ''
         if not _combo_is_direct_ship(buyer):
             continue  # 매장재고 입고분 — 할인 대상 아님
@@ -4123,16 +4138,17 @@ def _compute_promo_combo_bonus(rows, events):
         if kind is None:
             continue
         store = r.get('real_seller') or '(미상)'
-        sale_date = r.get('sale_date') or ''
         qty = r.get('quantity') or 0
         if not qty:
             continue
-        b = buckets.setdefault((store, sale_date, buyer), {'stroller': 0, 'carseat_newborn': 0, 'carseat_other': 0})
+        b = buckets.setdefault((store, buyer), {'stroller': 0, 'carseat_newborn': 0, 'carseat_other': 0, 'dates': set()})
         b[kind] += qty
+        if sale_date:
+            b['dates'].add(sale_date)
 
     combo_totals = {}
     combo_detail = []
-    for (store, sale_date, buyer), b in buckets.items():
+    for (store, buyer), b in buckets.items():
         stroller = b['stroller']
         if stroller <= 0:
             continue
@@ -4147,12 +4163,17 @@ def _compute_promo_combo_bonus(rows, events):
             note_parts.append(f"신생아카시트 묶음 {pairs_newborn}세트×{_COMBO_BONUS_NEWBORN:,}원")
         if pairs_other:
             note_parts.append(f"토들러·주니어카시트 묶음 {pairs_other}세트×{_COMBO_BONUS_OTHER:,}원")
+        sorted_dates = sorted(b['dates'])
+        if len(sorted_dates) > 1:
+            date_label = f"{sorted_dates[0]}~{sorted_dates[-1]}"
+        else:
+            date_label = sorted_dates[0] if sorted_dates else ''
         combo_detail.append({
             'store': store, 'event_id': None, 'event_name': '줄즈레카로통합행사(동시구매 묶음할인)',
-            'brand': '줄즈+레카로', 'product': f"{sale_date} {buyer} 직송 동시구매",
+            'brand': '줄즈+레카로', 'product': f"{buyer} 직송 동시구매({date_label})" if date_label else f"{buyer} 직송 동시구매",
             'qty': pairs_newborn + pairs_other, 'paid_total': 0,
             'normal_price': None, 'event_price': None, 'actual_unit_price': None,
-            'extra_margin': bonus, 'note': ' + '.join(note_parts) + ' (같은 날짜·같은 고객 직송 묶음배송 기준, 매장재고 제외)',
+            'extra_margin': bonus, 'note': ' + '.join(note_parts) + ' (행사기간 내 같은 고객 직송 묶음구매 기준, 매장재고 제외)',
         })
     return combo_totals, combo_detail
 
