@@ -4094,18 +4094,31 @@ def _combo_classify_row(r):
     return None
 
 
+def _combo_is_direct_ship(buyer):
+    """수취인이 실제 고객인지(직송) 판정 — 기초데이터 관례상 수취인란에 'OOO고객님'으로 찍히면
+    고객에게 직접 배송된 것이고, 수취인이 매장명 자체(또는 법인명)면 그 매장 재고로 입고된
+    것이라 직송이 아니다. 매장재고 판매는 공급가 추가 인하 대상이 아니므로 여기서 걸러낸다."""
+    return '고객님' in (buyer or '')
+
+
 def _compute_promo_combo_bonus(rows, events):
-    """'줄즈레카로통합행사' 태그가 붙은 매출행들만 모아서, (매장, 판매일자)별로 유모차·카시트
-    수량을 세고 묶음할인을 계산한다. 반환: (매장별 보너스 합계 dict, 상세 리스트)"""
+    """'줄즈레카로통합행사' 태그가 붙은 매출행들 중, '같은 매장에서 같은 날짜에 같은 고객에게
+    직송으로' 처리된 것들만 모아서 유모차·카시트 수량을 세고 묶음할인을 계산한다. 매장재고로
+    입고된 건(수취인이 매장명 자체)은 묶음할인 대상이 아니며, 서로 다른 고객의 주문은 한 매장·
+    같은 날이라도 절대 묶이지 않는다 — 수취인(고객명)까지 일치해야 '묶음으로 배송'된 것으로 본다.
+    반환: (매장별 보너스 합계 dict, 상세 리스트)"""
     combo_event_ids = {e['id'] for e in events
                         if any(t in _COMBO_EVENT_TAGS for t in _promo_event_tags(e))}
     if not combo_event_ids:
         return {}, []
-    buckets = {}  # (store, sale_date) -> {'stroller': n, 'carseat_newborn': n, 'carseat_other': n}
+    buckets = {}  # (store, sale_date, buyer) -> {'stroller': n, 'carseat_newborn': n, 'carseat_other': n}
     for r in rows:
         note_text = r.get('note') or ''
         if not any(_note_contains_tag(note_text, t) for t in _COMBO_EVENT_TAGS):
             continue
+        buyer = r.get('buyer') or ''
+        if not _combo_is_direct_ship(buyer):
+            continue  # 매장재고 입고분 — 할인 대상 아님
         kind = _combo_classify_row(r)
         if kind is None:
             continue
@@ -4114,12 +4127,12 @@ def _compute_promo_combo_bonus(rows, events):
         qty = r.get('quantity') or 0
         if not qty:
             continue
-        b = buckets.setdefault((store, sale_date), {'stroller': 0, 'carseat_newborn': 0, 'carseat_other': 0})
+        b = buckets.setdefault((store, sale_date, buyer), {'stroller': 0, 'carseat_newborn': 0, 'carseat_other': 0})
         b[kind] += qty
 
     combo_totals = {}
     combo_detail = []
-    for (store, sale_date), b in buckets.items():
+    for (store, sale_date, buyer), b in buckets.items():
         stroller = b['stroller']
         if stroller <= 0:
             continue
@@ -4136,10 +4149,10 @@ def _compute_promo_combo_bonus(rows, events):
             note_parts.append(f"토들러·주니어카시트 묶음 {pairs_other}세트×{_COMBO_BONUS_OTHER:,}원")
         combo_detail.append({
             'store': store, 'event_id': None, 'event_name': '줄즈레카로통합행사(동시구매 묶음할인)',
-            'brand': '줄즈+레카로', 'product': f"{sale_date} 동시구매 묶음할인",
+            'brand': '줄즈+레카로', 'product': f"{sale_date} {buyer} 직송 동시구매",
             'qty': pairs_newborn + pairs_other, 'paid_total': 0,
             'normal_price': None, 'event_price': None, 'actual_unit_price': None,
-            'extra_margin': bonus, 'note': ' + '.join(note_parts) + ' (같은 날짜 동시구매 기준)',
+            'extra_margin': bonus, 'note': ' + '.join(note_parts) + ' (같은 날짜·같은 고객 직송 묶음배송 기준, 매장재고 제외)',
         })
     return combo_totals, combo_detail
 
@@ -4607,10 +4620,10 @@ def api_sales_event_search():
     conn = get_db()
     if tags_for_search:
         where_clause = " OR ".join(["note LIKE ?"] * len(tags_for_search))
-        q = f"SELECT sale_date, real_seller, item_name, item_group, quantity, unit_price, total, note, channel FROM sales_data WHERE ({where_clause})"
+        q = f"SELECT sale_date, real_seller, item_name, item_group, quantity, unit_price, total, note, channel, buyer FROM sales_data WHERE ({where_clause})"
         params = [f"%{t}%" for t in tags_for_search]
     else:
-        q = "SELECT sale_date, real_seller, item_name, item_group, quantity, unit_price, total, note, channel FROM sales_data WHERE note LIKE ?"
+        q = "SELECT sale_date, real_seller, item_name, item_group, quantity, unit_price, total, note, channel, buyer FROM sales_data WHERE note LIKE ?"
         params = [f"%{keyword}%"]
     if date_from: q += " AND sale_date >= ?"; params.append(date_from)
     if date_to: q += " AND sale_date <= ?"; params.append(date_to)
@@ -4701,10 +4714,10 @@ def export_xlsx_event_report():
     conn = get_db()
     if tags_for_search:
         where_clause = " OR ".join(["note LIKE ?"] * len(tags_for_search))
-        q = f"SELECT sale_date, real_seller, item_name, item_group, quantity, unit_price, total, note, channel FROM sales_data WHERE ({where_clause})"
+        q = f"SELECT sale_date, real_seller, item_name, item_group, quantity, unit_price, total, note, channel, buyer FROM sales_data WHERE ({where_clause})"
         params = [f"%{t}%" for t in tags_for_search]
     else:
-        q = "SELECT sale_date, real_seller, item_name, item_group, quantity, unit_price, total, note, channel FROM sales_data WHERE note LIKE ?"
+        q = "SELECT sale_date, real_seller, item_name, item_group, quantity, unit_price, total, note, channel, buyer FROM sales_data WHERE note LIKE ?"
         params = [f"%{keyword}%"]
     if date_from: q += " AND sale_date >= ?"; params.append(date_from)
     if date_to: q += " AND sale_date <= ?"; params.append(date_to)
