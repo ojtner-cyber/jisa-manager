@@ -8273,6 +8273,16 @@ def _polish_visit_text(our_content, competitor_trend, action_item):
     return our_content, competitor_trend, action_item
 
 
+def _strip_job_title(name):
+    """'김현우과장' → '김현우'처럼 이름 뒤에 붙은 직급 호칭을 떼어낸다 (수정사항:
+    매장방문보고서의 담당자/작성자 표시를 직급 없이 이름만 나오게)."""
+    s = (name or '').strip()
+    for suf in ('과장', '대리', '부장', '차장', '사원', '팀장', '이사', '주임', '실장'):
+        if s.endswith(suf) and len(s) > len(suf):
+            return s[:-len(suf)].strip()
+    return s
+
+
 def _build_store_card_data(store_name, year=None, author_name=''):
     """매장정보 카드에 필요한 모든 값을 판매처관리(branches)+판매실적(sales_data)+store_visit_log+
     store_profile에서 실시간으로 계산해 한 번에 반환한다. 엑셀 다운로드와 화면 상세보기 양쪽에서 공용으로 쓴다."""
@@ -8466,10 +8476,10 @@ def _build_store_card_data(store_name, year=None, author_name=''):
         'store_name': store_name,
         'store_rank': f'{rank}위/{total_store_count}위' if rank else '',
         'region': branch.get('region', ''),
-        'manager': branch.get('manager', ''),
+        'manager': _strip_job_title(branch.get('manager', '')),
         # 작성자는 로그인 계정의 표시 이름('관리자' 같은 일반 라벨일 수 있음)보다
         # 해당 매장의 실제 담당자(manager)를 우선한다 — 1인 영업담당 체제라 두 값이 보통 같은 사람이다.
-        'author': branch.get('manager', '') or author_name or '',
+        'author': _strip_job_title(branch.get('manager', '') or author_name) or '',
         'year': year,
         'year_total': year_total,
         'monthly_avg': monthly_avg,
@@ -9214,15 +9224,13 @@ def _write_store_info_sheet(wb, ws, data, FNAME):
     spacer(cur, 8)
     cur += 1
 
-    # ── 자사입점브랜드 (칸마다 점선을 두르지 않고, 브랜드명 아래 가는 실선 하나로만
-    #    구분해 더 깔끔하게 — 제품 목록 칸에는 테두리를 아예 없앤다) ──
+    # ── 자사입점브랜드 (수정사항: 다른 섹션과 동일한 촘촘한 점선(bdr_dot)을 적용해
+    #    깔끔하게 구분) ──
     brand_hdr_row = cur
     band(f'B{brand_hdr_row}:Q{brand_hdr_row}', '자사입점브랜드', f_subhdr, mf_section(), align=left, height=20)
     brand_cols = ['줄즈', '카오스', '원더폴드', '레카로', 'ABC디자인', '엔픽스', '타프토이즈']
     first_col = 2  # B
     span = 16 // len(brand_cols)
-    no_bdr = Border()
-    hdr_bdr = Border(bottom=Side(style='thin', color=BORDER_C))
     for ci, b in enumerate(brand_cols):
         c0 = first_col + ci * span
         c1 = c0 + span - 1 if ci < len(brand_cols) - 1 else 17  # 마지막 브랜드가 Q열까지 채움
@@ -9231,7 +9239,7 @@ def _write_store_info_sheet(wb, ws, data, FNAME):
         hc = ws[f'{l0}{brand_hdr_row+1}']
         hc.value = b
         hc.font = Font(name=FNAME, size=9.5, bold=True)
-        hc.fill = mf('FFFFFF'); hc.border = hdr_bdr; hc.alignment = ctr
+        hc.fill = mf('FFFFFF'); hc.border = bdr_dot; hc.alignment = ctr
         products = data['carried_brands'].get(b, [])
         for pi in range(5):
             rr = brand_hdr_row + 2 + pi
@@ -9240,11 +9248,11 @@ def _write_store_info_sheet(wb, ws, data, FNAME):
             cell.value = products[pi] if pi < len(products) else ''
             cell.font = Font(name=FNAME, size=9)
             cell.fill = mf('FFFFFF')
-            cell.border = no_bdr; cell.alignment = ctr
+            cell.border = bdr_dot; cell.alignment = ctr
         if not products:
             ws.merge_cells(f'{l0}{brand_hdr_row+2}:{l1}{brand_hdr_row+2}')
             ec = ws[f'{l0}{brand_hdr_row+2}']
-            ec.value = '—'; ec.font = f_note; ec.fill = mf('FFFFFF'); ec.border = no_bdr; ec.alignment = ctr
+            ec.value = '—'; ec.font = f_note; ec.fill = mf('FFFFFF'); ec.border = bdr_dot; ec.alignment = ctr
     cur = brand_hdr_row + 7
     spacer(cur, 8)
     cur += 1
@@ -9280,8 +9288,6 @@ def _write_store_sales_sheet(wb, ws, data, FNAME):
     from openpyxl.chart.text import RichText
     from openpyxl.drawing.text import (CharacterProperties, Font as DrawFont, Paragraph,
                                         ParagraphProperties, RichTextProperties)
-    from openpyxl.cell.rich_text import CellRichText, TextBlock
-    from openpyxl.cell.text import InlineFont
     from openpyxl.utils import get_column_letter
 
     BORDER_C = 'E2E8F0'
@@ -9345,6 +9351,17 @@ def _write_store_sales_sheet(wb, ws, data, FNAME):
             for cell in row:
                 cell.font = f_value_b if bold_value else f_value
                 cell.fill = mf('FFFFFF'); cell.border = bdr_dot; cell.alignment = left
+
+    def est_lines(text, width_chars):
+        """wrap_text 칸의 줄 수 추정 — 한글 등 비ASCII 문자는 폭 2칸으로 계산."""
+        if not text:
+            return 1
+        usable = max(width_chars - 2, 4)
+        total = 0
+        for line in str(text).split('\n'):
+            w = sum(2 if ord(ch) > 0x2E7F else 1 for ch in line)
+            total += max(1, -(-w // usable))
+        return max(1, total)
 
     # ── 제목 ──
     store_label = f"{data['store_name']}  ({data['store_rank']})" if data['store_rank'] else data['store_name']
@@ -9429,68 +9446,38 @@ def _write_store_sales_sheet(wb, ws, data, FNAME):
         ws[f'K{CHART1_TOP+1}'].font = f_note; ws[f'K{CHART1_TOP+1}'].alignment = ctr
     spacer(CHART1_BOT + 1, 8)
 
-    # ── 월별 매출액 상세 ──
+    # ── 월별 매출액 상세 (수정사항: "베스트 제품" 칸 제거 — 제품 단위 상세는 바로 아래
+    #    "주요 제품 최근 흐름 분석"에서 다루므로, 여기서는 월별 매출액만 간결하게) ──
     detail_row = CHART1_BOT + 2
     band(f'B{detail_row}:Q{detail_row}', '월별 매출액 상세', f_subhdr, mf_section(), align=left, height=20)
     dr = detail_row + 1
-    ws.merge_cells(f'B{dr}:C{dr}'); ws[f'B{dr}'] = '월'
-    ws.merge_cells(f'D{dr}:F{dr}'); ws[f'D{dr}'] = '매출액'
-    ws.merge_cells(f'G{dr}:Q{dr}'); ws[f'G{dr}'] = '베스트 제품'
-    for rng in (f'B{dr}:C{dr}', f'D{dr}:F{dr}', f'G{dr}:Q{dr}'):
-        for row in ws[rng]:
-            for cell in row:
-                cell.font = Font(name=FNAME, size=9, bold=True)
-                cell.fill = mf('FFFFFF'); cell.border = Border(bottom=Side(style='thin', color=BORDER_C))
-                cell.alignment = ctr if rng != f'G{dr}:Q{dr}' else left
-    ws.row_dimensions[dr].height = 16
-    dr += 1
     months = data['monthly_trend']
-    bdr_prod_m = Border(left=thin, right=thin, bottom=dot)
-    for m in months:
-        ws.merge_cells(f'B{dr}:C{dr}')
-        mc = ws[f'B{dr}']; mc.value = f"{m['month']}월"
-        mc.font = f_value_b; mc.fill = mf('FFFFFF'); mc.border = bdr_prod_m; mc.alignment = ctr
-        ws.merge_cells(f'D{dr}:F{dr}')
-        vc = ws[f'D{dr}']; vc.value = m['amount']; vc.number_format = '#,##0"원"'
-        vc.font = f_value; vc.fill = mf('FFFFFF'); vc.border = bdr_prod_m; vc.alignment = left
-        tops = m.get('top_products') or []
-        top_text = '  ·  '.join(
-            f"{p['brand']} {p['product']} ({p['qty']:,}개, {p['amount']:,}원)" for p in tops
-        ) if tops else '—'
-        ws.merge_cells(f'G{dr}:Q{dr}')
-        pc = ws[f'G{dr}']; pc.value = top_text
-        pc.font = Font(name=FNAME, size=9)
-        pc.fill = mf('FFFFFF'); pc.border = bdr_prod_m; pc.alignment = left
-        ws.row_dimensions[dr].height = 17
+    for i in range(0, 12, 2):
+        m1 = months[i]
+        label_value(f'B{dr}:C{dr}', f"{m1['month']}월", f'D{dr}:F{dr}', m1['amount'], number_format='#,##0"원"')
+        if i + 1 < 12:
+            m2 = months[i + 1]
+            label_value(f'G{dr}:H{dr}', f"{m2['month']}월", f'I{dr}:Q{dr}', m2['amount'], number_format='#,##0"원"')
+        ws.row_dimensions[dr].height = 18
         dr += 1
     spacer(dr, 8)
     dr += 1
 
-    # ── 주요 제품 최근 흐름 분석 (수정사항: 매장분석 > 매장분석리포트와 동일한 추세 분석을
-    #    엑셀에서도 볼 수 있도록 — 순위/추세/코멘트 + 월별 막대 시각화를 제품별 박스로 표시) ──
+    # ── 주요 제품 최근 흐름 분석 (수정사항: 추세 화살표·코멘트 없이, 상위 5개 제품이
+    #    월별로 얼마나 팔렸는지만 간결한 텍스트로 보여준다) ──
     band(f'B{dr}:Q{dr}', '주요 제품 최근 흐름 분석', f_subhdr, mf_section(), align=left, height=20)
     dr += 1
     trends = data.get('product_trends') or []
-    bold_rt = InlineFont(rFont=FNAME, b=True, sz=10)
-    note_rt = InlineFont(rFont=FNAME, i=True, sz=9, color='6B7280')
-    bar_rt  = InlineFont(rFont=FNAME, sz=9, color='374151')
     if trends:
         for t in trends:
-            bar_lines = '\n'.join(f"   {b['month']:>3}  {b['bar']}  {b['amount']:,}원" for b in t['bars'])
-            rt = CellRichText(
-                TextBlock(bold_rt, f"{t['rank']}위  [{t['brand']}] {t['product']}   —   {t['direction']}\n"),
-                TextBlock(note_rt, f"└ {t['comment']}\n"),
-                TextBlock(bar_rt, bar_lines),
-            )
-            n_lines = 2 + len(t['bars'])
-            ws.merge_cells(f'B{dr}:Q{dr}')
-            c = ws[f'B{dr}']
-            c.value = rt
-            c.fill = mf('FFFFFF'); c.border = bdr; c.alignment = left_top
-            ws.row_dimensions[dr].height = max(20, 14 * n_lines + 8)
+            label = f"{t['rank']}위  [{t['brand']}] {t['product']}"
+            month_text = '    '.join(f"{b['month']} {b['amount']:,}원" for b in t['bars'])
+            label_value(f'B{dr}:D{dr}', label, f'E{dr}:Q{dr}', month_text)
+            n_lines = est_lines(month_text, 130)
+            ws.row_dimensions[dr].height = max(18, 15 * n_lines + 4)
             dr += 1
     else:
-        label_value(f'B{dr}:D{dr}', '—', f'E{dr}:Q{dr}', '추세를 계산할 데이터가 부족합니다')
+        label_value(f'B{dr}:D{dr}', '—', f'E{dr}:Q{dr}', '집계할 데이터가 부족합니다')
         ws.row_dimensions[dr].height = 18
         dr += 1
     spacer(dr, 8)
@@ -9500,7 +9487,7 @@ def _write_store_sales_sheet(wb, ws, data, FNAME):
     #    단, 타프토이즈는 제품 종류가 너무 많아 브랜드 합계 한 줄만 보여준다) ──
     band(f'B{dr}:Q{dr}', '브랜드별 매출액 상세', f_subhdr, mf_section(), align=left, height=20)
     dr += 1
-    bdr_prod = Border(left=thin, right=thin, bottom=dot)
+    # 수정사항(점선): 제품 줄도 "1.기본 정보"와 동일한 촘촘한 점선(bdr_dot, 상/하 모두)으로 통일
     if data['brand_breakdown']:
         for g in data['brand_breakdown'][:8]:
             label_value(f'B{dr}:D{dr}', g['brand'], f'E{dr}:Q{dr}',
@@ -9508,13 +9495,13 @@ def _write_store_sales_sheet(wb, ws, data, FNAME):
             ws.row_dimensions[dr].height = 20
             dr += 1
             for p in data['brand_product_breakdown'].get(g['brand'], []):
-                ws.merge_cells(f'C{dr}:F{dr}')
-                pc = ws[f'C{dr}']; pc.value = f"· {p['product']}"
-                pc.font = f_prod; pc.fill = mf('FFFFFF'); pc.border = bdr_prod; pc.alignment = left
+                ws.merge_cells(f'B{dr}:F{dr}')
+                pc = ws[f'B{dr}']; pc.value = f"· {p['product']}"
+                pc.font = f_prod; pc.fill = mf('FFFFFF'); pc.border = bdr_dot; pc.alignment = left
                 ws.merge_cells(f'G{dr}:Q{dr}')
                 vc = ws[f'G{dr}']
                 vc.value = f"{p['qty']:,}개   {p['amount']:,}원"
-                vc.font = f_prod; vc.fill = mf('FFFFFF'); vc.border = bdr_prod; vc.alignment = left
+                vc.font = f_prod; vc.fill = mf('FFFFFF'); vc.border = bdr_dot; vc.alignment = left
                 ws.row_dimensions[dr].height = 17
                 dr += 1
     else:
