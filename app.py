@@ -8361,7 +8361,9 @@ def _build_store_card_data(store_name, year=None, author_name=''):
         pname = _display_product_name(r.get('item_name'))
         b = remap_group(r.get('item_group') or '', r.get('item_name') or '') or '(미분류)'
         ent = product_monthly_map.setdefault(pname, {'brand': b, 'months': {}})
-        ent['months'][mo] = ent['months'].get(mo, 0) + (r['total'] or 0)
+        mo_ent = ent['months'].setdefault(mo, {'amount': 0, 'qty': 0})
+        mo_ent['amount'] += r['total'] or 0
+        mo_ent['qty'] += r['quantity'] or 0
 
     product_trends = []
     for i, p in enumerate(top5[:5], 1):
@@ -8369,32 +8371,15 @@ def _build_store_card_data(store_name, year=None, author_name=''):
         if not ent:
             continue
         months_sorted = sorted(ent['months'].keys())
-        vals = [ent['months'][mo] for mo in months_sorted]
-        if len(vals) >= 2:
-            last, prev = vals[-1], vals[-2]
-            diff = last - prev
-            pct_ch = round(diff / prev * 100, 1) if prev else 0
-            if pct_ch >= 10:
-                direction = f"▲ 상승 (+{pct_ch}%)"
-                comment = "증가 추세 — 재고 확보 및 적극 추천 필요"
-            elif pct_ch <= -10:
-                direction = f"▼ 하락 ({pct_ch}%)"
-                comment = "감소 추세 — 원인 파악 및 대체 제품 제안 검토"
-            else:
-                direction = f"→ 안정 ({pct_ch:+}%)"
-                comment = "안정적 흐름 — 유지 전략 지속"
-        elif len(vals) == 1:
-            direction = "— 단일 월 데이터"
-            comment = "추세 판단을 위해 추가 데이터 필요"
-        else:
+        if not months_sorted:
             continue
-        max_v = max(vals) or 1
+        # 수정사항: 금액 대신 "몇 대(개)" 판매됐는지가 더 직관적이라는 피드백 — 막대 비율은
+        # 금액 기준(값 차이가 더 뚜렷해 보기 좋음)으로 유지하되, 표시 숫자는 수량으로 바꾼다.
         bars = []
-        for mo, v in zip(months_sorted, vals):
-            bar_h = int(v / max_v * 5)
-            bars.append({'month': _TREND_MONTHS_KR[mo], 'bar': '█' * bar_h + '░' * (5 - bar_h), 'amount': v})
-        product_trends.append({'rank': i, 'brand': ent['brand'], 'product': p['product'],
-                                'direction': direction, 'comment': comment, 'bars': bars})
+        for mo in months_sorted:
+            mo_ent = ent['months'][mo]
+            bars.append({'month': _TREND_MONTHS_KR[mo], 'qty': mo_ent['qty'], 'amount': mo_ent['amount']})
+        product_trends.append({'rank': i, 'brand': ent['brand'], 'product': p['product'], 'bars': bars})
 
     # 월별 판매 추이 (1~12월)
     monthly_trend = [{'month': m, 'amount': 0} for m in range(1, 13)]
@@ -9140,9 +9125,9 @@ def _write_store_info_sheet(wb, ws, data, FNAME):
     f_value_b = Font(name=FNAME, size=10.5, bold=True)
     f_note = Font(name=FNAME, size=9, italic=True)
 
-    for col, w in [('A', 2), ('B', 11), ('C', 10), ('D', 12), ('E', 11), ('F', 11), ('G', 12),
-                   ('H', 12), ('I', 12), ('J', 11), ('K', 9), ('L', 15), ('M', 9), ('N', 16),
-                   ('O', 9), ('P', 9), ('Q', 2)]:
+    for col, w in [('A', 2), ('B', 10), ('C', 9), ('D', 11), ('E', 10), ('F', 10), ('G', 11),
+                   ('H', 11), ('I', 11), ('J', 10), ('K', 8), ('L', 14), ('M', 8), ('N', 15),
+                   ('O', 8), ('P', 8), ('Q', 2)]:
         ws.column_dimensions[col].width = w
 
     def band(rng, text, font, fill=None, align=ctr, height=None, border=None):
@@ -9224,13 +9209,15 @@ def _write_store_info_sheet(wb, ws, data, FNAME):
     spacer(cur, 8)
     cur += 1
 
-    # ── 자사입점브랜드 (수정사항: 다른 섹션과 동일한 촘촘한 점선(bdr_dot)을 적용해
-    #    깔끔하게 구분) ──
+    # ── 자사입점브랜드 (수정사항4: 제품 수가 브랜드마다 달라 점선이 열마다 다르게
+    #    잘려 보이던 문제 — 칸 내부 점선은 없애고, 브랜드 헤더 아래 밑줄(얇은 실선)만
+    #    남겨 깔끔하게 구분한다) ──
     brand_hdr_row = cur
     band(f'B{brand_hdr_row}:Q{brand_hdr_row}', '자사입점브랜드', f_subhdr, mf_section(), align=left, height=20)
     brand_cols = ['줄즈', '카오스', '원더폴드', '레카로', 'ABC디자인', '엔픽스', '타프토이즈']
     first_col = 2  # B
     span = 16 // len(brand_cols)
+    hdr_underline = Border(bottom=Side(style='thin', color=Color(rgb=BORDER_C)))
     for ci, b in enumerate(brand_cols):
         c0 = first_col + ci * span
         c1 = c0 + span - 1 if ci < len(brand_cols) - 1 else 17  # 마지막 브랜드가 Q열까지 채움
@@ -9239,7 +9226,7 @@ def _write_store_info_sheet(wb, ws, data, FNAME):
         hc = ws[f'{l0}{brand_hdr_row+1}']
         hc.value = b
         hc.font = Font(name=FNAME, size=9.5, bold=True)
-        hc.fill = mf('FFFFFF'); hc.border = bdr_dot; hc.alignment = ctr
+        hc.fill = mf('FFFFFF'); hc.border = hdr_underline; hc.alignment = ctr
         products = data['carried_brands'].get(b, [])
         for pi in range(5):
             rr = brand_hdr_row + 2 + pi
@@ -9247,12 +9234,11 @@ def _write_store_info_sheet(wb, ws, data, FNAME):
             cell = ws[f'{l0}{rr}']
             cell.value = products[pi] if pi < len(products) else ''
             cell.font = Font(name=FNAME, size=9)
-            cell.fill = mf('FFFFFF')
-            cell.border = bdr_dot; cell.alignment = ctr
+            cell.fill = mf('FFFFFF'); cell.alignment = ctr
         if not products:
             ws.merge_cells(f'{l0}{brand_hdr_row+2}:{l1}{brand_hdr_row+2}')
             ec = ws[f'{l0}{brand_hdr_row+2}']
-            ec.value = '—'; ec.font = f_note; ec.fill = mf('FFFFFF'); ec.border = bdr_dot; ec.alignment = ctr
+            ec.value = '—'; ec.font = f_note; ec.fill = mf('FFFFFF'); ec.alignment = ctr
     cur = brand_hdr_row + 7
     spacer(cur, 8)
     cur += 1
@@ -9317,9 +9303,9 @@ def _write_store_sales_sheet(wb, ws, data, FNAME):
     f_note = Font(name=FNAME, size=9, italic=True)
     f_prod = Font(name=FNAME, size=9)
 
-    for col, w in [('A', 2), ('B', 11), ('C', 10), ('D', 12), ('E', 11), ('F', 11), ('G', 12),
-                   ('H', 12), ('I', 12), ('J', 11), ('K', 9), ('L', 15), ('M', 9), ('N', 16),
-                   ('O', 9), ('P', 9), ('Q', 2)]:
+    for col, w in [('A', 2), ('B', 10), ('C', 9), ('D', 11), ('E', 10), ('F', 10), ('G', 11),
+                   ('H', 11), ('I', 11), ('J', 10), ('K', 8), ('L', 14), ('M', 8), ('N', 15),
+                   ('O', 8), ('P', 8), ('Q', 2)]:
         ws.column_dimensions[col].width = w
     for col in ('S', 'T'):
         ws.column_dimensions[col].hidden = True
@@ -9471,7 +9457,7 @@ def _write_store_sales_sheet(wb, ws, data, FNAME):
     if trends:
         for t in trends:
             label = f"{t['rank']}위  [{t['brand']}] {t['product']}"
-            month_text = '    '.join(f"{b['month']} {b['amount']:,}원" for b in t['bars'])
+            month_text = ' ▶ '.join(f"{b['month']} {b['qty']:,}개" for b in t['bars'])
             label_value(f'B{dr}:D{dr}', label, f'E{dr}:Q{dr}', month_text)
             n_lines = est_lines(month_text, 130)
             ws.row_dimensions[dr].height = max(18, 15 * n_lines + 4)
@@ -9492,7 +9478,7 @@ def _write_store_sales_sheet(wb, ws, data, FNAME):
         for g in data['brand_breakdown'][:8]:
             label_value(f'B{dr}:D{dr}', g['brand'], f'E{dr}:Q{dr}',
                         f"{g['amount']:,}원   ({g['pct']}%)", bold_value=True)
-            ws.row_dimensions[dr].height = 20
+            ws.row_dimensions[dr].height = 16  # 수정사항3: 더 모여 보이도록 줄 높이 축소(20→16)
             dr += 1
             for p in data['brand_product_breakdown'].get(g['brand'], []):
                 ws.merge_cells(f'B{dr}:F{dr}')
@@ -9502,7 +9488,7 @@ def _write_store_sales_sheet(wb, ws, data, FNAME):
                 vc = ws[f'G{dr}']
                 vc.value = f"{p['qty']:,}개   {p['amount']:,}원"
                 vc.font = f_prod; vc.fill = mf('FFFFFF'); vc.border = bdr_dot; vc.alignment = left
-                ws.row_dimensions[dr].height = 17
+                ws.row_dimensions[dr].height = 14  # 수정사항3: 제품 줄 높이 축소(17→14)
                 dr += 1
     else:
         label_value(f'B{dr}:D{dr}', '—', f'E{dr}:Q{dr}', '판매 데이터가 없습니다')
