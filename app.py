@@ -8347,6 +8347,22 @@ def _build_store_card_data(store_name, year=None, author_name=''):
         except Exception:
             pass
 
+    # 월별 베스트 제품 (수정사항: "월별 매출액 상세"에서 해당 월에 어떤 브랜드의 어떤 제품이
+    # 많이 나갔는지 바로 볼 수 있도록 — 월마다 매출 상위 2개 제품을 함께 집계)
+    monthly_product_map = [dict() for _ in range(12)]
+    for r in sale_rows:
+        try:
+            m = int(r['sale_date'][5:7])
+        except Exception:
+            continue
+        pname = _display_product_name(r.get('item_name'))
+        b = remap_group(r.get('item_group') or '', r.get('item_name') or '') or '(미분류)'
+        g = monthly_product_map[m-1].setdefault(pname, {'product': pname, 'brand': b, 'qty': 0, 'amount': 0})
+        g['qty'] += r['quantity'] or 0
+        g['amount'] += r['total'] or 0
+    for i, mp in enumerate(monthly_product_map):
+        monthly_trend[i]['top_products'] = sorted(mp.values(), key=lambda x: -x['amount'])[:2]
+
     # 브랜드/제품별 월별 판매추이 (수정사항2 — 화면에서 브랜드·제품 선택해 보는 용도)
     brand_monthly = {}
     product_monthly = {}
@@ -8403,7 +8419,9 @@ def _build_store_card_data(store_name, year=None, author_name=''):
         'store_rank': f'{rank}위/{total_store_count}위' if rank else '',
         'region': branch.get('region', ''),
         'manager': branch.get('manager', ''),
-        'author': author_name or branch.get('manager', ''),
+        # 작성자는 로그인 계정의 표시 이름('관리자' 같은 일반 라벨일 수 있음)보다
+        # 해당 매장의 실제 담당자(manager)를 우선한다 — 1인 영업담당 체제라 두 값이 보통 같은 사람이다.
+        'author': branch.get('manager', '') or author_name or '',
         'year': year,
         'year_total': year_total,
         'monthly_avg': monthly_avg,
@@ -9043,6 +9061,9 @@ def _write_store_info_sheet(wb, ws, data, FNAME):
     from openpyxl.chart.label import DataLabelList
     from openpyxl.chart.marker import DataPoint
     from openpyxl.chart.shapes import GraphicalProperties
+    from openpyxl.chart.text import RichText
+    from openpyxl.drawing.text import (CharacterProperties, Font as DrawFont, Paragraph,
+                                        ParagraphProperties, RichTextProperties)
     from openpyxl.utils import get_column_letter
 
     # ── 컬러 팔레트 (수정사항: 사용자가 직접 다듬은 템플릿 그대로 — 배경은 거의 전부 흰색이고,
@@ -9051,10 +9072,13 @@ def _write_store_info_sheet(wb, ws, data, FNAME):
     # 차트(브랜드별 매출 비율)에서만 화면 매장분석 카드와 동일한 브랜드 컬러를 그대로 가져와 쓴다.
     BORDER_C = 'E2E8F0'
     SECTION_BG = Color(theme=0, tint=-0.049989318521683403)  # 흰색, 배경1, 5% 더 어둡게
-    # 화면(매장분석 카드)의 VR_SC_BRAND_COLORS와 동일한 매핑 — 브랜드별 매출 비율 차트 전용
-    BRAND_COLORS = {'줄즈': '2563EB', '카오스': 'DC2626', 'ABC디자인': '7C3AED', '원더폴드': 'D97706',
-                     '레카로': '16A34A', '엔픽스': '0891B2', '타프토이즈': '9CA3AF', '(미분류)': '94A3B8'}
-    PIE_PALETTE = ['4F46E5', '0EA5E9', '16A34A', 'D97706', 'DC2626', '7C3AED', '0891B2', '94A3B8']
+    # 수정사항(매장방문보고서 엑셀): 브랜드별 매출 비율 색상을 엑셀 테마색 "위에서 세번째 줄"
+    # (= Lighter 60%, lumMod 40%/lumOff 60%) 톤으로 — 기존보다 훨씬 화사한 파스텔 톤.
+    BRAND_COLORS = {'레카로': 'B7DDE8', '줄즈': 'CCC1D9', 'ABC디자인': 'D7E3BC', '엔픽스': 'E5B9B7',
+                     '원더폴드': 'FCD5B4', '타프토이즈': 'EEECE1', '카오스': 'C00000', '(미분류)': 'D9D9D9'}
+    PIE_PALETTE = ['B7DDE8', 'CCC1D9', 'D7E3BC', 'E5B9B7', 'FCD5B4', 'EEECE1', 'C00000', 'D9D9D9']
+    PIE_FONT_EA = 'HY그래픽M'   # 브랜드별 매출 비율 차트 데이터 레이블 글꼴(한글)
+    PIE_FONT_LATIN = '맑은 고딕'
 
     def mf(h): return PatternFill("solid", fgColor=h)
     def mf_section(): return PatternFill("solid", fgColor=SECTION_BG)
@@ -9170,6 +9194,13 @@ def _write_store_info_sheet(wb, ws, data, FNAME):
         series.dLbls.showCatName = True  # 수정사항1: "매출액 00%"가 아니라 "브랜드명 00%"로 보이도록
         series.dLbls.showLegendKey = False
         series.dLbls.showSerName = False
+        # 수정사항(글꼴): 데이터 레이블의 한글은 HY그래픽M, 영문/숫자는 맑은 고딕 그대로 유지
+        series.dLbls.txPr = RichText(
+            bodyPr=RichTextProperties(),
+            p=[Paragraph(pPr=ParagraphProperties(defRPr=CharacterProperties(
+                b=True,
+                latin=DrawFont(typeface=PIE_FONT_LATIN),
+                ea=DrawFont(typeface=PIE_FONT_EA))))])
         # 수정사항3: 조각마다 이미 "브랜드명 00%" 라벨이 붙어 있어서, 아래 범례(legend)는
         # 같은 정보를 중복으로 보여줄 뿐이라 없애는 게 더 심플하고 깔끔하다.
         pie.legend = None
@@ -9211,18 +9242,40 @@ def _write_store_info_sheet(wb, ws, data, FNAME):
         ws[f'K{CHART1_TOP+1}'].font = f_note; ws[f'K{CHART1_TOP+1}'].alignment = ctr
     spacer(CHART1_BOT + 1, 8)
 
-    # ── 월별 매출액 상세 (수정사항2: 막대그래프는 삭제하고 표만 남김) ──
+    # ── 월별 매출액 상세 (수정사항: 해당 월에 어떤 브랜드의 어떤 제품이 많이 나갔는지도
+    #    바로 볼 수 있도록 — 월 | 매출액 | 베스트 제품(상위 2개) 한 줄짜리 표로 재구성) ──
     detail_row = CHART1_BOT + 2
     band(f'B{detail_row}:Q{detail_row}', '월별 매출액 상세', f_subhdr, mf_section(), align=left, height=20)
     dr = detail_row + 1
+    ws.merge_cells(f'B{dr}:C{dr}'); ws['B{}'.format(dr)] = '월'
+    ws.merge_cells(f'D{dr}:F{dr}'); ws[f'D{dr}'] = '매출액'
+    ws.merge_cells(f'G{dr}:Q{dr}'); ws[f'G{dr}'] = '베스트 제품'
+    for rng in (f'B{dr}:C{dr}', f'D{dr}:F{dr}', f'G{dr}:Q{dr}'):
+        for row in ws[rng]:
+            for cell in row:
+                cell.font = Font(name=FNAME, size=9, bold=True)
+                cell.fill = mf('FFFFFF'); cell.border = Border(bottom=Side(style='thin', color=BORDER_C))
+                cell.alignment = ctr if rng != f'G{dr}:Q{dr}' else left
+    ws.row_dimensions[dr].height = 16
+    dr += 1
     months = data['monthly_trend']
-    for i in range(0, 12, 2):
-        m1 = months[i]
-        label_value(f'B{dr}:C{dr}', f"{m1['month']}월", f'D{dr}:F{dr}', m1['amount'], number_format='#,##0"원"')
-        if i + 1 < 12:
-            m2 = months[i + 1]
-            label_value(f'G{dr}:H{dr}', f"{m2['month']}월", f'I{dr}:Q{dr}', m2['amount'], number_format='#,##0"원"')
-        ws.row_dimensions[dr].height = 18
+    bdr_prod_m = Border(left=thin, right=thin, bottom=dot)
+    for m in months:
+        ws.merge_cells(f'B{dr}:C{dr}')
+        mc = ws[f'B{dr}']; mc.value = f"{m['month']}월"
+        mc.font = f_value_b; mc.fill = mf('FFFFFF'); mc.border = bdr_prod_m; mc.alignment = ctr
+        ws.merge_cells(f'D{dr}:F{dr}')
+        vc = ws[f'D{dr}']; vc.value = m['amount']; vc.number_format = '#,##0"원"'
+        vc.font = f_value; vc.fill = mf('FFFFFF'); vc.border = bdr_prod_m; vc.alignment = left
+        tops = m.get('top_products') or []
+        top_text = '  ·  '.join(
+            f"{p['brand']} {p['product']} ({p['qty']:,}개, {p['amount']:,}원)" for p in tops
+        ) if tops else '—'
+        ws.merge_cells(f'G{dr}:Q{dr}')
+        pc = ws[f'G{dr}']; pc.value = top_text
+        pc.font = Font(name=FNAME, size=9)
+        pc.fill = mf('FFFFFF'); pc.border = bdr_prod_m; pc.alignment = left
+        ws.row_dimensions[dr].height = 17
         dr += 1
     spacer(dr, 8)
     dr += 1
@@ -9232,21 +9285,24 @@ def _write_store_info_sheet(wb, ws, data, FNAME):
     band(f'B{dr}:Q{dr}', '브랜드별 매출액 상세', f_subhdr, mf_section(), align=left, height=20)
     dr += 1
     f_prod = Font(name=FNAME, size=9)
+    # 수정사항(점선/줄간격): 기존엔 모든 행 위·아래에 점선이 겹쳐 두 줄처럼 보였다.
+    # 제품 줄은 "아래쪽 점선 하나"로만 구분하고, 줄 높이도 조금 더 여유 있게 띄운다.
+    bdr_prod = Border(left=thin, right=thin, bottom=dot)
     if data['brand_breakdown']:
         for g in data['brand_breakdown'][:8]:
             label_value(f'B{dr}:D{dr}', g['brand'], f'E{dr}:Q{dr}',
                         f"{g['amount']:,}원   ({g['pct']}%)", bold_value=True)
-            ws.row_dimensions[dr].height = 18
+            ws.row_dimensions[dr].height = 20
             dr += 1
             for p in data['brand_product_breakdown'].get(g['brand'], []):
                 ws.merge_cells(f'C{dr}:F{dr}')
                 pc = ws[f'C{dr}']; pc.value = f"· {p['product']}"
-                pc.font = f_prod; pc.fill = mf('FFFFFF'); pc.border = bdr_dot; pc.alignment = left
+                pc.font = f_prod; pc.fill = mf('FFFFFF'); pc.border = bdr_prod; pc.alignment = left
                 ws.merge_cells(f'G{dr}:Q{dr}')
                 vc = ws[f'G{dr}']
                 vc.value = f"{p['qty']:,}개   {p['amount']:,}원"
-                vc.font = f_prod; vc.fill = mf('FFFFFF'); vc.border = bdr_dot; vc.alignment = left
-                ws.row_dimensions[dr].height = 15
+                vc.font = f_prod; vc.fill = mf('FFFFFF'); vc.border = bdr_prod; vc.alignment = left
+                ws.row_dimensions[dr].height = 17
                 dr += 1
     else:
         label_value(f'B{dr}:D{dr}', '—', f'E{dr}:Q{dr}', '판매 데이터가 없습니다')
@@ -9309,13 +9365,15 @@ def _write_store_info_sheet(wb, ws, data, FNAME):
     spacer(cur, 8)
     cur += 1
 
-    # ── 자사입점브랜드 ──
+    # ── 자사입점브랜드 (수정사항: 칸마다 점선을 두르지 않고, 브랜드명 아래 가는 실선 하나로만
+    #    구분해 더 깔끔하게 — 제품 목록 칸에는 테두리를 아예 없앤다) ──
     brand_hdr_row = cur
     band(f'B{brand_hdr_row}:Q{brand_hdr_row}', '자사입점브랜드', f_subhdr, mf_section(), align=left, height=20)
     brand_cols = ['줄즈', '카오스', '원더폴드', '레카로', 'ABC디자인', '엔픽스', '타프토이즈']
-    col_w = 16 // len(brand_cols)  # B~Q(16칸)를 7개 브랜드가 나눠 쓰도록 폭 배분용(정보용 주석)
     first_col = 2  # B
     span = 16 // len(brand_cols)
+    no_bdr = Border()
+    hdr_bdr = Border(bottom=Side(style='thin', color=BORDER_C))
     for ci, b in enumerate(brand_cols):
         c0 = first_col + ci * span
         c1 = c0 + span - 1 if ci < len(brand_cols) - 1 else 17  # 마지막 브랜드가 Q열까지 채움
@@ -9325,7 +9383,7 @@ def _write_store_info_sheet(wb, ws, data, FNAME):
         hc.value = b
         # 브랜드마다 진한 색을 입히지 않고(흰 배경 + 검정 글씨) 브랜드 구분은 글자 자체로만 한다.
         hc.font = Font(name=FNAME, size=9.5, bold=True)
-        hc.fill = mf('FFFFFF'); hc.border = bdr_dot; hc.alignment = ctr
+        hc.fill = mf('FFFFFF'); hc.border = hdr_bdr; hc.alignment = ctr
         products = data['carried_brands'].get(b, [])
         for pi in range(5):
             rr = brand_hdr_row + 2 + pi
@@ -9334,11 +9392,11 @@ def _write_store_info_sheet(wb, ws, data, FNAME):
             cell.value = products[pi] if pi < len(products) else ''
             cell.font = Font(name=FNAME, size=9)
             cell.fill = mf('FFFFFF')
-            cell.border = bdr_dot; cell.alignment = ctr
+            cell.border = no_bdr; cell.alignment = ctr
         if not products:
             ws.merge_cells(f'{l0}{brand_hdr_row+2}:{l1}{brand_hdr_row+2}')
             ec = ws[f'{l0}{brand_hdr_row+2}']
-            ec.value = '—'; ec.font = f_note; ec.fill = mf('FFFFFF'); ec.border = bdr_dot; ec.alignment = ctr
+            ec.value = '—'; ec.font = f_note; ec.fill = mf('FFFFFF'); ec.border = no_bdr; ec.alignment = ctr
     cur = brand_hdr_row + 7
     spacer(cur, 8)
     cur += 1
@@ -9378,6 +9436,18 @@ def _write_visit_log_sheet(ws, data, FNAME):
     for col, w in widths.items():
         ws.column_dimensions[col].width = w
 
+    def _estimate_wrapped_lines(text, col_width_chars):
+        """줄바꿈(wrap_text) 칸의 실제 줄 수를 글자 길이 기준으로 추정 — 한글 등 비(非)ASCII
+        문자는 폭을 2칸으로 계산한다(엑셀 열 너비 단위가 영문 반각 기준이라서)."""
+        if not text:
+            return 1
+        usable = max(col_width_chars - 2, 4)
+        total_lines = 0
+        for line in str(text).split('\n'):
+            w = sum(2 if ord(ch) > 0x2E7F else 1 for ch in line)
+            total_lines += max(1, -(-w // usable))  # ceil division
+        return max(1, total_lines)
+
     ws.merge_cells('B2:L2'); ws['B2'] = '매장 방문이력'; ws['B2'].font = f_title
     store_label = f"{data['store_name']} ({data['store_rank']})" if data['store_rank'] else data['store_name']
     ws.merge_cells('B3:L3'); ws['B3'] = f"{store_label}  ·  담당 {data['manager'] or ''}"
@@ -9414,7 +9484,13 @@ def _write_visit_log_sheet(ws, data, FNAME):
             c.alignment = left if ci in (3, 4, 5, 10) else ctr
             if ci == 9 and val != '':
                 c.number_format = '#,##0"원"'
-        ws.row_dimensions[r].height = 90 if (v.get('our_content') or v.get('competitor_trend') or v.get('action_item')) else 20
+        # 수정사항2: 글자 길이에 맞춰 박스(행 높이)가 자동으로 조정되도록 — 긴 줄글이 들어가는
+        # 자사 주요내용(E,46칸)/타사 동향(F,30칸)/조치사항(G,36칸)/활동비 내용(L,24칸) 중
+        # 가장 많이 줄바꿈되는 칸을 기준으로 높이를 계산한다(사용자가 직접 늘리지 않아도 되도록).
+        wrap_pairs = [(v.get('our_content', ''), widths['E']), (v.get('competitor_trend', ''), widths['F']),
+                      (v.get('action_item', ''), widths['G']), (v.get('expense_note', ''), widths['L'])]
+        max_lines = max(_estimate_wrapped_lines(t, w) for t, w in wrap_pairs)
+        ws.row_dimensions[r].height = max(20, min(14.5 * max_lines + 6, 300))
 
     if not data['visit_log']:
         ws.merge_cells('B8:L8'); ws['B8'] = '등록된 방문 이력이 없습니다. "보고서작성"으로 첫 방문 기록을 남겨보세요.'
