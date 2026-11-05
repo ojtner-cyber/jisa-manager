@@ -8338,6 +8338,54 @@ def _build_store_card_data(store_name, year=None, author_name=''):
     for g in top5:
         g['pct'] = round(g['amount'] / year_total * 100, 1) if year_total else 0
 
+    # 주요 제품 최근 흐름 분석 (수정사항: "매장분석 > 매장분석리포트"의 "주요 제품 최근 흐름
+    # 분석"과 동일한 판단 기준 — 최근 2개월 증감률로 추세를 나누고, 월별 막대로 시각화한다.
+    # 엑셀의 "월별 매출액 상세"에서 베스트 제품을 단순 텍스트로 나열하는 대신 이 분석을 보여준다.)
+    _TREND_MONTHS_KR = {m: f'{m}월' for m in range(1, 13)}
+    product_monthly_map = {}
+    for r in sale_rows:
+        try:
+            mo = int(r['sale_date'][5:7])
+        except Exception:
+            continue
+        pname = _display_product_name(r.get('item_name'))
+        b = remap_group(r.get('item_group') or '', r.get('item_name') or '') or '(미분류)'
+        ent = product_monthly_map.setdefault(pname, {'brand': b, 'months': {}})
+        ent['months'][mo] = ent['months'].get(mo, 0) + (r['total'] or 0)
+
+    product_trends = []
+    for i, p in enumerate(top5[:5], 1):
+        ent = product_monthly_map.get(p['product'])
+        if not ent:
+            continue
+        months_sorted = sorted(ent['months'].keys())
+        vals = [ent['months'][mo] for mo in months_sorted]
+        if len(vals) >= 2:
+            last, prev = vals[-1], vals[-2]
+            diff = last - prev
+            pct_ch = round(diff / prev * 100, 1) if prev else 0
+            if pct_ch >= 10:
+                direction = f"▲ 상승 (+{pct_ch}%)"
+                comment = "증가 추세 — 재고 확보 및 적극 추천 필요"
+            elif pct_ch <= -10:
+                direction = f"▼ 하락 ({pct_ch}%)"
+                comment = "감소 추세 — 원인 파악 및 대체 제품 제안 검토"
+            else:
+                direction = f"→ 안정 ({pct_ch:+}%)"
+                comment = "안정적 흐름 — 유지 전략 지속"
+        elif len(vals) == 1:
+            direction = "— 단일 월 데이터"
+            comment = "추세 판단을 위해 추가 데이터 필요"
+        else:
+            continue
+        max_v = max(vals) or 1
+        bars = []
+        for mo, v in zip(months_sorted, vals):
+            bar_h = int(v / max_v * 5)
+            bars.append({'month': _TREND_MONTHS_KR[mo], 'bar': '█' * bar_h + '░' * (5 - bar_h), 'amount': v})
+        product_trends.append({'rank': i, 'brand': ent['brand'], 'product': p['product'],
+                                'direction': direction, 'comment': comment, 'bars': bars})
+
     # 월별 판매 추이 (1~12월)
     monthly_trend = [{'month': m, 'amount': 0} for m in range(1, 13)]
     for r in sale_rows:
@@ -8429,6 +8477,7 @@ def _build_store_card_data(store_name, year=None, author_name=''):
         'brand_breakdown': brand_breakdown,
         'brand_product_breakdown': brand_product_breakdown,
         'top5_products': top5,
+        'product_trends': product_trends,
         'monthly_trend': monthly_trend,
         'brand_monthly': brand_monthly,
         'product_monthly': product_monthly,
@@ -9516,8 +9565,9 @@ def _write_visit_dropdown_sheet(ws, FNAME):
 @app.route("/api/export/xlsx/visit-report/by-store", methods=["POST"])
 @login_required
 def api_export_visit_report_by_store():
-    """선택한 매장들의 매장정보 카드 + 누적 방문이력을 새 양식(첨부해주신 엑셀과 동일한 구조)으로 다운로드.
-    매장마다 '정보'/'이력' 시트 한 쌍씩 생성한다. (수정사항7: 드롭다운용 '목록' 시트는 더 이상 만들지 않음)"""
+    """선택한 매장들의 매장정보 카드 + 매출정보 + 누적 방문이력을 새 양식으로 다운로드.
+    매장마다 '정보'(기본정보만) / '매출정보'(월별·브랜드별 매출 + 연도별 비교) / '이력' 시트
+    3개씩 생성한다. (수정사항: 탭을 기본정보·매출정보·이력으로 분리)"""
     d = request.json or {}
     store_names = d.get('store_names', [])
     year = d.get('year') or datetime.now().year
@@ -9532,17 +9582,21 @@ def api_export_visit_report_by_store():
     used_names = set()
     for store_name in store_names[:30]:
         data = _build_store_card_data(store_name, year=year, author_name=author_name)
-        base = store_name[:20]
+        base = store_name[:19]
         info_name = f"{base}_정보"[:31]
+        sales_name = f"{base}_매출정보"[:31]
         hist_name = f"{base}_이력"[:31]
         suffix = 1
-        while info_name in used_names or hist_name in used_names:
-            base2 = f"{base[:16]}_{suffix}"
-            info_name = f"{base2}_정보"[:31]; hist_name = f"{base2}_이력"[:31]; suffix += 1
-        used_names.add(info_name); used_names.add(hist_name)
+        while info_name in used_names or sales_name in used_names or hist_name in used_names:
+            base2 = f"{base[:14]}_{suffix}"
+            info_name = f"{base2}_정보"[:31]; sales_name = f"{base2}_매출정보"[:31]
+            hist_name = f"{base2}_이력"[:31]; suffix += 1
+        used_names.add(info_name); used_names.add(sales_name); used_names.add(hist_name)
 
         ws_info = wb.create_sheet(title=info_name)
         _write_store_info_sheet(wb, ws_info, data, FNAME)
+        ws_sales = wb.create_sheet(title=sales_name)
+        _write_store_sales_sheet(wb, ws_sales, data, FNAME)
         ws_hist = wb.create_sheet(title=hist_name)
         _write_visit_log_sheet(ws_hist, data, FNAME)
 
