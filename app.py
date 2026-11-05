@@ -9101,40 +9101,24 @@ _VISIT_EXPENSE_TYPE_LIST = ['식사', '회식', '간식·음료', '기타(매장
 
 
 def _write_store_info_sheet(wb, ws, data, FNAME):
-    """매장정보 카드 시트 — 수정사항1~3: 첨부해주신 양식 기반이되, 대표 보고용으로 쓸 수 있도록
-    전문적인 디자인(여백·정렬·차트 스타일)으로 재구성. 모든 값은 판매처관리·판매실적·방문이력에서
-    실시간 계산한 데이터로 채운다."""
+    """매장정보 카드 시트(1번 탭) — 기본 정보 / 매장 현황 / 자사입점브랜드 / 방문·영업활동비
+    요약만 다룬다. 매출 상세(브랜드별 매출 비율·월별/브랜드별 매출액 상세·연도별 비교)는
+    '_매출정보' 시트로 분리했다(수정사항: 탭 구분을 기본정보/매출정보/이력 3개로)."""
     from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
     from openpyxl.styles.colors import Color
-    from openpyxl.chart import PieChart, BarChart, Reference
-    from openpyxl.chart.label import DataLabelList
-    from openpyxl.chart.marker import DataPoint
-    from openpyxl.chart.shapes import GraphicalProperties
-    from openpyxl.chart.text import RichText
-    from openpyxl.drawing.text import (CharacterProperties, Font as DrawFont, Paragraph,
-                                        ParagraphProperties, RichTextProperties)
     from openpyxl.utils import get_column_letter
 
-    # ── 컬러 팔레트 (수정사항: 사용자가 직접 다듬은 템플릿 그대로 — 배경은 거의 전부 흰색이고,
-    # 소제목(섹션 배너)만 "흰색, 배경1, 5% 더 어둡게" 테마색을 쓴다. 글씨는 전부 검정(자동),
-    # 칸 구분선도 전부 가장 얇은 점선(hair) + 자동색으로 통일 — 브랜드 구분이 "꼭" 필요한
-    # 차트(브랜드별 매출 비율)에서만 화면 매장분석 카드와 동일한 브랜드 컬러를 그대로 가져와 쓴다.
     BORDER_C = 'E2E8F0'
     SECTION_BG = Color(theme=0, tint=-0.049989318521683403)  # 흰색, 배경1, 5% 더 어둡게
-    # 수정사항(매장방문보고서 엑셀): 브랜드별 매출 비율 색상을 엑셀 테마색 "위에서 세번째 줄"
-    # (= Lighter 60%, lumMod 40%/lumOff 60%) 톤으로 — 기존보다 훨씬 화사한 파스텔 톤.
-    BRAND_COLORS = {'레카로': 'B7DDE8', '줄즈': 'CCC1D9', 'ABC디자인': 'D7E3BC', '엔픽스': 'E5B9B7',
-                     '원더폴드': 'FCD5B4', '타프토이즈': 'EEECE1', '카오스': 'C00000', '(미분류)': 'D9D9D9'}
-    PIE_PALETTE = ['B7DDE8', 'CCC1D9', 'D7E3BC', 'E5B9B7', 'FCD5B4', 'EEECE1', 'C00000', 'D9D9D9']
-    PIE_FONT_EA = 'HY그래픽M'   # 브랜드별 매출 비율 차트 데이터 레이블 글꼴(한글)
-    PIE_FONT_LATIN = '맑은 고딕'
 
     def mf(h): return PatternFill("solid", fgColor=h)
     def mf_section(): return PatternFill("solid", fgColor=SECTION_BG)
     thin = Side(style='thin', color=BORDER_C)
-    dot = Side(style='hair', color=Color(auto=True))  # 가장 얇은 점선(hair) + 자동색
+    # 수정사항(점선): 기존 'hair'(극세 점선)는 화면/인쇄에서 선이 끊겨 보이는("짤린") 느낌을
+    # 줘서, 선명하게 이어져 보이는 'dotted'로 교체했다.
+    dot = Side(style='dotted', color=Color(auto=True))
     bdr  = Border(left=thin, right=thin, top=thin, bottom=thin)
-    bdr_dot = Border(left=thin, right=thin, top=dot, bottom=dot)  # 소제목 아래 본문 행 — 가는 점선으로 가볍게 구분
+    bdr_dot = Border(left=thin, right=thin, top=dot, bottom=dot)
     ctr  = Alignment(horizontal='center', vertical='center', wrap_text=True)
     left = Alignment(horizontal='left', vertical='center', wrap_text=True)
     left_top = Alignment(horizontal='left', vertical='top', wrap_text=True)
@@ -9150,13 +9134,8 @@ def _write_store_info_sheet(wb, ws, data, FNAME):
                    ('H', 12), ('I', 12), ('J', 11), ('K', 9), ('L', 15), ('M', 9), ('N', 16),
                    ('O', 9), ('P', 9), ('Q', 2)]:
         ws.column_dimensions[col].width = w
-    # 차트 소스 데이터는 화면에 보이지 않도록 완전히 숨긴 열(S~)에 둔다 — 예전엔 안 숨겨져서
-    # "매출액/월별 매출액이 옆에 덩그러니" 보이던 문제의 원인이었다.
-    for col in ('S', 'T'):
-        ws.column_dimensions[col].hidden = True
 
     def band(rng, text, font, fill=None, align=ctr, height=None, border=None):
-        # fill을 안 주면(소제목이 아닌 라벨 등) 흰색, border를 안 주면(진짜 소제목만) 실선을 쓴다.
         ws.merge_cells(rng)
         c0 = rng.split(':')[0]
         ws[c0] = text
@@ -9169,11 +9148,10 @@ def _write_store_info_sheet(wb, ws, data, FNAME):
             r0 = int(''.join(ch for ch in c0 if ch.isdigit()))
             ws.row_dimensions[r0].height = height
 
-    def spacer(row, height=7):
+    def spacer(row, height=8):
         ws.row_dimensions[row].height = height
 
     def label_value(label_rng, label_text, value_rng, value, bold_value=False, number_format=None):
-        # 라벨 칸도 값 칸과 똑같이 흰 배경 + 가는 점선(hair) 테두리로 — 소제목(섹션 배너)만 음영을 준다.
         band(label_rng, label_text, f_label, align=left, border=bdr_dot)
         ws.merge_cells(value_rng)
         c0 = value_rng.split(':')[0]
@@ -9185,7 +9163,7 @@ def _write_store_info_sheet(wb, ws, data, FNAME):
                 cell.font = f_value_b if bold_value else f_value
                 cell.fill = mf('FFFFFF'); cell.border = bdr_dot; cell.alignment = left
 
-    # ── 제목 ── (수정사항2: "카드"를 떼고 "오프라인 매장 정보"로)
+    # ── 제목 ──
     band('B1:Q2', '오프라인 매장 정보', f_title, mf_section())
     ws.row_dimensions[1].height = 22; ws.row_dimensions[2].height = 22
     spacer(3, 8)
@@ -9208,15 +9186,180 @@ def _write_store_info_sheet(wb, ws, data, FNAME):
         ws.row_dimensions[r].height = 19
     spacer(9, 8)
 
+    # ── 2. 매장 현황 ──
+    section2_row = 10
+    band(f'B{section2_row}:Q{section2_row}', '2. 매장 현황', f_section, mf_section(), align=left, height=22)
+    r1 = section2_row + 1
+    status_rows = [
+        ('직원현황', data['staff_status'], 2),
+        ('매장현황', data['store_status'], 2),
+        ('지역상품권 관련', data['voucher_info'], 2),
+    ]
+    cur = r1
+    for label_txt, val, span in status_rows:
+        ws.merge_cells(f'B{cur}:C{cur+span-1}')
+        c = ws[f'B{cur}']; c.value = label_txt
+        c.font = f_label; c.fill = mf('FFFFFF'); c.border = bdr_dot; c.alignment = ctr
+        for rr in range(cur, cur + span):
+            for col_letter in ('B', 'C'):
+                ws[f'{col_letter}{rr}'].border = bdr_dot; ws[f'{col_letter}{rr}'].fill = mf('FFFFFF')
+        ws.merge_cells(f'D{cur}:Q{cur+span-1}')
+        vc = ws[f'D{cur}']; vc.value = val or ''
+        vc.font = f_value
+        vc.fill = mf('FFFFFF'); vc.alignment = left_top
+        for rr in range(cur, cur + span):
+            for col_letter in [get_column_letter(ci) for ci in range(4, 18)]:
+                ws[f'{col_letter}{rr}'].border = bdr_dot
+        cur += span
+    spacer(cur, 8)
+    cur += 1
+
+    # ── 자사입점브랜드 (칸마다 점선을 두르지 않고, 브랜드명 아래 가는 실선 하나로만
+    #    구분해 더 깔끔하게 — 제품 목록 칸에는 테두리를 아예 없앤다) ──
+    brand_hdr_row = cur
+    band(f'B{brand_hdr_row}:Q{brand_hdr_row}', '자사입점브랜드', f_subhdr, mf_section(), align=left, height=20)
+    brand_cols = ['줄즈', '카오스', '원더폴드', '레카로', 'ABC디자인', '엔픽스', '타프토이즈']
+    first_col = 2  # B
+    span = 16 // len(brand_cols)
+    no_bdr = Border()
+    hdr_bdr = Border(bottom=Side(style='thin', color=BORDER_C))
+    for ci, b in enumerate(brand_cols):
+        c0 = first_col + ci * span
+        c1 = c0 + span - 1 if ci < len(brand_cols) - 1 else 17  # 마지막 브랜드가 Q열까지 채움
+        l0, l1 = get_column_letter(c0), get_column_letter(c1)
+        ws.merge_cells(f'{l0}{brand_hdr_row+1}:{l1}{brand_hdr_row+1}')
+        hc = ws[f'{l0}{brand_hdr_row+1}']
+        hc.value = b
+        hc.font = Font(name=FNAME, size=9.5, bold=True)
+        hc.fill = mf('FFFFFF'); hc.border = hdr_bdr; hc.alignment = ctr
+        products = data['carried_brands'].get(b, [])
+        for pi in range(5):
+            rr = brand_hdr_row + 2 + pi
+            ws.merge_cells(f'{l0}{rr}:{l1}{rr}')
+            cell = ws[f'{l0}{rr}']
+            cell.value = products[pi] if pi < len(products) else ''
+            cell.font = Font(name=FNAME, size=9)
+            cell.fill = mf('FFFFFF')
+            cell.border = no_bdr; cell.alignment = ctr
+        if not products:
+            ws.merge_cells(f'{l0}{brand_hdr_row+2}:{l1}{brand_hdr_row+2}')
+            ec = ws[f'{l0}{brand_hdr_row+2}']
+            ec.value = '—'; ec.font = f_note; ec.fill = mf('FFFFFF'); ec.border = no_bdr; ec.alignment = ctr
+    cur = brand_hdr_row + 7
+    spacer(cur, 8)
+    cur += 1
+
+    # ── 3. 방문 · 영업활동비 현황 (요약 — 상세 이력은 '_이력' 탭에) ──
+    band(f'B{cur}:Q{cur}', '3. 방문 · 영업활동비 현황', f_section, mf_section(),
+         align=left, height=22)
+    cur += 1
+    label_value(f'B{cur}:C{cur}', '총 방문 횟수', f'D{cur}:H{cur}', f"{data['total_visits']}회", bold_value=True)
+    label_value(f'I{cur}:J{cur}', '진행중 조치', f'K{cur}:Q{cur}', f"{data['ongoing_actions']}건", bold_value=True)
+    ws.row_dimensions[cur].height = 19
+    cur += 1
+    label_value(f'B{cur}:C{cur}', '누적 영업활동비', f'D{cur}:H{cur}', data['total_expense'],
+                bold_value=True, number_format='#,##0"원"')
+    label_value(f'I{cur}:J{cur}', '이번 달 활동비', f'K{cur}:Q{cur}', data['this_month_expense'],
+                bold_value=True, number_format='#,##0"원"')
+    ws.row_dimensions[cur].height = 19
+
+    ws.sheet_view.showGridLines = False
+    ws.print_area = f'A1:Q{cur}'
+
+
+def _write_store_sales_sheet(wb, ws, data, FNAME):
+    """매출정보 시트(2번 탭) — 브랜드별 매출 비율(차트) + 베스트 제품 TOP5 + 월별 매출액 상세
+    (+ 주요 제품 최근 흐름 분석) + 브랜드별 매출액 상세 + 연도별 매출 비교. 기존 '_정보' 시트에
+    있던 매출 관련 섹션을 모두 이 탭으로 분리했다(수정사항: 탭 구분)."""
+    from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
+    from openpyxl.styles.colors import Color
+    from openpyxl.chart import PieChart, Reference
+    from openpyxl.chart.label import DataLabelList
+    from openpyxl.chart.marker import DataPoint
+    from openpyxl.chart.shapes import GraphicalProperties
+    from openpyxl.chart.text import RichText
+    from openpyxl.drawing.text import (CharacterProperties, Font as DrawFont, Paragraph,
+                                        ParagraphProperties, RichTextProperties)
+    from openpyxl.cell.rich_text import CellRichText, TextBlock
+    from openpyxl.cell.text import InlineFont
+    from openpyxl.utils import get_column_letter
+
+    BORDER_C = 'E2E8F0'
+    SECTION_BG = Color(theme=0, tint=-0.049989318521683403)
+    # 수정사항(매장방문보고서 엑셀): 브랜드별 매출 비율 색상을 엑셀 테마색 "위에서 세번째 줄"
+    # (= Lighter 60%, lumMod 40%/lumOff 60%) 톤으로 — 기존보다 훨씬 화사한 파스텔 톤.
+    BRAND_COLORS = {'레카로': 'B7DDE8', '줄즈': 'CCC1D9', 'ABC디자인': 'D7E3BC', '엔픽스': 'E5B9B7',
+                     '원더폴드': 'FCD5B4', '타프토이즈': 'EEECE1', '카오스': 'C00000', '(미분류)': 'D9D9D9'}
+    PIE_PALETTE = ['B7DDE8', 'CCC1D9', 'D7E3BC', 'E5B9B7', 'FCD5B4', 'EEECE1', 'C00000', 'D9D9D9']
+    PIE_FONT_EA = 'HY그래픽M'
+    PIE_FONT_LATIN = '맑은 고딕'
+
+    def mf(h): return PatternFill("solid", fgColor=h)
+    def mf_section(): return PatternFill("solid", fgColor=SECTION_BG)
+    thin = Side(style='thin', color=BORDER_C)
+    dot = Side(style='dotted', color=Color(auto=True))  # 수정사항(점선): hair → dotted로 가독성 개선
+    bdr  = Border(left=thin, right=thin, top=thin, bottom=thin)
+    bdr_dot = Border(left=thin, right=thin, top=dot, bottom=dot)
+    ctr  = Alignment(horizontal='center', vertical='center', wrap_text=True)
+    left = Alignment(horizontal='left', vertical='center', wrap_text=True)
+    left_top = Alignment(horizontal='left', vertical='top', wrap_text=True)
+    f_title = Font(name=FNAME, size=18, bold=True)
+    f_subhdr = Font(name=FNAME, size=10, bold=True)
+    f_label = Font(name=FNAME, size=10, bold=True)
+    f_value = Font(name=FNAME, size=10)
+    f_value_b = Font(name=FNAME, size=10.5, bold=True)
+    f_note = Font(name=FNAME, size=9, italic=True)
+    f_prod = Font(name=FNAME, size=9)
+
+    for col, w in [('A', 2), ('B', 11), ('C', 10), ('D', 12), ('E', 11), ('F', 11), ('G', 12),
+                   ('H', 12), ('I', 12), ('J', 11), ('K', 9), ('L', 15), ('M', 9), ('N', 16),
+                   ('O', 9), ('P', 9), ('Q', 2)]:
+        ws.column_dimensions[col].width = w
+    for col in ('S', 'T'):
+        ws.column_dimensions[col].hidden = True
+
+    def band(rng, text, font, fill=None, align=ctr, height=None, border=None):
+        ws.merge_cells(rng)
+        c0 = rng.split(':')[0]
+        ws[c0] = text
+        use_fill = fill if fill is not None else mf('FFFFFF')
+        use_border = border if border is not None else bdr
+        for row in ws[rng]:
+            for cell in row:
+                cell.font = font; cell.fill = use_fill; cell.border = use_border; cell.alignment = align
+        if height:
+            r0 = int(''.join(ch for ch in c0 if ch.isdigit()))
+            ws.row_dimensions[r0].height = height
+
+    def spacer(row, height=8):
+        ws.row_dimensions[row].height = height
+
+    def label_value(label_rng, label_text, value_rng, value, bold_value=False, number_format=None):
+        band(label_rng, label_text, f_label, align=left, border=bdr_dot)
+        ws.merge_cells(value_rng)
+        c0 = value_rng.split(':')[0]
+        ws[c0] = value
+        if number_format:
+            ws[c0].number_format = number_format
+        for row in ws[value_rng]:
+            for cell in row:
+                cell.font = f_value_b if bold_value else f_value
+                cell.fill = mf('FFFFFF'); cell.border = bdr_dot; cell.alignment = left
+
+    # ── 제목 ──
+    store_label = f"{data['store_name']}  ({data['store_rank']})" if data['store_rank'] else data['store_name']
+    band('B1:Q2', f"매출 정보 — {store_label}", f_title, mf_section())
+    ws.row_dimensions[1].height = 22; ws.row_dimensions[2].height = 22
+    spacer(3, 8)
+
     # ── 브랜드별 매출 비율 + 베스트 제품 TOP5 (같은 높이로 나란히) ──
-    CHART1_TOP, CHART1_BOT = 11, 17   # 7 rows ≈ 8.3cm, 차트 높이와 맞춤
-    band('B10:J10', '브랜드별 매출 비율', f_subhdr, mf_section(), align=left)
-    band('K10:Q10', '베스트 제품 TOP5', f_subhdr, mf_section(), align=left)
+    CHART1_TOP, CHART1_BOT = 6, 12
+    band(f'B4:J4', '브랜드별 매출 비율', f_subhdr, mf_section(), align=left)
+    band(f'K4:Q4', '베스트 제품 TOP5', f_subhdr, mf_section(), align=left)
     ws.merge_cells(f'B{CHART1_TOP}:J{CHART1_BOT}')
     for r in range(CHART1_TOP, CHART1_BOT + 1):
         ws.row_dimensions[r].height = 34
 
-    # ── 차트 소스 데이터 (숨김 열 S/T) ──
     ws['S1'] = '브랜드'; ws['T1'] = '매출액'
     n_brand = min(len(data['brand_breakdown']), 8)
     for i, g in enumerate(data['brand_breakdown'][:8]):
@@ -9231,7 +9374,6 @@ def _write_store_info_sheet(wb, ws, data, FNAME):
         pie.add_data(vals, titles_from_data=True)
         pie.set_categories(cats)
         series = pie.series[0]
-        # 수정사항2: 매장분석 화면(Chart.js 도넛)과 같은 브랜드=같은 색이 되도록 BRAND_COLORS를 우선 사용
         series.data_points = [
             DataPoint(idx=i, spPr=GraphicalProperties(
                 solidFill=BRAND_COLORS.get(data['brand_breakdown'][i]['brand'], PIE_PALETTE[i % len(PIE_PALETTE)])))
@@ -9240,27 +9382,23 @@ def _write_store_info_sheet(wb, ws, data, FNAME):
         series.dLbls = DataLabelList()
         series.dLbls.showPercent = True
         series.dLbls.showVal = False
-        series.dLbls.showCatName = True  # 수정사항1: "매출액 00%"가 아니라 "브랜드명 00%"로 보이도록
+        series.dLbls.showCatName = True
         series.dLbls.showLegendKey = False
         series.dLbls.showSerName = False
-        # 수정사항(글꼴): 데이터 레이블의 한글은 HY그래픽M, 영문/숫자는 맑은 고딕 그대로 유지
         series.dLbls.txPr = RichText(
             bodyPr=RichTextProperties(),
             p=[Paragraph(pPr=ParagraphProperties(defRPr=CharacterProperties(
                 b=True,
                 latin=DrawFont(typeface=PIE_FONT_LATIN),
                 ea=DrawFont(typeface=PIE_FONT_EA))))])
-        # 수정사항3: 조각마다 이미 "브랜드명 00%" 라벨이 붙어 있어서, 아래 범례(legend)는
-        # 같은 정보를 중복으로 보여줄 뿐이라 없애는 게 더 심플하고 깔끔하다.
         pie.legend = None
-        pie.visible_cells_only = False  # S/T열을 숨김 처리했으므로 반드시 꺼줘야 차트가 빈 화면으로 안 나온다
+        pie.visible_cells_only = False
         pie.height = 8.1; pie.width = 19.2
         ws.add_chart(pie, f'B{CHART1_TOP}')
     else:
         ws[f'B{CHART1_TOP}'] = '올해 판매 데이터가 없습니다'
         ws[f'B{CHART1_TOP}'].font = f_note; ws[f'B{CHART1_TOP}'].alignment = ctr
 
-    # TOP5 미니 테이블 (순위 / 제품명 / 수량 / 매출액 / 비중) — 흰 배경 + 가는 점선(hair)으로 통일
     top5_hdr_row = CHART1_TOP
     for col_letter, h in [('K', '순위'), ('L', '제품명'), ('M', '수량'), ('N', '매출액'), ('O', '비중')]:
         c = ws[f'{col_letter}{top5_hdr_row}']
@@ -9291,12 +9429,11 @@ def _write_store_info_sheet(wb, ws, data, FNAME):
         ws[f'K{CHART1_TOP+1}'].font = f_note; ws[f'K{CHART1_TOP+1}'].alignment = ctr
     spacer(CHART1_BOT + 1, 8)
 
-    # ── 월별 매출액 상세 (수정사항: 해당 월에 어떤 브랜드의 어떤 제품이 많이 나갔는지도
-    #    바로 볼 수 있도록 — 월 | 매출액 | 베스트 제품(상위 2개) 한 줄짜리 표로 재구성) ──
+    # ── 월별 매출액 상세 ──
     detail_row = CHART1_BOT + 2
     band(f'B{detail_row}:Q{detail_row}', '월별 매출액 상세', f_subhdr, mf_section(), align=left, height=20)
     dr = detail_row + 1
-    ws.merge_cells(f'B{dr}:C{dr}'); ws['B{}'.format(dr)] = '월'
+    ws.merge_cells(f'B{dr}:C{dr}'); ws[f'B{dr}'] = '월'
     ws.merge_cells(f'D{dr}:F{dr}'); ws[f'D{dr}'] = '매출액'
     ws.merge_cells(f'G{dr}:Q{dr}'); ws[f'G{dr}'] = '베스트 제품'
     for rng in (f'B{dr}:C{dr}', f'D{dr}:F{dr}', f'G{dr}:Q{dr}'):
@@ -9329,13 +9466,40 @@ def _write_store_info_sheet(wb, ws, data, FNAME):
     spacer(dr, 8)
     dr += 1
 
-    # ── 브랜드별 매출액 상세 (수정사항3: 브랜드 아래에 제품별 판매량도 함께 표시.
+    # ── 주요 제품 최근 흐름 분석 (수정사항: 매장분석 > 매장분석리포트와 동일한 추세 분석을
+    #    엑셀에서도 볼 수 있도록 — 순위/추세/코멘트 + 월별 막대 시각화를 제품별 박스로 표시) ──
+    band(f'B{dr}:Q{dr}', '주요 제품 최근 흐름 분석', f_subhdr, mf_section(), align=left, height=20)
+    dr += 1
+    trends = data.get('product_trends') or []
+    bold_rt = InlineFont(rFont=FNAME, b=True, sz=10)
+    note_rt = InlineFont(rFont=FNAME, i=True, sz=9, color='6B7280')
+    bar_rt  = InlineFont(rFont=FNAME, sz=9, color='374151')
+    if trends:
+        for t in trends:
+            bar_lines = '\n'.join(f"   {b['month']:>3}  {b['bar']}  {b['amount']:,}원" for b in t['bars'])
+            rt = CellRichText(
+                TextBlock(bold_rt, f"{t['rank']}위  [{t['brand']}] {t['product']}   —   {t['direction']}\n"),
+                TextBlock(note_rt, f"└ {t['comment']}\n"),
+                TextBlock(bar_rt, bar_lines),
+            )
+            n_lines = 2 + len(t['bars'])
+            ws.merge_cells(f'B{dr}:Q{dr}')
+            c = ws[f'B{dr}']
+            c.value = rt
+            c.fill = mf('FFFFFF'); c.border = bdr; c.alignment = left_top
+            ws.row_dimensions[dr].height = max(20, 14 * n_lines + 8)
+            dr += 1
+    else:
+        label_value(f'B{dr}:D{dr}', '—', f'E{dr}:Q{dr}', '추세를 계산할 데이터가 부족합니다')
+        ws.row_dimensions[dr].height = 18
+        dr += 1
+    spacer(dr, 8)
+    dr += 1
+
+    # ── 브랜드별 매출액 상세 (브랜드 아래에 제품별 판매량도 함께 표시.
     #    단, 타프토이즈는 제품 종류가 너무 많아 브랜드 합계 한 줄만 보여준다) ──
     band(f'B{dr}:Q{dr}', '브랜드별 매출액 상세', f_subhdr, mf_section(), align=left, height=20)
     dr += 1
-    f_prod = Font(name=FNAME, size=9)
-    # 수정사항(점선/줄간격): 기존엔 모든 행 위·아래에 점선이 겹쳐 두 줄처럼 보였다.
-    # 제품 줄은 "아래쪽 점선 하나"로만 구분하고, 줄 높이도 조금 더 여유 있게 띄운다.
     bdr_prod = Border(left=thin, right=thin, bottom=dot)
     if data['brand_breakdown']:
         for g in data['brand_breakdown'][:8]:
@@ -9358,43 +9522,14 @@ def _write_store_info_sheet(wb, ws, data, FNAME):
         ws.row_dimensions[dr].height = 18
         dr += 1
     spacer(dr, 8)
-
-    # ── 2. 매장 현황 ──
-    section3_row = dr + 1
-    band(f'B{section3_row}:Q{section3_row}', '2. 매장 현황', f_section, mf_section(), align=left, height=22)
-    r1 = section3_row + 1
-    status_rows = [
-        ('직원현황', data['staff_status'], 2),
-        ('매장현황', data['store_status'], 2),
-        ('지역상품권 관련', data['voucher_info'], 2),
-    ]
-    cur = r1
-    for label_txt, val, span in status_rows:
-        ws.merge_cells(f'B{cur}:C{cur+span-1}')
-        c = ws[f'B{cur}']; c.value = label_txt
-        c.font = f_label; c.fill = mf('FFFFFF'); c.border = bdr_dot; c.alignment = ctr
-        for rr in range(cur, cur + span):
-            for col_letter in ('B', 'C'):
-                ws[f'{col_letter}{rr}'].border = bdr_dot; ws[f'{col_letter}{rr}'].fill = mf('FFFFFF')
-        ws.merge_cells(f'D{cur}:Q{cur+span-1}')
-        # 수정사항3: 미입력 안내문구는 빈 칸을 더 지저분해 보이게 해서 없애고, 그냥 비워둔다.
-        vc = ws[f'D{cur}']; vc.value = val or ''
-        vc.font = f_value
-        vc.fill = mf('FFFFFF'); vc.alignment = left_top
-        for rr in range(cur, cur + span):
-            for col_letter in [get_column_letter(ci) for ci in range(4, 18)]:
-                ws[f'{col_letter}{rr}'].border = bdr_dot
-        cur += span
-    spacer(cur, 8)
-    cur += 1
+    dr += 1
 
     # ── 연도별 매출 비교 ──
-    yoy_row = cur
-    yoy_span = 3  # 3줄(올해/작년 동기/작년 전체)이 잘리지 않도록 3행 확보
+    yoy_row = dr
+    yoy_span = 3
     band(f'B{yoy_row}:C{yoy_row+yoy_span-1}', '연도별 매출 비교', f_label, align=left, border=bdr_dot)
     ws.merge_cells(f'D{yoy_row}:Q{yoy_row+yoy_span-1}')
     yoy_cell = ws[f'D{yoy_row}']
-    # 수정사항4: 증감 표시(▲▼)는 비교 기준인 올해(data['year']) 줄에 붙어야 한다 — 작년 동기 줄이 아니라.
     lines = [
         f"{data['year']}년 1~{data['cur_month']}월   {data['this_year_ytd']:,}원  ({data['this_year_cnt']}건)"
         + (f"   {'▲' if data['yoy_pct'] >= 0 else '▼'} {abs(data['yoy_pct'])}% ({'증가' if data['yoy_pct'] >= 0 else '감소'})"
@@ -9410,63 +9545,10 @@ def _write_store_info_sheet(wb, ws, data, FNAME):
             if col_letter in ('B', 'C'):
                 ws[f'{col_letter}{rr}'].fill = mf('FFFFFF')
         ws.row_dimensions[rr].height = 18
-    cur += yoy_span
-    spacer(cur, 8)
-    cur += 1
-
-    # ── 자사입점브랜드 (수정사항: 칸마다 점선을 두르지 않고, 브랜드명 아래 가는 실선 하나로만
-    #    구분해 더 깔끔하게 — 제품 목록 칸에는 테두리를 아예 없앤다) ──
-    brand_hdr_row = cur
-    band(f'B{brand_hdr_row}:Q{brand_hdr_row}', '자사입점브랜드', f_subhdr, mf_section(), align=left, height=20)
-    brand_cols = ['줄즈', '카오스', '원더폴드', '레카로', 'ABC디자인', '엔픽스', '타프토이즈']
-    first_col = 2  # B
-    span = 16 // len(brand_cols)
-    no_bdr = Border()
-    hdr_bdr = Border(bottom=Side(style='thin', color=BORDER_C))
-    for ci, b in enumerate(brand_cols):
-        c0 = first_col + ci * span
-        c1 = c0 + span - 1 if ci < len(brand_cols) - 1 else 17  # 마지막 브랜드가 Q열까지 채움
-        l0, l1 = get_column_letter(c0), get_column_letter(c1)
-        ws.merge_cells(f'{l0}{brand_hdr_row+1}:{l1}{brand_hdr_row+1}')
-        hc = ws[f'{l0}{brand_hdr_row+1}']
-        hc.value = b
-        # 브랜드마다 진한 색을 입히지 않고(흰 배경 + 검정 글씨) 브랜드 구분은 글자 자체로만 한다.
-        hc.font = Font(name=FNAME, size=9.5, bold=True)
-        hc.fill = mf('FFFFFF'); hc.border = hdr_bdr; hc.alignment = ctr
-        products = data['carried_brands'].get(b, [])
-        for pi in range(5):
-            rr = brand_hdr_row + 2 + pi
-            ws.merge_cells(f'{l0}{rr}:{l1}{rr}')
-            cell = ws[f'{l0}{rr}']
-            cell.value = products[pi] if pi < len(products) else ''
-            cell.font = Font(name=FNAME, size=9)
-            cell.fill = mf('FFFFFF')
-            cell.border = no_bdr; cell.alignment = ctr
-        if not products:
-            ws.merge_cells(f'{l0}{brand_hdr_row+2}:{l1}{brand_hdr_row+2}')
-            ec = ws[f'{l0}{brand_hdr_row+2}']
-            ec.value = '—'; ec.font = f_note; ec.fill = mf('FFFFFF'); ec.border = no_bdr; ec.alignment = ctr
-    cur = brand_hdr_row + 7
-    spacer(cur, 8)
-    cur += 1
-
-    # ── 3. 방문 · 영업활동비 현황 ──
-    band(f'B{cur}:Q{cur}', '3. 방문 · 영업활동비 현황', f_section, mf_section(),
-         align=left, height=22)
-    cur += 1
-    label_value(f'B{cur}:C{cur}', '총 방문 횟수', f'D{cur}:H{cur}', f"{data['total_visits']}회", bold_value=True)
-    label_value(f'I{cur}:J{cur}', '진행중 조치', f'K{cur}:Q{cur}', f"{data['ongoing_actions']}건", bold_value=True)
-    ws.row_dimensions[cur].height = 19
-    cur += 1
-    label_value(f'B{cur}:C{cur}', '누적 영업활동비', f'D{cur}:H{cur}', data['total_expense'],
-                bold_value=True, number_format='#,##0"원"')
-    label_value(f'I{cur}:J{cur}', '이번 달 활동비', f'K{cur}:Q{cur}', data['this_month_expense'],
-                bold_value=True, number_format='#,##0"원"')
-    ws.row_dimensions[cur].height = 19
+    dr += yoy_span
 
     ws.sheet_view.showGridLines = False
-    ws.print_area = f'A1:Q{cur}'
-
+    ws.print_area = f'A1:Q{dr}'
 
 def _write_visit_log_sheet(ws, data, FNAME):
     """방문이력 시트 — 수정사항5: store_visit_log 누적 로그를 한 행씩 그대로 출력."""
@@ -9579,26 +9661,47 @@ def api_export_visit_report_by_store():
     wb = openpyxl.Workbook()
     wb.remove(wb.active)
 
-    used_names = set()
-    for store_name in store_names[:30]:
-        data = _build_store_card_data(store_name, year=year, author_name=author_name)
-        base = store_name[:19]
-        info_name = f"{base}_정보"[:31]
-        sales_name = f"{base}_매출정보"[:31]
-        hist_name = f"{base}_이력"[:31]
-        suffix = 1
-        while info_name in used_names or sales_name in used_names or hist_name in used_names:
-            base2 = f"{base[:14]}_{suffix}"
-            info_name = f"{base2}_정보"[:31]; sales_name = f"{base2}_매출정보"[:31]
-            hist_name = f"{base2}_이력"[:31]; suffix += 1
-        used_names.add(info_name); used_names.add(sales_name); used_names.add(hist_name)
+    # 엑셀 시트 이름에는 \ / ? * [ ] : 를 쓸 수 없다 — 매장명에 이런 문자가 하나라도 들어있으면
+    # (예: "OO/OO점") 시트 생성 자체가 예외를 던져 다운로드 전체가 500 에러로 실패했던 버그를 수정.
+    _INVALID_SHEET_CHARS = re.compile(r'[\\/*?:\[\]]')
+    def _safe_sheet_base(name):
+        s = _INVALID_SHEET_CHARS.sub('-', (name or '').strip())
+        return (s or '매장')[:19]
 
-        ws_info = wb.create_sheet(title=info_name)
-        _write_store_info_sheet(wb, ws_info, data, FNAME)
-        ws_sales = wb.create_sheet(title=sales_name)
-        _write_store_sales_sheet(wb, ws_sales, data, FNAME)
-        ws_hist = wb.create_sheet(title=hist_name)
-        _write_visit_log_sheet(ws_hist, data, FNAME)
+    used_names = set()
+    failed_stores = []
+    for store_name in store_names[:30]:
+        try:
+            data = _build_store_card_data(store_name, year=year, author_name=author_name)
+            base = _safe_sheet_base(store_name)
+            info_name = f"{base}_정보"[:31]
+            sales_name = f"{base}_매출정보"[:31]
+            hist_name = f"{base}_이력"[:31]
+            suffix = 1
+            while info_name in used_names or sales_name in used_names or hist_name in used_names:
+                base2 = f"{base[:14]}_{suffix}"
+                info_name = f"{base2}_정보"[:31]; sales_name = f"{base2}_매출정보"[:31]
+                hist_name = f"{base2}_이력"[:31]; suffix += 1
+            used_names.add(info_name); used_names.add(sales_name); used_names.add(hist_name)
+
+            ws_info = wb.create_sheet(title=info_name)
+            _write_store_info_sheet(wb, ws_info, data, FNAME)
+            ws_sales = wb.create_sheet(title=sales_name)
+            _write_store_sales_sheet(wb, ws_sales, data, FNAME)
+            ws_hist = wb.create_sheet(title=hist_name)
+            _write_visit_log_sheet(ws_hist, data, FNAME)
+        except Exception:
+            # 매장 하나에서 예상치 못한 오류가 나도 전체 다운로드가 실패하지 않도록 —
+            # 해당 매장만 건너뛰고 나머지는 정상적으로 다운로드되게 한다.
+            app.logger.exception(f"방문보고서 엑셀 생성 실패 — 매장: {store_name}")
+            failed_stores.append(store_name)
+            continue
+
+    if not used_names:
+        msg = '선택한 매장의 보고서를 만들 수 없습니다.'
+        if failed_stores:
+            msg += ' (' + ', '.join(failed_stores[:5]) + ')'
+        return jsonify({'ok': False, 'msg': msg}), 500
 
     buf = io.BytesIO(); wb.save(buf); buf.seek(0)
     fname = f"매장방문보고서_{'_'.join(store_names[:3])}.xlsx"
