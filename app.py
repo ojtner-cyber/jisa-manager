@@ -9103,17 +9103,17 @@ def _write_store_info_sheet(wb, ws, data, FNAME):
     from openpyxl.styles.colors import Color
     from openpyxl.utils import get_column_letter
 
-    BORDER_C = 'E2E8F0'
+    BORDER_C = 'FFE2E8F0'  # 수정(점선 버그): 6자리 RGB 문자열은 openpyxl이 알파값 00(완전 투명)으로
+    # 채워 실제 엑셀에서는 테두리가 안 보이는 버그가 있었다 — 8자리 ARGB(FF=불투명)로 명시.
     SECTION_BG = Color(theme=0, tint=-0.049989318521683403)  # 흰색, 배경1, 5% 더 어둡게
 
     def mf(h): return PatternFill("solid", fgColor=h)
     def mf_section(): return PatternFill("solid", fgColor=SECTION_BG)
     thin = Side(style='thin', color=BORDER_C)
-    # 수정사항(점선): 기존 'hair'(극세 점선)는 화면/인쇄에서 선이 끊겨 보이는("짤린") 느낌을
-    # 줘서, 선명하게 이어져 보이는 'dotted'로 교체했다.
-    dot = Side(style='dotted', color=Color(auto=True))
+    # 수정사항(점선): 사용자가 직접 다듬은 최종본에서 확인된 스타일 = 'hair'(가장 촘촘한 점선).
+    dot = Side(style='hair', color=Color(auto=True))
     bdr  = Border(left=thin, right=thin, top=thin, bottom=thin)
-    bdr_dot = Border(left=thin, right=thin, top=dot, bottom=dot)
+    bdr_dot = Border(left=dot, right=dot, top=dot, bottom=dot)
     ctr  = Alignment(horizontal='center', vertical='center', wrap_text=True)
     left = Alignment(horizontal='left', vertical='center', wrap_text=True)
     left_top = Alignment(horizontal='left', vertical='top', wrap_text=True)
@@ -9209,15 +9209,14 @@ def _write_store_info_sheet(wb, ws, data, FNAME):
     spacer(cur, 8)
     cur += 1
 
-    # ── 자사입점브랜드 (수정사항4: 제품 수가 브랜드마다 달라 점선이 열마다 다르게
-    #    잘려 보이던 문제 — 칸 내부 점선은 없애고, 브랜드 헤더 아래 밑줄(얇은 실선)만
-    #    남겨 깔끔하게 구분한다) ──
+    # ── 자사입점브랜드 (사용자가 직접 다듬은 최종본 기준: 각 칸에 hair 점선 박스를 적용해도
+    #    "짤려 보이는" 문제는 실제로는 점선 스타일이 'dotted'였기 때문이었다 — 'hair'로
+    #    바꾸면 제품 수가 브랜드마다 달라도 깔끔하게 이어져 보인다) ──
     brand_hdr_row = cur
     band(f'B{brand_hdr_row}:Q{brand_hdr_row}', '자사입점브랜드', f_subhdr, mf_section(), align=left, height=20)
     brand_cols = ['줄즈', '카오스', '원더폴드', '레카로', 'ABC디자인', '엔픽스', '타프토이즈']
     first_col = 2  # B
     span = 16 // len(brand_cols)
-    hdr_underline = Border(bottom=Side(style='thin', color=Color(rgb=BORDER_C)))
     for ci, b in enumerate(brand_cols):
         c0 = first_col + ci * span
         c1 = c0 + span - 1 if ci < len(brand_cols) - 1 else 17  # 마지막 브랜드가 Q열까지 채움
@@ -9226,7 +9225,7 @@ def _write_store_info_sheet(wb, ws, data, FNAME):
         hc = ws[f'{l0}{brand_hdr_row+1}']
         hc.value = b
         hc.font = Font(name=FNAME, size=9.5, bold=True)
-        hc.fill = mf('FFFFFF'); hc.border = hdr_underline; hc.alignment = ctr
+        hc.fill = mf('FFFFFF'); hc.border = bdr_dot; hc.alignment = ctr
         products = data['carried_brands'].get(b, [])
         for pi in range(5):
             rr = brand_hdr_row + 2 + pi
@@ -9234,11 +9233,11 @@ def _write_store_info_sheet(wb, ws, data, FNAME):
             cell = ws[f'{l0}{rr}']
             cell.value = products[pi] if pi < len(products) else ''
             cell.font = Font(name=FNAME, size=9)
-            cell.fill = mf('FFFFFF'); cell.alignment = ctr
+            cell.fill = mf('FFFFFF'); cell.border = bdr_dot; cell.alignment = ctr
         if not products:
             ws.merge_cells(f'{l0}{brand_hdr_row+2}:{l1}{brand_hdr_row+2}')
             ec = ws[f'{l0}{brand_hdr_row+2}']
-            ec.value = '—'; ec.font = f_note; ec.fill = mf('FFFFFF'); ec.alignment = ctr
+            ec.value = '—'; ec.font = f_note; ec.fill = mf('FFFFFF'); ec.border = bdr_dot; ec.alignment = ctr
     cur = brand_hdr_row + 7
     spacer(cur, 8)
     cur += 1
@@ -9276,7 +9275,8 @@ def _write_store_sales_sheet(wb, ws, data, FNAME):
                                         ParagraphProperties, RichTextProperties)
     from openpyxl.utils import get_column_letter
 
-    BORDER_C = 'E2E8F0'
+    BORDER_C = 'FFE2E8F0'  # 수정(점선 버그): 6자리 RGB는 openpyxl이 알파 00(투명)으로 채워
+    # 실제 엑셀에서 테두리가 안 보이는 버그가 있었다 — 8자리 ARGB(FF=불투명)로 명시.
     SECTION_BG = Color(theme=0, tint=-0.049989318521683403)
     # 수정사항(매장방문보고서 엑셀): 브랜드별 매출 비율 색상을 엑셀 테마색 "위에서 세번째 줄"
     # (= Lighter 60%, lumMod 40%/lumOff 60%) 톤으로 — 기존보다 훨씬 화사한 파스텔 톤.
@@ -9289,9 +9289,10 @@ def _write_store_sales_sheet(wb, ws, data, FNAME):
     def mf(h): return PatternFill("solid", fgColor=h)
     def mf_section(): return PatternFill("solid", fgColor=SECTION_BG)
     thin = Side(style='thin', color=BORDER_C)
-    dot = Side(style='dotted', color=Color(auto=True))  # 수정사항(점선): hair → dotted로 가독성 개선
+    # 수정사항(점선): 사용자가 직접 다듬은 최종본에서 확인된 스타일 = 'hair'(가장 촘촘한 점선).
+    dot = Side(style='hair', color=Color(auto=True))
     bdr  = Border(left=thin, right=thin, top=thin, bottom=thin)
-    bdr_dot = Border(left=thin, right=thin, top=dot, bottom=dot)
+    bdr_dot = Border(left=dot, right=dot, top=dot, bottom=dot)
     ctr  = Alignment(horizontal='center', vertical='center', wrap_text=True)
     left = Alignment(horizontal='left', vertical='center', wrap_text=True)
     left_top = Alignment(horizontal='left', vertical='top', wrap_text=True)
@@ -9449,45 +9450,66 @@ def _write_store_sales_sheet(wb, ws, data, FNAME):
     spacer(dr, 8)
     dr += 1
 
-    # ── 주요 제품 최근 흐름 분석 (수정사항: 추세 화살표·코멘트 없이, 상위 5개 제품이
-    #    월별로 얼마나 팔렸는지만 간결한 텍스트로 보여준다) ──
+    # ── 주요 제품 최근 흐름 분석 (사용자가 직접 다듬은 최종본 기준: 라벨은 B:C만 병합,
+    #    값은 D칸에 한 줄로(줄바꿈 없이) 흘러나가게 적고, 테두리도 좌/우 없이 상/하 hair
+    #    점선만 — 표가 아니라 구분선이 있는 목록처럼 가볍게 보이도록) ──
+    bdr_hline = Border(top=dot, bottom=dot)
+    # 수정사항(겹침 버그): 공용 `left`는 wrap_text=True라서 좁은 칸에서 줄바꿈되어 다음 줄과
+    # 겹쳐 보였다 — 이 목록은 줄바꿈 없이 옆 칸으로 자연스럽게 흘러나가야 하므로 별도 정의.
+    left_nowrap = Alignment(horizontal='left', vertical='center', wrap_text=False)
     band(f'B{dr}:Q{dr}', '주요 제품 최근 흐름 분석', f_subhdr, mf_section(), align=left, height=20)
     dr += 1
     trends = data.get('product_trends') or []
     if trends:
         for t in trends:
             label = f"{t['rank']}위  [{t['brand']}] {t['product']}"
-            month_text = ' ▶ '.join(f"{b['month']} {b['qty']:,}개" for b in t['bars'])
-            label_value(f'B{dr}:D{dr}', label, f'E{dr}:Q{dr}', month_text)
-            n_lines = est_lines(month_text, 130)
-            ws.row_dimensions[dr].height = max(18, 15 * n_lines + 4)
+            month_text = ' / '.join(f"{b['month']} {b['qty']:,}개" for b in t['bars'])
+            ws.merge_cells(f'B{dr}:C{dr}')
+            lc = ws[f'B{dr}']
+            lc.value = label; lc.font = f_label; lc.fill = mf('FFFFFF')
+            lc.border = bdr_hline; lc.alignment = left_nowrap
+            vc = ws[f'D{dr}']
+            vc.value = month_text; vc.font = f_value; vc.fill = mf('FFFFFF')
+            vc.border = bdr_hline; vc.alignment = left_nowrap
+            ws.row_dimensions[dr].height = 19
             dr += 1
     else:
-        label_value(f'B{dr}:D{dr}', '—', f'E{dr}:Q{dr}', '집계할 데이터가 부족합니다')
-        ws.row_dimensions[dr].height = 18
+        ws.merge_cells(f'B{dr}:C{dr}')
+        lc = ws[f'B{dr}']
+        lc.value = '—'; lc.font = f_label; lc.fill = mf('FFFFFF'); lc.border = bdr_hline; lc.alignment = left_nowrap
+        vc = ws[f'D{dr}']
+        vc.value = '집계할 데이터가 부족합니다'; vc.font = f_value; vc.fill = mf('FFFFFF')
+        vc.border = bdr_hline; vc.alignment = left_nowrap
+        ws.row_dimensions[dr].height = 19
         dr += 1
     spacer(dr, 8)
     dr += 1
 
-    # ── 브랜드별 매출액 상세 (브랜드 아래에 제품별 판매량도 함께 표시.
-    #    단, 타프토이즈는 제품 종류가 너무 많아 브랜드 합계 한 줄만 보여준다) ──
+    # ── 브랜드별 매출액 상세 (사용자가 직접 다듬은 최종본 기준: 셀 병합 없이 B(라벨)/C(값)
+    #    /D(여백) 세 칸짜리 좁은 박스로 모아서 더 "모여있게"(수정사항3) 보이도록 하고,
+    #    브랜드 합계 줄은 아래쪽만, 제품 줄은 상/하 모두 hair 점선을 적용한다) ──
+    bdr_total = Border(bottom=dot)
+    bdr_total_div = Border(bottom=dot, right=dot)
+    bdr_prod = Border(top=dot, bottom=dot)
+    bdr_prod_div = Border(top=dot, bottom=dot, right=dot)
     band(f'B{dr}:Q{dr}', '브랜드별 매출액 상세', f_subhdr, mf_section(), align=left, height=20)
     dr += 1
-    # 수정사항(점선): 제품 줄도 "1.기본 정보"와 동일한 촘촘한 점선(bdr_dot, 상/하 모두)으로 통일
     if data['brand_breakdown']:
         for g in data['brand_breakdown'][:8]:
-            label_value(f'B{dr}:D{dr}', g['brand'], f'E{dr}:Q{dr}',
-                        f"{g['amount']:,}원   ({g['pct']}%)", bold_value=True)
+            bl = ws[f'B{dr}']; bl.value = g['brand']; bl.font = f_label
+            bl.fill = mf('FFFFFF'); bl.border = bdr_total_div
+            bl.alignment = left_nowrap
+            bv = ws[f'C{dr}']; bv.value = f"{g['amount']:,}원   ({g['pct']}%)"; bv.font = f_value_b
+            bv.fill = mf('FFFFFF'); bv.border = bdr_total; bv.alignment = left_nowrap
+            bd = ws[f'D{dr}']; bd.fill = mf('FFFFFF'); bd.border = bdr_total
             ws.row_dimensions[dr].height = 16  # 수정사항3: 더 모여 보이도록 줄 높이 축소(20→16)
             dr += 1
             for p in data['brand_product_breakdown'].get(g['brand'], []):
-                ws.merge_cells(f'B{dr}:F{dr}')
-                pc = ws[f'B{dr}']; pc.value = f"· {p['product']}"
-                pc.font = f_prod; pc.fill = mf('FFFFFF'); pc.border = bdr_dot; pc.alignment = left
-                ws.merge_cells(f'G{dr}:Q{dr}')
-                vc = ws[f'G{dr}']
-                vc.value = f"{p['qty']:,}개   {p['amount']:,}원"
-                vc.font = f_prod; vc.fill = mf('FFFFFF'); vc.border = bdr_dot; vc.alignment = left
+                pl = ws[f'B{dr}']; pl.value = f"· {p['product']}"; pl.font = f_prod
+                pl.fill = mf('FFFFFF'); pl.border = bdr_prod_div; pl.alignment = left_nowrap
+                pv = ws[f'C{dr}']; pv.value = f"{p['qty']:,}개   {p['amount']:,}원"; pv.font = f_prod
+                pv.fill = mf('FFFFFF'); pv.border = bdr_prod; pv.alignment = left_nowrap
+                pd = ws[f'D{dr}']; pd.fill = mf('FFFFFF'); pd.border = bdr_prod
                 ws.row_dimensions[dr].height = 14  # 수정사항3: 제품 줄 높이 축소(17→14)
                 dr += 1
     else:
@@ -9526,8 +9548,10 @@ def _write_store_sales_sheet(wb, ws, data, FNAME):
 def _write_visit_log_sheet(ws, data, FNAME):
     """방문이력 시트 — 수정사항5: store_visit_log 누적 로그를 한 행씩 그대로 출력."""
     from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
+    from openpyxl.styles.colors import Color
     def mf(h): return PatternFill("solid", fgColor=h)
-    thin = Side(style='thin', color='E5E7EB')
+    # 수정사항(점선): 사용자가 직접 다듬은 최종본과 동일하게 'hair'(가장 촘촘한 점선) 적용
+    thin = Side(style='hair', color=Color(auto=True))
     bdr  = Border(left=thin, right=thin, top=thin, bottom=thin)
     ctr  = Alignment(horizontal='center', vertical='center', wrap_text=True)
     left = Alignment(horizontal='left', vertical='top', wrap_text=True)
