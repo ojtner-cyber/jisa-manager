@@ -2400,7 +2400,10 @@ async function downloadVrSelectedStores(){
     document.body.appendChild(a); a.click(); a.remove();
     URL.revokeObjectURL(url);
   } else {
-    toast('다운로드에 실패했습니다', false);
+    // 실패 사유(서버가 돌려주는 msg)를 그대로 보여줘서 "오류" 한 마디보다 더 구체적으로 안내
+    let msg = '다운로드에 실패했습니다';
+    try{ const j = await resp.json(); if(j?.msg) msg = j.msg; } catch(e){}
+    toast(msg, false);
   }
 }
 
@@ -2751,7 +2754,9 @@ function downloadStoreCardXlsx(storeName){
       document.body.appendChild(a); a.click(); a.remove();
       URL.revokeObjectURL(url);
     } else {
-      toast('다운로드에 실패했습니다', false);
+      let msg = '다운로드에 실패했습니다';
+      try{ const j = await resp.json(); if(j?.msg) msg = j.msg; } catch(e){}
+      toast(msg, false);
     }
   });
 }

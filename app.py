@@ -871,6 +871,33 @@ def init_db():
     except Exception:
         pass
 
+    # 수정사항4: 과거(중복 방지 로직 적용 전)에 같은 매장·같은 방문일로 중복 저장된
+    # store_visit_log 행을 한 번 정리한다. 매번 서버가 켜질 때마다 돌지만, 이미 정리된
+    # 상태에서는 지울 게 없어 아무 일도 하지 않는 멱등(idempotent) 작업이다.
+    # (단, source='manual'인 행끼리만 같은 날짜에 여러 개 있는 경우는 "같은 날 여러 번 방문"을
+    #  의도적으로 허용한 것이므로 건드리지 않는다.)
+    try:
+        dup_keys = conn.execute("""SELECT store_name, visit_date FROM store_visit_log
+            GROUP BY store_name, visit_date HAVING COUNT(*) > 1""").fetchall()
+        for store_name, visit_date in dup_keys:
+            rows = [dict(r) for r in conn.execute(
+                "SELECT * FROM store_visit_log WHERE store_name=? AND visit_date=?",
+                (store_name, visit_date)).fetchall()]
+            if len(rows) < 2 or all(r['source'] == 'manual' for r in rows):
+                continue  # 의도된 "같은 날 여러 번 방문"(전부 수동 입력) — 그대로 둔다
+            text_fields = ['purpose', 'contact_person', 'our_content', 'competitor_trend', 'action_item',
+                           'due_date', 'status', 'expense_type', 'expense_note']
+
+            def _richness(r):
+                score = sum(len(str(r.get(f) or '')) for f in text_fields)
+                return (score, 1 if (r.get('expense_amount') or 0) else 0, r['id'])
+            best = max(rows, key=_richness)
+            for r in rows:
+                if r['id'] != best['id']:
+                    conn.execute("DELETE FROM store_visit_log WHERE id=?", (r['id'],))
+    except Exception:
+        pass
+
     conn.commit(); conn.close()
 
 # ── 인증 ──────────────────────────────────────
@@ -8695,11 +8722,20 @@ def _build_store_card_data(store_name, year=None, author_name=''):
     profile = conn.execute("SELECT * FROM store_profile WHERE store_name=?", (store_name,)).fetchone()
     profile = dict(profile) if profile else {'staff_status': '', 'store_status': '', 'voucher_info': ''}
 
-    # ── 매장현황 구조화 (수정사항1): 직원현황/지역상품권은 JSON 목록, 매장현황은 줄단위 텍스트 ──
+    # ── 매장현황 구조화 (수정사항1): 직원현황/지역상품권은 JSON 목록, 매장현황은 줄단위 텍스트.
+    #    수정(500 오류 수정): staff_status/voucher_info가 '['로 시작해도 dict 리스트가 아닌
+    #    값(예전에 /api/store-profile/save로 자유 텍스트를 저장했을 때 우연히 대괄호로 시작한
+    #    경우 등)이면 json.loads 자체는 성공해버려서 이후 .get() 호출에서 그대로 터졌었다 —
+    #    "리스트 안에 dict만 있는지"까지 검증해서, 아니면 안전하게 기본값으로 되돌아가게 한다. ──
+    def _valid_row_list(val):
+        return isinstance(val, list) and all(isinstance(x, dict) for x in val)
+
     raw_staff = (profile.get('staff_status') or '').strip()
     try:
         staff_rows = json.loads(raw_staff) if raw_staff.startswith('[') else []
     except Exception:
+        staff_rows = []
+    if not _valid_row_list(staff_rows):
         staff_rows = []
     if not staff_rows:
         staff_rows = [{'title': '사장', 'count': '', 'entries': []},
@@ -8710,6 +8746,8 @@ def _build_store_card_data(store_name, year=None, author_name=''):
     try:
         voucher_rows = json.loads(raw_voucher) if raw_voucher.startswith('[') else []
     except Exception:
+        voucher_rows = []
+    if not _valid_row_list(voucher_rows):
         voucher_rows = []
     if not voucher_rows:
         voucher_rows = [{'label': ' - 온누리 ', 'detail': ''}, {'label': ' - 지역화폐 ', 'detail': ''}]
@@ -8790,9 +8828,26 @@ def api_visit_report_upload():
                 skipped += 1
                 continue
             try:
-                staff_json = json.dumps(info['staff_rows'], ensure_ascii=False)
-                voucher_json = json.dumps(info['voucher_rows'], ensure_ascii=False)
-                store_status_text = '\n'.join(info['store_status_lines'])
+                # 수정사항(매장현황 고정값 유지): 사장/점장 같은 직원현황·매장현황·지역상품권 정보는
+                # 매장마다 거의 바뀌지 않으므로, 재업로드한 시트에 해당 칸이 비어있으면(사용자가
+                # 매번 다시 적지 않아도 되도록) 기존에 저장돼 있던 값을 그대로 유지하고, 새 시트에
+                # 실제로 내용이 채워져 있을 때만 그 값으로 덮어쓴다. (항목별로 독립적으로 판단)
+                existing = conn.execute(
+                    "SELECT staff_status, store_status, voucher_info FROM store_profile WHERE store_name=?",
+                    (store_name,)).fetchone()
+
+                new_staff_json = json.dumps(info['staff_rows'], ensure_ascii=False)
+                staff_json = new_staff_json if info['staff_rows'] else (
+                    existing['staff_status'] if existing else new_staff_json)
+
+                new_voucher_json = json.dumps(info['voucher_rows'], ensure_ascii=False)
+                voucher_json = new_voucher_json if info['voucher_rows'] else (
+                    existing['voucher_info'] if existing else new_voucher_json)
+
+                new_store_status_text = '\n'.join(info['store_status_lines'])
+                store_status_text = new_store_status_text if info['store_status_lines'] else (
+                    existing['store_status'] if existing else new_store_status_text)
+
                 conn.execute("""INSERT INTO store_profile
                         (store_name, staff_status, store_status, voucher_info, updated_by, updated_at)
                     VALUES (?,?,?,?,?,?)
@@ -8972,6 +9027,13 @@ def api_visit_report_list():
         # 수정: 검색어가 어떤 항목에 매치됐는지 프론트에서 하이라이트/미리보기용으로 표시
         if keyword:
             r['keyword_match'] = _find_keyword_context(r, keyword)
+
+    # 수정사항2: "관악"을 검색했는데 다른 매장의 방문 내용 중에 "관악점"이 언급됐다는 이유만으로
+    # (예: 송도점 보고서에 "관악점은 ~" 이라는 메모) 엉뚱한 매장까지 결과에 섞여 나오던 문제 —
+    # 매장명 자체가 검색어를 포함하는 매장이 하나라도 있으면, 그 매장들만 결과로 좁혀서
+    # "매장명 검색"을 우선한다. 매장명에 안 걸리는 경우에만(순수 내용 검색) 기존처럼 전체에서 보여준다.
+    if keyword and any(keyword.lower() in (r.get('store_name') or '').lower() for r in rows):
+        rows = [r for r in rows if keyword.lower() in (r.get('store_name') or '').lower()]
 
     if brand:
         rows = [r for r in rows if r.get('brand') == brand]
@@ -9510,10 +9572,12 @@ def _write_store_info_sheet(wb, ws, data, FNAME):
     cur = section2_row + 1
 
     # 직원현황 — 직함/인원/이름/특이사항 (한 직함에 여러 명이면 이름·특이사항 칸을 더 늘림)
-    staff_rows_data = data.get('staff_rows') or []
+    # 수정(500 오류 방어): dict가 아닌 항목이 섞여 들어오면(손상된 데이터) 조용히 걸러내고,
+    # 그래도 아무것도 안 남으면 빈 기본 3행으로 — 여기서 절대 예외를 던지지 않는다.
+    staff_rows_data = [s for s in (data.get('staff_rows') or []) if isinstance(s, dict)]
     if not staff_rows_data:
         staff_rows_data = [{'title': t, 'count': '', 'entries': []} for t in ('사장', '점장', '직원')]
-    max_entries = max([len((s.get('entries') or [])) for s in staff_rows_data] + [1])
+    max_entries = max([len([e for e in (s.get('entries') or []) if isinstance(e, dict)]) for s in staff_rows_data] + [1])
 
     staff_hdr = ['직함', '인원'] + ['이름', '특이사항'] * max_entries
     bounds = [(4, 4), (5, 5)]  # D=직함, E=인원
@@ -9548,7 +9612,7 @@ def _write_store_info_sheet(wb, ws, data, FNAME):
     cur += 1
 
     for srow in staff_rows_data:
-        entries = list(srow.get('entries') or [])[:max_entries]
+        entries = [e for e in (srow.get('entries') or []) if isinstance(e, dict)][:max_entries]
         while len(entries) < max_entries:
             entries.append({'name': '', 'note': ''})
         vals = [srow.get('title', ''), srow.get('count', '')]
@@ -9584,7 +9648,7 @@ def _write_store_info_sheet(wb, ws, data, FNAME):
         cur += 1
 
     # 지역상품권 관련 — 줄 단위, D=구분/E~Q=상세
-    voucher_rows_data = data.get('voucher_rows') or [{'label': '', 'detail': ''}]
+    voucher_rows_data = [v for v in (data.get('voucher_rows') or []) if isinstance(v, dict)] or [{'label': '', 'detail': ''}]
     label_top = cur
     n_v = len(voucher_rows_data)
     for i, vrow in enumerate(voucher_rows_data):
@@ -9618,11 +9682,19 @@ def _write_store_info_sheet(wb, ws, data, FNAME):
         c0 = first_col + ci * span
         c1 = c0 + span - 1 if ci < len(brand_cols) - 1 else 17  # 마지막 브랜드가 Q열까지 채움
         l0, l1 = get_column_letter(c0), get_column_letter(c1)
+        # 수정(점선 짤림 버그): 병합된 범위는 맨 왼쪽(l0) 셀 하나만 테두리를 칠하면 엑셀에서
+        # 병합 범위의 나머지 칸(c0+1~c1)에는 점선이 그려지지 않아 박스 중간이 끊겨 보인다.
+        # 병합 범위에 포함된 모든 물리 칸에 동일하게 테두리·배경을 칠해야 끊김 없이 이어진다.
+        def _border_merged_range(row, c_from, c_to, border, fill):
+            for cc in range(c_from, c_to + 1):
+                mc = ws[f'{get_column_letter(cc)}{row}']
+                mc.border = border; mc.fill = fill
         ws.merge_cells(f'{l0}{brand_hdr_row+1}:{l1}{brand_hdr_row+1}')
         hc = ws[f'{l0}{brand_hdr_row+1}']
         hc.value = b
         hc.font = Font(name=FNAME, size=9.5, bold=True)
-        hc.fill = mf('FFFFFF'); hc.border = bdr_dot; hc.alignment = ctr
+        hc.alignment = ctr
+        _border_merged_range(brand_hdr_row + 1, c0, c1, bdr_dot, mf('FFFFFF'))
         products = data['carried_brands'].get(b, [])
         for pi in range(5):
             rr = brand_hdr_row + 2 + pi
@@ -9630,11 +9702,13 @@ def _write_store_info_sheet(wb, ws, data, FNAME):
             cell = ws[f'{l0}{rr}']
             cell.value = products[pi] if pi < len(products) else ''
             cell.font = Font(name=FNAME, size=9)
-            cell.fill = mf('FFFFFF'); cell.border = bdr_dot; cell.alignment = ctr
+            cell.alignment = ctr
+            _border_merged_range(rr, c0, c1, bdr_dot, mf('FFFFFF'))
         if not products:
             ws.merge_cells(f'{l0}{brand_hdr_row+2}:{l1}{brand_hdr_row+2}')
             ec = ws[f'{l0}{brand_hdr_row+2}']
-            ec.value = '—'; ec.font = f_note; ec.fill = mf('FFFFFF'); ec.border = bdr_dot; ec.alignment = ctr
+            ec.value = '—'; ec.font = f_note; ec.alignment = ctr
+            _border_merged_range(brand_hdr_row + 2, c0, c1, bdr_dot, mf('FFFFFF'))
     cur = brand_hdr_row + 7
     spacer(cur, 8)
     cur += 1
