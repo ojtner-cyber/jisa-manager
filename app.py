@@ -3950,6 +3950,30 @@ def _promo_event_tags(ev):
     return [ev['name']] if ev.get('name') else []
 
 
+def _find_promo_event_for_keyword(keyword):
+    """수정사항(제외 브랜드가 자유 키워드 검색에서는 안 먹히던 문제): '행사별 실적' 화면은 보통
+    event_id를 넘기지 않고 사람이 직접 타이핑한 키워드로만 검색한다(선택 UI 없이 검색창에 바로
+    입력) — 이 경우 행사 관리에서 등록해둔 제외 키워드/제외 브랜드가 전혀 적용되지 않는 버그가
+    있었다. 타이핑한 키워드가 등록된 행사의 비고 표기(note_tags) 또는 행사명과 정확히 같으면
+    그 행사를 찾아서, event_id로 검색했을 때와 동일하게 제외 조건까지 적용되도록 한다."""
+    keyword = (keyword or '').strip()
+    if not keyword:
+        return None
+    kw_norm = re.sub(r'\s+', '', keyword)
+    conn = get_db()
+    evs = conn.execute("""SELECT id, name, date_start, date_end, note_tags, exclude_keywords,
+                                 exclude_items, terms_note FROM promo_event""").fetchall()
+    conn.close()
+    for ev_row in evs:
+        ev = dict(ev_row)
+        tags = _promo_event_tags(ev)
+        name_norm = re.sub(r'\s+', '', (ev.get('name') or ''))
+        tag_norms = [re.sub(r'\s+', '', t) for t in tags]
+        if kw_norm == name_norm or kw_norm in tag_norms:
+            return ev
+    return None
+
+
 def _promo_event_exclude_keywords(ev):
     """이 행사에 등록된 '제외 키워드' 목록 — 비고에 이 키워드가 들어있으면 태그가 일치해도
     제외한다(예: 다른 행사와 합쳐 표기된 특수 케이스를 수동으로 더 걸러낼 때 사용)."""
@@ -4947,6 +4971,12 @@ def api_sales_event_search():
         ev_for_filter = dict(ev_row)
         tags_for_search = _promo_event_tags(ev_for_filter)
         keyword = ev_row['name']  # 화면 표시/보고서 파일명용
+    elif keyword:
+        # 수정사항: event_id 없이 직접 타이핑한 키워드라도, 그 키워드가 등록된 행사의 비고 표기나
+        # 행사명과 정확히 같으면 그 행사를 찾아 제외 키워드/제외 브랜드 조건까지 자동 적용한다.
+        ev_for_filter = _find_promo_event_for_keyword(keyword)
+        if ev_for_filter:
+            tags_for_search = _promo_event_tags(ev_for_filter)
     if not keyword:
         return jsonify({'ok': False, 'msg': '검색할 키워드(비고 내용)를 입력해주세요'}), 400
 
@@ -5042,6 +5072,10 @@ def export_xlsx_event_report():
         ev_for_filter = dict(ev_row)
         tags_for_search = _promo_event_tags(ev_for_filter)
         keyword = ev_row['name']
+    elif keyword:
+        ev_for_filter = _find_promo_event_for_keyword(keyword)
+        if ev_for_filter:
+            tags_for_search = _promo_event_tags(ev_for_filter)
     if not keyword:
         return jsonify({'ok': False, 'msg': '검색할 키워드를 입력해주세요'}), 400
 
