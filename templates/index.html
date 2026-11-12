@@ -615,13 +615,9 @@ td.center{text-align:center}
       <div id="sales-event-view" style="display:none">
         <div style="background:var(--paper);border:1px solid var(--border);border-radius:12px;padding:16px;margin-bottom:16px">
           <div style="font-size:12.5px;font-weight:700;color:var(--t-700);margin-bottom:8px">🔍 특이사항(비고) 키워드로 행사 실적 검색</div>
-          <div style="font-size:11px;color:var(--t-400);margin-bottom:10px">"행사 관리"에 등록해둔 행사를 선택하면, 그 행사에 등록한 정확한 비고 표기로만 매칭해서 같은 날 겹치는 다른 행사(다른 브랜드)가 섞이지 않아요. 등록된 행사가 없거나 자유 검색이 필요하면 키워드를 직접 입력해도 돼요.</div>
+          <div style="font-size:11px;color:var(--t-400);margin-bottom:10px">기초 판매현황의 특이사항(비고)란에 적힌 내용으로 검색해요. 예: "브랜드위크", "레드닷" — 해당 키워드가 들어간 판매 건만 모아 브랜드별·매장별로 정리해드려요.</div>
           <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
-            <select class="fi" id="event-picker" style="width:260px" onchange="onEventPickerChange()">
-              <option value="">— 등록된 행사에서 선택 —</option>
-            </select>
-            <span style="font-size:11px;color:var(--t-400)">또는 키워드</span>
-            <input class="fi" type="text" id="event-keyword" placeholder="예: 브랜드위크" style="width:160px" onkeydown="if(event.key==='Enter')loadEventSales()" oninput="document.getElementById('event-picker').value=''">
+            <input class="fi" type="text" id="event-keyword" placeholder="예: 브랜드위크" style="width:200px" onkeydown="if(event.key==='Enter')loadEventSales()">
             <span style="font-size:11px;color:var(--t-400)">기간</span>
             <input class="fi" type="date" id="event-date-from">
             <span style="color:var(--t-300)">~</span>
@@ -1356,7 +1352,6 @@ td.center{text-align:center}
         <div class="ph-r">
           <button class="btn btn-ghost btn-sm" onclick="document.getElementById('vr-file-input').click()">📤 보고서 업로드 (xlsx/zip)</button>
           <input type="file" id="vr-file-input" accept=".xlsx,.xls,.zip" multiple style="display:none" onchange="uploadVisitReports(event)">
-          <button class="btn btn-dark btn-sm" onclick="openVrEntryModal()">✏️ 보고서작성</button>
         </div>
       </div>
 
@@ -1417,17 +1412,10 @@ td.center{text-align:center}
       </div>
     </div>
 
-    <!-- 매장 카드(누적) 모달 -->
-    <div id="vr-storecard-overlay" style="display:none;position:fixed;inset:0;background:rgba(15,23,42,.5);backdrop-filter:blur(2px);z-index:1001;align-items:center;justify-content:center;padding:20px">
-      <div style="background:var(--paper);border-radius:16px;width:980px;max-width:100%;max-height:92vh;overflow-y:auto;box-shadow:0 25px 60px -12px rgba(0,0,0,.35)">
-        <div id="vr-storecard-body"></div>
-      </div>
-    </div>
-
-    <!-- 방문 기록 작성/수정 모달 -->
-    <div id="vr-entry-overlay" style="display:none;position:fixed;inset:0;background:rgba(15,23,42,.55);backdrop-filter:blur(2px);z-index:1002;align-items:center;justify-content:center;padding:20px">
-      <div style="background:var(--paper);border-radius:16px;width:560px;max-width:100%;max-height:92vh;overflow-y:auto;box-shadow:0 25px 60px -12px rgba(0,0,0,.35)">
-        <div id="vr-entry-body"></div>
+    <!-- 방문 보고서 수정 모달 (수정사항5) -->
+    <div id="vr-edit-overlay" style="display:none;position:fixed;inset:0;background:rgba(15,23,42,.5);backdrop-filter:blur(2px);z-index:1001;align-items:center;justify-content:center;padding:20px">
+      <div style="background:var(--paper);border-radius:16px;width:640px;max-width:100%;max-height:90vh;overflow-y:auto;box-shadow:0 25px 60px -12px rgba(0,0,0,.35)">
+        <div id="vr-edit-body"></div>
       </div>
     </div>
 
@@ -1456,19 +1444,7 @@ td.center{text-align:center}
       </div>
 
       <!-- KPI -->
-      <div style="display:grid;grid-template-columns:repeat(6,1fr);gap:12px;margin-bottom:20px" id="sns-kpi"></div>
-
-      <!-- 자사 제품 홍보 집계 + 인스타 조회수 TOP 게시물 -->
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:20px">
-        <div style="background:var(--paper);border-radius:var(--r-md);padding:16px;box-shadow:var(--sh-sm)">
-          <div style="font-size:13px;font-weight:700;margin-bottom:10px">🏷️ 브랜드별 인스타 노출 현황</div>
-          <div id="sns-brand-stats" style="font-size:12px;color:var(--ink-300)">로딩 중...</div>
-        </div>
-        <div style="background:var(--paper);border-radius:var(--r-md);padding:16px;box-shadow:var(--sh-sm)">
-          <div style="font-size:13px;font-weight:700;margin-bottom:10px">📈 인스타 조회수 TOP 게시물</div>
-          <div id="sns-top-posts" style="font-size:12px;color:var(--ink-300);max-height:260px;overflow-y:auto">로딩 중...</div>
-        </div>
-      </div>
+      <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:12px;margin-bottom:20px" id="sns-kpi"></div>
 
       <!-- 메인 테이블 -->
       <div class="tw">
@@ -2423,7 +2399,7 @@ async function downloadVrSelectedStores(){
 function renderVrCard(r){
   const col = VR_BRAND_COLOR[r.brand] || '#6B7280';
   const catCount = Object.keys(r.content||{}).length;
-  const hasAction = !!(r.action_item && r.action_item.trim());
+  const reqCount = (r.requests||[]).length;
   const km = r.keyword_match;
   return `<div onclick="openVrDetail(${r.id})"
     style="background:var(--paper);border:1px solid ${km&&km.field?'var(--p)':'var(--border)'};border-radius:10px;padding:14px;cursor:pointer;transition:.15s"
@@ -2439,7 +2415,7 @@ function renderVrCard(r){
     </div>` : ''}
     <div style="display:flex;gap:6px;flex-wrap:wrap">
       ${catCount?`<span style="font-size:10px;background:var(--bg);color:var(--t-500);padding:2px 7px;border-radius:5px">주요내용 ${catCount}개</span>`:''}
-      ${hasAction?`<span style="font-size:10px;background:#FEF3C7;color:#D97706;padding:2px 7px;border-radius:5px;font-weight:700">조치사항 있음</span>`:''}
+      ${reqCount?`<span style="font-size:10px;background:#FEF3C7;color:#D97706;padding:2px 7px;border-radius:5px;font-weight:700">요청 ${reqCount}건</span>`:''}
     </div>
   </div>`;
 }
@@ -2488,16 +2464,12 @@ async function openVrDetail(rid){
   }
 
   if(r.followup_text){
-    html += `<div style="font-size:12.5px;font-weight:800;color:var(--t-900);margin:16px 0 10px">📌 타사 동향</div>
+    html += `<div style="font-size:12.5px;font-weight:800;color:var(--t-900);margin:16px 0 10px">📌 타사 프로모션 및 후속조치</div>
       <div style="font-size:12px;color:var(--t-700);line-height:1.7;white-space:pre-wrap;background:var(--bg);border-radius:8px;padding:10px 12px">${r.followup_text}</div>`;
   }
 
-  if(r.action_item){
-    html += `<div style="font-size:12.5px;font-weight:800;color:var(--t-900);margin:16px 0 10px">✅ 조치사항·후속</div>
-      <div style="font-size:12px;color:var(--t-700);line-height:1.7;white-space:pre-wrap;background:var(--bg);border-radius:8px;padding:10px 12px">${r.action_item}</div>`;
-  }
-
-  html += `<div style="display:flex;justify-content:flex-end;margin-top:20px">
+  html += `<div style="display:flex;justify-content:flex-end;gap:8px;margin-top:20px">
+    <button onclick="openVrEdit(${r.id})" style="font-size:11px;color:var(--p);background:none;border:1px solid var(--border-md);padding:6px 14px;border-radius:7px;cursor:pointer">✏️ 수정</button>
     <button onclick="deleteVrReport(${r.id})" style="font-size:11px;color:var(--red);background:none;border:1px solid var(--border-md);padding:6px 14px;border-radius:7px;cursor:pointer">이 보고서 삭제</button>
   </div></div>`;
 
@@ -2506,6 +2478,101 @@ async function openVrDetail(rid){
 
 function closeVrDetail(){
   document.getElementById('vr-detail-overlay').style.display = 'none';
+}
+
+// ── 방문 보고서 수정 (수정사항5): 기존 /api/visit-log/* 백엔드(저장/조회/옵션)는
+//    이미 다 구현되어 있었고, 화면에 수정 폼만 없었다 — 그 폼을 붙인다. ──
+async function openVrEdit(rid){
+  const overlay = document.getElementById('vr-edit-overlay');
+  const body = document.getElementById('vr-edit-body');
+  body.innerHTML = `<div style="padding:60px;text-align:center;color:var(--t-300)">불러오는 중...</div>`;
+  overlay.style.display = 'flex';
+
+  const [log, opts] = await Promise.all([
+    api(`/api/visit-log/${rid}`),
+    api('/api/visit-log/purpose-options')
+  ]);
+  if(!log || log.ok === false){
+    body.innerHTML = `<div style="padding:40px;text-align:center;color:var(--red)">불러오지 못했습니다</div>`;
+    return;
+  }
+
+  const fieldStyle = "width:100%;padding:8px 10px;border:1px solid var(--border-md);border-radius:8px;font-size:12.5px;box-sizing:border-box";
+  const esc = v => (v==null?'':String(v)).replace(/"/g,'&quot;');
+  const sel = (id, list, cur) => `<select id="${id}" style="${fieldStyle}">
+    <option value=""${!cur?' selected':''}>— 선택 —</option>
+    ${(list||[]).map(v=>`<option value="${esc(v)}"${v===cur?' selected':''}>${v}</option>`).join('')}
+  </select>`;
+  const inp = (id, val, type='text') => `<input id="${id}" type="${type}" value="${esc(val)}" style="${fieldStyle}">`;
+  const txt = (id, val) => `<textarea id="${id}" rows="3" style="${fieldStyle};resize:vertical;font-family:inherit">${val||''}</textarea>`;
+  const lbl = t => `<label style="display:block;font-size:11px;font-weight:700;color:var(--t-500);margin-bottom:4px">${t}</label>`;
+
+  body.innerHTML = `
+    <div style="padding:20px 24px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center">
+      <div style="font-size:16px;font-weight:800;color:var(--t-900)">방문 보고서 수정</div>
+      <button onclick="closeVrEdit()" style="background:none;border:none;font-size:18px;color:var(--t-400);cursor:pointer">✕</button>
+    </div>
+    <div style="padding:20px 24px;display:flex;flex-direction:column;gap:12px">
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+        <div>${lbl('매장명')}${inp('vre-store', log.store_name)}</div>
+        <div>${lbl('방문일')}${inp('vre-date', log.visit_date, 'date')}</div>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+        <div>${lbl('방문목적')}${sel('vre-purpose', opts?.purpose, log.purpose)}</div>
+        <div>${lbl('면담자')}${inp('vre-contact', log.contact_person)}</div>
+      </div>
+      <div>${lbl('자사 주요내용 (매장 의견 · 요청)')}${txt('vre-our', log.our_content)}</div>
+      <div>${lbl('타사 동향')}${txt('vre-comp', log.competitor_trend)}</div>
+      <div>${lbl('조치사항 / 후속')}${txt('vre-action', log.action_item)}</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+        <div>${lbl('완료(예정)일')}${inp('vre-due', log.due_date, 'date')}</div>
+        <div>${lbl('진행상태')}${sel('vre-status', opts?.status, log.status)}</div>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr 2fr;gap:12px">
+        <div>${lbl('활동비 구분')}${sel('vre-exptype', opts?.expense_type, log.expense_type)}</div>
+        <div>${lbl('활동비 금액')}${inp('vre-expamt', log.expense_amount||0, 'number')}</div>
+        <div>${lbl('활동비 내용 (사용처·참석자)')}${inp('vre-expnote', log.expense_note)}</div>
+      </div>
+      <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:8px">
+        <button onclick="closeVrEdit()" style="font-size:12px;color:var(--t-500);background:none;border:1px solid var(--border-md);padding:8px 16px;border-radius:8px;cursor:pointer">취소</button>
+        <button onclick="submitVrEdit(${rid})" style="font-size:12px;font-weight:700;color:#fff;background:var(--p);border:none;padding:8px 20px;border-radius:8px;cursor:pointer">저장</button>
+      </div>
+    </div>`;
+}
+
+function closeVrEdit(){
+  document.getElementById('vr-edit-overlay').style.display = 'none';
+}
+
+async function submitVrEdit(rid){
+  const payload = {
+    id: rid,
+    store_name: document.getElementById('vre-store').value.trim(),
+    visit_date: document.getElementById('vre-date').value,
+    purpose: document.getElementById('vre-purpose').value,
+    contact_person: document.getElementById('vre-contact').value.trim(),
+    our_content: document.getElementById('vre-our').value,
+    competitor_trend: document.getElementById('vre-comp').value,
+    action_item: document.getElementById('vre-action').value,
+    due_date: document.getElementById('vre-due').value,
+    status: document.getElementById('vre-status').value,
+    expense_type: document.getElementById('vre-exptype').value,
+    expense_amount: parseInt(document.getElementById('vre-expamt').value || '0', 10) || 0,
+    expense_note: document.getElementById('vre-expnote').value.trim(),
+  };
+  if(!payload.store_name || !payload.visit_date){
+    toast('매장명과 방문일은 필수입니다', false);
+    return;
+  }
+  const r = await api('/api/visit-log/save', {method:'POST', body: payload});
+  if(r?.ok){
+    toast('수정되었습니다');
+    closeVrEdit();
+    closeVrDetail();
+    reloadVisitReportView();
+  } else {
+    toast(r?.msg || '저장에 실패했습니다', false);
+  }
 }
 
 async function deleteVrReport(rid){
@@ -2518,450 +2585,9 @@ async function deleteVrReport(rid){
   }
 }
 
-// ── 매장 카드(누적 기록) ────────────────────────────────
-const VR_SC_BRAND_COLORS = {줄즈:'#2563EB',레카로:'#16A34A','ABC디자인':'#7C3AED',원더폴드:'#D97706',카오스:'#DC2626',엔픽스:'#0891B2',타프토이즈:'#9CA3AF'};
-let vrScCharts = {brand:null, monthly:null, bp:null};
-let vrScCurrentStore = '';
-let vrScCurrentYear = null;
-let vrScData = null;
-
-function vrEsc(s){
-  return (s==null?'':String(s)).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-}
-function vrAttr(s){
-  return vrEsc(s).replace(/"/g,'&quot;').replace(/'/g,'&#39;');
-}
-
-async function openVrStoreHistory(storeName, year){
-  vrScCurrentStore = storeName;
-  vrScCurrentYear = year || new Date().getFullYear();
-  const overlay = document.getElementById('vr-storecard-overlay');
-  const body = document.getElementById('vr-storecard-body');
-  body.innerHTML = `<div style="padding:80px;text-align:center;color:var(--t-300)">불러오는 중...</div>`;
-  overlay.style.display = 'flex';
-  await loadVrStoreCard();
-}
-
-async function loadVrStoreCard(){
-  const body = document.getElementById('vr-storecard-body');
-  const d = await api(`/api/visit-report/store-card?store=${encodeURIComponent(vrScCurrentStore)}&year=${vrScCurrentYear}`);
-  if(!d || d.ok === false){
-    body.innerHTML = `<div style="padding:40px;text-align:center;color:var(--red)">불러오지 못했습니다</div>`;
-    return;
-  }
-  vrScData = d;
-  renderVrStoreCard(d);
-}
-
-function closeVrStoreCard(){
-  document.getElementById('vr-storecard-overlay').style.display = 'none';
-  Object.values(vrScCharts).forEach(c=>{ if(c) c.destroy(); });
-  vrScCharts = {brand:null, monthly:null, bp:null};
-}
-
-function vrScChangeYear(delta){
-  vrScCurrentYear = Number(vrScCurrentYear) + delta;
-  loadVrStoreCard();
-}
-
-function renderVrStoreCard(d){
-  const body = document.getElementById('vr-storecard-body');
-  const brandList = d.brand_breakdown || [];
-  const top5 = d.top5_products || [];
-  const monthly = d.monthly_trend || [];
-  const visitLog = d.visit_log || [];
-  const carried = d.carried_brands || {};
-  const yoyColor = (d.yoy_pct||0) >= 0 ? 'var(--green)' : 'var(--red)';
-  const circled = ['①','②','③','④','⑤'];
-
-  let html = `
-    <div style="padding:20px 24px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:flex-start;position:sticky;top:0;background:var(--paper);z-index:1">
-      <div>
-        <div style="font-size:17px;font-weight:800;color:var(--t-900);margin-bottom:4px">${vrEsc(d.store_name)} <span style="font-size:12px;font-weight:700;color:var(--p);margin-left:6px">${vrEsc(d.store_rank||'')}</span></div>
-        <div style="font-size:12px;color:var(--t-500)">${vrEsc(d.region||'—')} · 담당 ${vrEsc(d.manager||'—')}</div>
-      </div>
-      <div style="display:flex;align-items:center;gap:8px">
-        <button class="btn btn-ghost btn-sm" onclick="vrScChangeYear(-1)">◀</button>
-        <div style="font-size:13px;font-weight:700;color:var(--t-800);min-width:48px;text-align:center">${d.year}년</div>
-        <button class="btn btn-ghost btn-sm" onclick="vrScChangeYear(1)">▶</button>
-        <button class="btn btn-primary btn-sm" onclick="downloadVrStoreXlsx('${vrAttr(d.store_name)}')">📥 엑셀 다운로드</button>
-        <button onclick="closeVrStoreCard()" style="background:none;border:none;font-size:18px;color:var(--t-400);cursor:pointer;margin-left:4px">✕</button>
-      </div>
-    </div>
-    <div style="padding:20px 24px">
-
-      <!-- KPI 요약 -->
-      <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:10px;margin-bottom:18px">
-        <div style="background:var(--bg);border-radius:8px;padding:10px"><div style="font-size:10px;color:var(--t-400)">연매출</div><div style="font-size:13px;font-weight:800;color:var(--t-900)">${N(d.year_total||0)}원</div></div>
-        <div style="background:var(--bg);border-radius:8px;padding:10px"><div style="font-size:10px;color:var(--t-400)">월평균</div><div style="font-size:13px;font-weight:800;color:var(--t-900)">${N(Math.round(d.monthly_avg||0))}원</div></div>
-        <div style="background:var(--bg);border-radius:8px;padding:10px"><div style="font-size:10px;color:var(--t-400)">전년 동기 대비</div><div style="font-size:13px;font-weight:800;color:${yoyColor}">${(d.yoy_pct>0?'+':'')}${d.yoy_pct||0}%</div></div>
-        <div style="background:var(--bg);border-radius:8px;padding:10px"><div style="font-size:10px;color:var(--t-400)">총 방문</div><div style="font-size:13px;font-weight:800;color:var(--t-900)">${d.total_visits||0}건</div></div>
-        <div style="background:var(--bg);border-radius:8px;padding:10px"><div style="font-size:10px;color:var(--t-400)">진행중 조치</div><div style="font-size:13px;font-weight:800;color:var(--t-900)">${d.ongoing_actions||0}건</div></div>
-      </div>
-
-      <!-- 브랜드별 매출비율 + TOP5 -->
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:20px">
-        <div>
-          <div style="font-size:12.5px;font-weight:800;color:var(--t-900);margin-bottom:8px">📊 브랜드별 매출 비율</div>
-          ${brandList.length ? `<div style="height:200px"><canvas id="sc-chart-brand"></canvas></div>` : `<div style="color:var(--t-300);font-size:12px;padding:20px 0;text-align:center">판매 데이터 없음</div>`}
-        </div>
-        <div>
-          <div style="font-size:12.5px;font-weight:800;color:var(--t-900);margin-bottom:8px">🏆 베스트 제품 TOP5</div>
-          ${top5.length ? top5.map((p,i)=>`
-            <div style="display:flex;justify-content:space-between;align-items:center;padding:7px 0;border-bottom:1px solid var(--border)">
-              <div style="font-size:12px;color:var(--t-800)"><span style="color:var(--p);font-weight:800;margin-right:6px">${circled[i]||(i+1)}</span>${vrEsc(p.product)}</div>
-              <div style="font-size:11.5px;color:var(--t-500)">${N(p.amount)}원 (${p.pct}%)</div>
-            </div>`).join('') : `<div style="color:var(--t-300);font-size:12px;padding:20px 0;text-align:center">판매 데이터 없음</div>`}
-        </div>
-      </div>
-
-      <!-- 월별 판매추이 -->
-      <div style="margin-bottom:20px">
-        <div style="font-size:12.5px;font-weight:800;color:var(--t-900);margin-bottom:8px">📈 월별 판매추이</div>
-        <div style="height:200px"><canvas id="sc-chart-monthly"></canvas></div>
-      </div>
-
-      <!-- 브랜드/제품별 월별 판매추이 -->
-      <div style="margin-bottom:20px">
-        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
-          <div style="font-size:12.5px;font-weight:800;color:var(--t-900)">🔎 브랜드/제품별 월별 판매추이</div>
-          <select id="sc-bp-select" class="fs" style="font-size:12px" onchange="vrScRenderBpChart()"></select>
-        </div>
-        <div style="height:200px"><canvas id="sc-chart-bp"></canvas></div>
-      </div>
-
-      <!-- 매장 현황(자유 입력) -->
-      <div style="margin-bottom:20px;background:var(--bg);border-radius:10px;padding:14px">
-        <div style="font-size:12.5px;font-weight:800;color:var(--t-900);margin-bottom:10px">📝 매장 현황 (직접 입력)</div>
-        <div style="display:flex;flex-direction:column;gap:10px">
-          <div><label style="font-size:11px;color:var(--t-500);font-weight:600">직원현황</label>
-            <textarea id="sc-staff" class="fs" style="width:100%;min-height:50px;resize:vertical">${vrEsc(d.staff_status||'')}</textarea></div>
-          <div><label style="font-size:11px;color:var(--t-500);font-weight:600">매장현황</label>
-            <textarea id="sc-store" class="fs" style="width:100%;min-height:50px;resize:vertical">${vrEsc(d.store_status||'')}</textarea></div>
-          <div><label style="font-size:11px;color:var(--t-500);font-weight:600">지역상품권 관련</label>
-            <textarea id="sc-voucher" class="fs" style="width:100%;min-height:50px;resize:vertical">${vrEsc(d.voucher_info||'')}</textarea></div>
-          <div style="display:flex;justify-content:flex-end"><button class="btn btn-primary btn-sm" onclick="saveVrStoreProfile()">저장</button></div>
-        </div>
-      </div>
-
-      <!-- 자사입점브랜드 -->
-      <div style="margin-bottom:20px">
-        <div style="font-size:12.5px;font-weight:800;color:var(--t-900);margin-bottom:8px">🏷️ 자사입점브랜드</div>
-        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px">
-          ${Object.keys(carried).length ? Object.entries(carried).map(([brand, products])=>`
-            <div style="background:var(--bg);border-radius:8px;padding:10px">
-              <div style="font-size:11.5px;font-weight:700;color:${VR_SC_BRAND_COLORS[brand]||'var(--p)'};margin-bottom:6px">${vrEsc(brand)}</div>
-              <div style="font-size:11px;color:var(--t-600);line-height:1.6">${(products||[]).map(p=>vrEsc(p)).join('<br>')}</div>
-            </div>`).join('') : `<div style="color:var(--t-300);font-size:12px">입점 브랜드 데이터 없음</div>`}
-        </div>
-      </div>
-
-      <!-- 방문이력 -->
-      <div>
-        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
-          <div style="font-size:12.5px;font-weight:800;color:var(--t-900)">📅 방문이력 (누적)</div>
-          <button class="btn btn-dark btn-sm" onclick="openVrEntryModal('${vrAttr(d.store_name)}')">✏️ 방문 기록 추가</button>
-        </div>
-        ${visitLog.length ? `
-        <div style="overflow-x:auto">
-        <table style="width:100%;border-collapse:collapse;font-size:11.5px">
-          <thead><tr style="background:var(--bg)">
-            <th style="padding:7px 8px;text-align:left;color:var(--t-500);font-weight:700">방문일</th>
-            <th style="padding:7px 8px;text-align:left;color:var(--t-500);font-weight:700">목적</th>
-            <th style="padding:7px 8px;text-align:left;color:var(--t-500);font-weight:700">면담자</th>
-            <th style="padding:7px 8px;text-align:left;color:var(--t-500);font-weight:700">자사 주요내용</th>
-            <th style="padding:7px 8px;text-align:left;color:var(--t-500);font-weight:700">타사 동향</th>
-            <th style="padding:7px 8px;text-align:left;color:var(--t-500);font-weight:700">조치사항</th>
-            <th style="padding:7px 8px;text-align:left;color:var(--t-500);font-weight:700">상태</th>
-            <th style="padding:7px 8px;text-align:right;color:var(--t-500);font-weight:700">활동비</th>
-            <th style="padding:7px 8px"></th>
-          </tr></thead>
-          <tbody>
-          ${visitLog.map(v=>`
-            <tr style="border-bottom:1px solid var(--border)">
-              <td style="padding:7px 8px;white-space:nowrap;color:var(--t-800)">${vrEsc(v.visit_date)}</td>
-              <td style="padding:7px 8px;color:var(--t-700)">${vrEsc(v.purpose||'—')}</td>
-              <td style="padding:7px 8px;color:var(--t-700)">${vrEsc(v.contact_person||'—')}</td>
-              <td style="padding:7px 8px;color:var(--t-700);white-space:pre-wrap;max-width:200px">${vrEsc(v.our_content||'')}</td>
-              <td style="padding:7px 8px;color:var(--t-700);white-space:pre-wrap;max-width:160px">${vrEsc(v.competitor_trend||'')}</td>
-              <td style="padding:7px 8px;color:var(--t-700);white-space:pre-wrap;max-width:160px">${vrEsc(v.action_item||'')}</td>
-              <td style="padding:7px 8px;color:var(--t-700)">${vrEsc(v.status||'—')}</td>
-              <td style="padding:7px 8px;text-align:right;color:var(--t-700);white-space:nowrap">${v.expense_amount? N(v.expense_amount)+'원' : '—'}</td>
-              <td style="padding:7px 8px;white-space:nowrap">
-                <button onclick="editVrEntry(${v.id})" style="background:none;border:none;color:var(--p);cursor:pointer;font-size:11px;margin-right:6px">수정</button>
-                <button onclick="deleteVrLogEntry(${v.id})" style="background:none;border:none;color:var(--red);cursor:pointer;font-size:11px">삭제</button>
-              </td>
-            </tr>`).join('')}
-          </tbody>
-        </table>
-        </div>` : `<div style="color:var(--t-300);font-size:12px;padding:20px 0;text-align:center">방문 기록이 없습니다. "방문 기록 추가"로 첫 기록을 남겨보세요.</div>`}
-      </div>
-    </div>`;
-
-  body.innerHTML = html;
-
-  // 브랜드별 매출비율 차트
-  if(brandList.length){
-    vrScCharts.brand = new Chart(document.getElementById('sc-chart-brand'), {
-      type: 'doughnut',
-      data: {
-        labels: brandList.map(b=>b.brand),
-        datasets: [{ data: brandList.map(b=>b.amount), backgroundColor: brandList.map(b=>VR_SC_BRAND_COLORS[b.brand]||'#9CA3AF'), borderWidth: 3, borderColor: 'var(--paper)' }]
-      },
-      options: { plugins: { legend: { position:'right', labels:{ usePointStyle:true, pointStyle:'circle', boxWidth:7, padding:10, font:{size:11} } } }, cutout:'58%', responsive:true, maintainAspectRatio:false }
-    });
-  }
-
-  // 월별 판매추이 차트
-  vrScCharts.monthly = new Chart(document.getElementById('sc-chart-monthly'), {
-    type: 'bar',
-    data: {
-      labels: monthly.map(m=>m.month+'월'),
-      datasets: [{ label:'매출', data: monthly.map(m=>m.amount), backgroundColor:'#4F46E5', borderRadius:4, borderSkipped:false }]
-    },
-    options: { plugins:{legend:{display:false}}, scales:{ y:{ ticks:{ callback:v=>N(v), font:{size:10} } }, x:{ ticks:{font:{size:10}} } }, responsive:true, maintainAspectRatio:false }
-  });
-
-  // 브랜드/제품별 선택 옵션
-  const bpSel = document.getElementById('sc-bp-select');
-  const brandMonthly = d.brand_monthly || {};
-  const productMonthly = d.product_monthly || {};
-  let opts = '';
-  if(Object.keys(brandMonthly).length){
-    opts += `<optgroup label="브랜드">` + Object.keys(brandMonthly).map(b=>`<option value="brand::${vrAttr(b)}">${vrEsc(b)}</option>`).join('') + `</optgroup>`;
-  }
-  if(Object.keys(productMonthly).length){
-    opts += `<optgroup label="제품">` + Object.keys(productMonthly).map(p=>`<option value="product::${vrAttr(p)}">${vrEsc(p)}</option>`).join('') + `</optgroup>`;
-  }
-  bpSel.innerHTML = opts || `<option value="">데이터 없음</option>`;
-  vrScRenderBpChart();
-}
-
-function vrScRenderBpChart(){
-  const sel = document.getElementById('sc-bp-select');
-  const canvas = document.getElementById('sc-chart-bp');
-  if(!sel || !canvas || !vrScData) return;
-  if(vrScCharts.bp){ vrScCharts.bp.destroy(); vrScCharts.bp = null; }
-  const val = sel.value;
-  if(!val) return;
-  const [kind, name] = val.split('::');
-  const src = kind === 'brand' ? (vrScData.brand_monthly||{}) : (vrScData.product_monthly||{});
-  const arr = src[name] || new Array(12).fill(0);
-  vrScCharts.bp = new Chart(canvas, {
-    type: 'line',
-    data: {
-      labels: arr.map((_,i)=>(i+1)+'월'),
-      datasets: [{ label: name, data: arr, borderColor:'#7C3AED', backgroundColor:'#7C3AED22', fill:true, tension:.3, pointRadius:3 }]
-    },
-    options: { plugins:{legend:{display:false}}, scales:{ y:{ ticks:{ callback:v=>N(v), font:{size:10} } }, x:{ ticks:{font:{size:10}} } }, responsive:true, maintainAspectRatio:false }
-  });
-}
-
-async function saveVrStoreProfile(){
-  const payload = {
-    store_name: vrScCurrentStore,
-    staff_status: document.getElementById('sc-staff').value,
-    store_status: document.getElementById('sc-store').value,
-    voucher_info: document.getElementById('sc-voucher').value,
-  };
-  const r = await api('/api/store-profile/save', {method:'POST', body: payload});
-  if(r?.ok){ toast('매장현황이 저장되었습니다'); }
-  else{ toast('저장에 실패했습니다', false); }
-}
-
-async function downloadVrStoreXlsx(storeName){
-  toast('엑셀을 생성하는 중입니다...');
-  try{
-    const resp = await fetch('/api/export/xlsx/visit-report/by-store', {
-      method: 'POST', headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({store_names: [storeName], year: vrScCurrentYear})
-    });
-    if(!resp.ok) throw new Error('fail');
-    const blob = await resp.blob();
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url; a.download = `${storeName}_방문보고서.xlsx`;
-    document.body.appendChild(a); a.click(); a.remove();
-    URL.revokeObjectURL(url);
-  }catch(e){
-    toast('다운로드에 실패했습니다', false);
-  }
-}
-
-// ── 방문 기록 작성/수정 모달 ────────────────────────────────
-let vrEntryEditId = null;
-let vrEntryOptions = null;
-let vrBranchNames = null;
-
-async function vrLoadBranchNames(){
-  if(vrBranchNames) return vrBranchNames;
-  try{
-    const list = await api('/api/branches');
-    vrBranchNames = (list||[]).map(b=>b.name).filter(Boolean).sort();
-  }catch(e){ vrBranchNames = []; }
-  return vrBranchNames;
-}
-
-async function openVrEntryModal(prefillStore){
-  if(!vrEntryOptions){
-    vrEntryOptions = await api('/api/visit-log/purpose-options');
-  }
-  await vrLoadBranchNames();
-  vrEntryEditId = null;
-  const overlay = document.getElementById('vr-entry-overlay');
-  const body = document.getElementById('vr-entry-body');
-  const today = new Date().toISOString().slice(0,10);
-  body.innerHTML = vrEntryFormHtml({ store_name: prefillStore || vrScCurrentStore || '', visit_date: today });
-  overlay.style.display = 'flex';
-}
-
-async function editVrEntry(logId){
-  const r = await api(`/api/visit-log/${logId}`);
-  if(!r || r.ok === false){ toast('불러오지 못했습니다', false); return; }
-  if(!vrEntryOptions){ vrEntryOptions = await api('/api/visit-log/purpose-options'); }
-  await vrLoadBranchNames();
-  vrEntryEditId = logId;
-  const overlay = document.getElementById('vr-entry-overlay');
-  const body = document.getElementById('vr-entry-body');
-  body.innerHTML = vrEntryFormHtml(r);
-  overlay.style.display = 'flex';
-}
-
-function closeVrEntryModal(){
-  document.getElementById('vr-entry-overlay').style.display = 'none';
-}
-
-function vrEntryFormHtml(r){
-  r = r || {};
-  const opt = vrEntryOptions || {purpose:[], status:[], expense_type:[]};
-  const selOpts = (list, cur) => (list||[]).map(v=>`<option value="${vrAttr(v)}" ${v===cur?'selected':''}>${vrEsc(v)}</option>`).join('');
-  return `
-    <div style="padding:18px 22px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center">
-      <div style="font-size:15px;font-weight:800;color:var(--t-900)">${vrEntryEditId ? '방문 기록 수정' : '방문 기록 작성'}</div>
-      <button onclick="closeVrEntryModal()" style="background:none;border:none;font-size:18px;color:var(--t-400);cursor:pointer">✕</button>
-    </div>
-    <div style="padding:18px 22px;display:flex;flex-direction:column;gap:12px">
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
-        <div><label style="font-size:11px;color:var(--t-500);font-weight:600">매장명 * <span style="font-weight:400;color:var(--t-300)">(목록에서 정확한 매장명을 선택해주세요)</span></label>
-          <input id="ve-store" class="fs" style="width:100%" list="ve-store-list" autocomplete="off" value="${vrAttr(r.store_name||'')}" ${vrEntryEditId?'readonly':''}>
-          <datalist id="ve-store-list">${(vrBranchNames||[]).map(n=>`<option value="${vrAttr(n)}">`).join('')}</datalist></div>
-        <div><label style="font-size:11px;color:var(--t-500);font-weight:600">방문일 *</label>
-          <input id="ve-date" type="date" class="fs" style="width:100%" value="${vrAttr(r.visit_date||'')}"></div>
-      </div>
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
-        <div><label style="font-size:11px;color:var(--t-500);font-weight:600">방문목적</label>
-          <select id="ve-purpose" class="fs" style="width:100%"><option value="">선택</option>${selOpts(opt.purpose, r.purpose)}</select></div>
-        <div><label style="font-size:11px;color:var(--t-500);font-weight:600">면담자</label>
-          <input id="ve-contact" class="fs" style="width:100%" value="${vrAttr(r.contact_person||'')}"></div>
-      </div>
-      <div><label style="font-size:11px;color:var(--t-500);font-weight:600">자사 주요내용</label>
-        <textarea id="ve-our" class="fs" style="width:100%;min-height:70px;resize:vertical">${vrEsc(r.our_content||'')}</textarea></div>
-      <div><label style="font-size:11px;color:var(--t-500);font-weight:600">타사 동향</label>
-        <textarea id="ve-comp" class="fs" style="width:100%;min-height:50px;resize:vertical">${vrEsc(r.competitor_trend||'')}</textarea></div>
-      <div><label style="font-size:11px;color:var(--t-500);font-weight:600">조치사항·후속</label>
-        <textarea id="ve-action" class="fs" style="width:100%;min-height:50px;resize:vertical">${vrEsc(r.action_item||'')}</textarea></div>
-      <div style="display:flex;justify-content:flex-end;align-items:center;gap:8px;margin-top:-2px">
-        <span style="font-size:11px;color:var(--t-400)">위 세 항목을 적은 뒤, 영업전문가 문체로 다듬어보세요</span>
-        <button type="button" class="btn btn-ghost btn-sm" id="ve-polish-btn" onclick="polishVrEntry()">✨ 변환 (AI로 다듬기)</button>
-      </div>
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
-        <div><label style="font-size:11px;color:var(--t-500);font-weight:600">완료(예정)일</label>
-          <input id="ve-due" type="date" class="fs" style="width:100%" value="${vrAttr(r.due_date||'')}"></div>
-        <div><label style="font-size:11px;color:var(--t-500);font-weight:600">진행상태</label>
-          <select id="ve-status" class="fs" style="width:100%"><option value="">선택</option>${selOpts(opt.status, r.status)}</select></div>
-      </div>
-      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px">
-        <div><label style="font-size:11px;color:var(--t-500);font-weight:600">활동비구분</label>
-          <select id="ve-exp-type" class="fs" style="width:100%"><option value="">선택</option>${selOpts(opt.expense_type, r.expense_type)}</select></div>
-        <div><label style="font-size:11px;color:var(--t-500);font-weight:600">활동비금액</label>
-          <input id="ve-exp-amount" type="number" class="fs" style="width:100%" value="${r.expense_amount||0}"></div>
-        <div><label style="font-size:11px;color:var(--t-500);font-weight:600">활동비내용</label>
-          <input id="ve-exp-note" class="fs" style="width:100%" value="${vrAttr(r.expense_note||'')}"></div>
-      </div>
-      <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:8px">
-        <button class="btn btn-ghost btn-sm" onclick="closeVrEntryModal()">취소</button>
-        <button class="btn btn-primary btn-sm" id="ve-save-btn" onclick="saveVrEntry()">저장</button>
-      </div>
-    </div>`;
-}
-
-async function polishVrEntry(){
-  const btn = document.getElementById('ve-polish-btn');
-  const ourEl = document.getElementById('ve-our');
-  const compEl = document.getElementById('ve-comp');
-  const actionEl = document.getElementById('ve-action');
-  const payload = {
-    our_content: ourEl.value,
-    competitor_trend: compEl.value,
-    action_item: actionEl.value,
-  };
-  if(!payload.our_content.trim() && !payload.competitor_trend.trim() && !payload.action_item.trim()){
-    toast('다듬을 내용을 먼저 입력해주세요', false); return;
-  }
-  const origLabel = btn ? btn.textContent : '';
-  if(btn){ btn.disabled = true; btn.textContent = 'AI가 다듬는 중...'; }
-  let r;
-  try{
-    r = await api('/api/visit-log/polish-preview', {method:'POST', body: payload});
-  } finally {
-    if(btn){ btn.disabled = false; btn.textContent = origLabel; }
-  }
-  if(r?.ok){
-    ourEl.value = r.our_content || '';
-    compEl.value = r.competitor_trend || '';
-    actionEl.value = r.action_item || '';
-    toast('영업전문가 문체로 다듬었습니다 — 확인 후 저장해주세요');
-  } else {
-    toast(r?.msg || '변환에 실패했습니다', false);
-  }
-}
-
-async function saveVrEntry(){
-  const payload = {
-    store_name: document.getElementById('ve-store').value.trim(),
-    visit_date: document.getElementById('ve-date').value,
-    purpose: document.getElementById('ve-purpose').value,
-    contact_person: document.getElementById('ve-contact').value,
-    our_content: document.getElementById('ve-our').value,
-    competitor_trend: document.getElementById('ve-comp').value,
-    action_item: document.getElementById('ve-action').value,
-    due_date: document.getElementById('ve-due').value,
-    status: document.getElementById('ve-status').value,
-    expense_type: document.getElementById('ve-exp-type').value,
-    expense_amount: Number(document.getElementById('ve-exp-amount').value) || 0,
-    expense_note: document.getElementById('ve-exp-note').value,
-  };
-  if(!payload.store_name || !payload.visit_date){ toast('매장명과 방문일은 필수입니다', false); return; }
-  if(vrBranchNames && vrBranchNames.length && !vrBranchNames.includes(payload.store_name)){
-    if(!confirm(`"${payload.store_name}"은(는) 판매처관리에 등록된 매장명과 일치하지 않습니다.\n이 이름으로 그대로 저장하면 해당 매장 카드에서 조회가 안 될 수 있습니다.\n계속 저장하시겠습니까?`)) return;
-  }
-  if(vrEntryEditId) payload.id = vrEntryEditId;
-  const saveBtn = document.getElementById('ve-save-btn');
-  if(saveBtn){ saveBtn.disabled = true; saveBtn.textContent = '저장 중...'; }
-  let r;
-  try{
-    r = await api('/api/visit-log/save', {method:'POST', body: payload});
-  } finally {
-    if(saveBtn){ saveBtn.disabled = false; saveBtn.textContent = '저장'; }
-  }
-  if(r?.ok){
-    toast('저장되었습니다 — 방금 작성한 매장 카드를 보여드릴게요');
-    closeVrEntryModal();
-    reloadVisitReportView();
-    // 저장 확인을 눈으로 바로 볼 수 있도록 해당 매장 카드를 열어서 보여준다
-    openVrStoreHistory(payload.store_name, vrScCurrentYear || new Date().getFullYear());
-  } else {
-    toast(r?.msg || '저장에 실패했습니다', false);
-  }
-}
-
-async function deleteVrLogEntry(logId){
-  if(!confirm('이 방문 기록을 삭제하시겠습니까?')) return;
-  const r = await api(`/api/visit-log/${logId}`, {method:'DELETE'});
-  if(r?.ok){
-    toast('삭제되었습니다');
-    loadVrStoreCard();
-  }
+async function openVrStoreHistory(storeName){
+  document.getElementById('vr-store-filter').value = storeName;
+  switchVrTab('date');
 }
 
 async function uploadVisitReports(e){
@@ -4895,33 +4521,6 @@ async function loadSNS(){
   snsData=rows;
   renderSNSKPI(rows);
   renderSNSTable(rows);
-  loadSNSInstaTop();
-}
-
-// 수정4: 자사 제품 홍보 비중(블로그) + 브랜드별 인스타 노출/조회수 TOP 게시물
-async function loadSNSInstaTop(){
-  const data=await api('/api/sns/insta-top?limit=15');
-  if(!data)return;
-  const brandBox=document.getElementById('sns-brand-stats');
-  const stats=data.brand_stats||[];
-  brandBox.innerHTML = stats.length
-    ? stats.map(b=>`<div style="display:flex;justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid var(--ink-50)">
-        <span style="font-weight:600;color:var(--ink-700)">${b.brand}</span>
-        <span style="color:var(--ink-400)">${b.post_count}건</span>
-        <span style="color:#C13584;font-weight:700">👁 ${(b.total_views||0).toLocaleString()}</span>
-      </div>`).join('')
-    : '<div style="text-align:center;padding:16px;color:var(--ink-200)">등록된 인스타그램 게시물이 없습니다.</div>';
-
-  const topBox=document.getElementById('sns-top-posts');
-  const posts=data.top_posts||[];
-  topBox.innerHTML = posts.length
-    ? posts.map((p,i)=>`<a href="${p.post_url}" target="_blank" rel="noopener" style="display:flex;justify-content:space-between;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid var(--ink-50);text-decoration:none;color:inherit">
-        <span style="color:var(--ink-300);font-size:11px;width:16px">${i+1}</span>
-        <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:600">${p.seller_name}</span>
-        ${p.brand?`<span style="background:#FEF9C3;color:#92400E;padding:1px 6px;border-radius:4px;font-size:9px;font-weight:700;white-space:nowrap">${p.brand}</span>`:''}
-        <span style="color:#C13584;font-weight:700;white-space:nowrap">👁 ${(p.view_count||0).toLocaleString()}</span>
-      </a>`).join('')
-    : '<div style="text-align:center;padding:16px;color:var(--ink-200)">등록된 인스타그램 게시물이 없습니다.</div>';
 }
 
 function filterSNS(){
@@ -4936,15 +4535,11 @@ function renderSNSKPI(rows){
   const gradeA=rows.filter(r=>r.blog_grade==='A').length;
   const gradeB=rows.filter(r=>r.blog_grade==='B').length;
   const totalViews=rows.reduce((s,r)=>s+(r.instagram_views||0),0);
-  // 수정4: 자사 제품 관련 내용이 전체적으로 얼마나 발행되고 있는지(블로그 홍보글 총합 + 홍보 매장 수)
-  const totalPromoPosts=rows.reduce((s,r)=>s+(r.blog_promo_count||0),0);
-  const storesWithPromo=rows.filter(r=>r.blog_promo_count>0).length;
   document.getElementById('sns-kpi').innerHTML=[
     {l:'전체 매장',v:`${total}개`,c:'var(--accent-m)'},
     {l:'분석 완료',v:`${searched}개`,c:'#0891B2'},
     {l:'30일 내 활성',v:`${active}개`,c:'#16A34A'},
     {l:'A/B등급 우수',v:`${gradeA+gradeB}개`,c:'#D97706'},
-    {l:'자사 제품 홍보글',v:`${totalPromoPosts}건 (${storesWithPromo}개 매장)`,c:'#CA8A04'},
     {l:'인스타 누적 조회수',v:totalViews.toLocaleString(),c:'#C13584'},
   ].map(k=>`<div class="kpi"><div class="kpi-accent" style="background:${k.c}"></div>
     <div class="kpi-lbl">${k.l}</div>
@@ -5028,7 +4623,7 @@ function renderSNSTable(rows){
           ? `<a href="${firstLink}" target="_blank" rel="noopener" onclick="event.stopPropagation()"
               style="color:var(--accent-m);text-decoration:none;border-bottom:1px dashed var(--accent-m)">${firstTitle} ↗</a>`
           : `<span style="color:var(--accent-m);cursor:pointer;text-decoration:underline"
-              onclick="openSNSTitleModal('${r.seller_name.replace(/'/g,"\\'")}','${(r.blog_recent_titles||'').replace(/'/g,"\\'")}','${(r.blog_recent_links||'').replace(/'/g,"\\'")}','${r.blog_grade}',${r.blog_score},'${(r.blog_platform||'').replace(/'/g,"\\'")}','${(r.blog_keywords||'').replace(/'/g,"\\'")}')">${firstTitle}</span>`)
+              onclick="openSNSTitleModal('${r.seller_name.replace(/'/g,"\\'")}','${(r.blog_recent_titles||'').replace(/'/g,"\\'")}','${r.blog_grade}',${r.blog_score},'${(r.blog_platform||'').replace(/'/g,"\\'")}','${(r.blog_keywords||'').replace(/'/g,"\\'")}')">${firstTitle}</span>`)
       : '<span style="color:var(--ink-200)">—</span>';
 
     return`<tr>
@@ -5084,50 +4679,6 @@ function openPromoModal(seller, promoJson, count){
         <div style="font-size:13px;font-weight:600;color:var(--ink-800)">${p.title||'(제목 없음)'}</div>
         ${p.link?`<div style="margin-top:6px"><a href="${p.link}" target="_blank" style="color:var(--accent-m);font-size:11px">포스팅 보기 →</a></div>`:''}
       </div>`).join('');
-  }
-  m.style.display='flex';
-}
-
-// 수정6: "최근 포스팅 제목" 클릭 시(원문 링크가 없는 경우) 최근 글 전체 목록을 보여주는 상세 모달
-function openSNSTitleModal(seller, titlesStr, linksStr, grade, score, platform, keywords){
-  const titles = (titlesStr||'').split(' | ').filter(Boolean);
-  const links  = (linksStr||'').split(' | ');
-  let m=document.getElementById('sns-title-modal');
-  if(!m){
-    m=document.createElement('div');
-    m.id='sns-title-modal';
-    m.style.cssText='display:none;position:fixed;inset:0;background:rgba(0,0,0,.4);z-index:1000;align-items:center;justify-content:center';
-    m.innerHTML=`<div style="background:var(--paper);border-radius:var(--r-lg);padding:24px;width:min(540px,95vw);max-height:80vh;overflow-y:auto;box-shadow:0 24px 60px rgba(0,0,0,.3)">
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
-        <div>
-          <div style="font-size:14px;font-weight:700" id="sns-title-modal-seller"></div>
-          <div style="font-size:12px;color:var(--ink-400);margin-top:2px">최근 포스팅 목록</div>
-        </div>
-        <button onclick="document.getElementById('sns-title-modal').style.display='none'" style="background:none;border:none;cursor:pointer;font-size:18px;color:var(--ink-300)">✕</button>
-      </div>
-      <div id="sns-title-modal-meta" style="font-size:11px;color:var(--ink-300);margin-bottom:14px"></div>
-      <div id="sns-title-modal-body"></div>
-    </div>`;
-    document.body.appendChild(m);
-  }
-  document.getElementById('sns-title-modal-seller').textContent=`${seller} — 블로그·SNS 최근 글`;
-  const metaParts=[];
-  if(grade)metaParts.push(`${grade}등급 (${score||0}점)`);
-  if(platform)metaParts.push(platform);
-  if(keywords)metaParts.push(`키워드: ${keywords}`);
-  document.getElementById('sns-title-modal-meta').textContent=metaParts.join(' · ')||'';
-  const body=document.getElementById('sns-title-modal-body');
-  if(!titles.length){
-    body.innerHTML='<div style="text-align:center;padding:30px;color:var(--ink-300)">포스팅 상세 정보가 없습니다.<br>재분석 시 자동으로 수집됩니다.</div>';
-  } else {
-    body.innerHTML=titles.map((t,i)=>{
-      const link=links[i]||'';
-      return `<div style="border:1px solid var(--ink-100);border-radius:var(--r-md);padding:12px;margin-bottom:8px">
-        <div style="font-size:13px;font-weight:600;color:var(--ink-800)">${t}</div>
-        ${link?`<div style="margin-top:6px"><a href="${link}" target="_blank" rel="noopener" style="color:var(--accent-m);font-size:11px">포스팅 보기 →</a></div>`
-              :'<div style="margin-top:6px;font-size:11px;color:var(--ink-300)">원문 링크 없음</div>'}
-      </div>`;
-    }).join('');
   }
   m.style.display='flex';
 }
@@ -5688,38 +5239,18 @@ function switchSalesTab(tab){
   if(drBar) drBar.style.display = tab==='weekly' ? 'flex' : 'none';
   if(tab==='trend') { loadTrendData(); document.getElementById('raw-file-status-banner').style.display='none'; }
   else if(tab==='ranking') { renderRanking(); document.getElementById('raw-file-status-banner').style.display='none'; }
-  else if(tab==='event') { document.getElementById('raw-file-status-banner').style.display='none'; loadEventPicker(); }
+  else if(tab==='event') { document.getElementById('raw-file-status-banner').style.display='none'; }
   else loadSalesPage();
 }
 
-let evRegisteredEvents = [];
-
-async function loadEventPicker(){
-  const r = await api('/api/promo-events');
-  evRegisteredEvents = r?.events || [];
-  const sel = document.getElementById('event-picker');
-  const cur = sel.value;
-  sel.innerHTML = `<option value="">— 등록된 행사에서 선택 —</option>` +
-    evRegisteredEvents.map(e => `<option value="${e.id}">${e.name} (${e.date_start}${e.date_start!==e.date_end?' ~ '+e.date_end:''})${e.note_tags?' ✓':''}</option>`).join('');
-  sel.value = cur;
-}
-
-function onEventPickerChange(){
-  const sel = document.getElementById('event-picker');
-  if(sel.value) document.getElementById('event-keyword').value = '';
-  loadEventSales();
-}
-
 async function loadEventSales(){
-  const eventId = document.getElementById('event-picker').value;
   const keyword = document.getElementById('event-keyword').value.trim();
   const dateFrom = document.getElementById('event-date-from').value;
   const dateTo = document.getElementById('event-date-to').value;
   const el = document.getElementById('event-sales-result');
-  if(!eventId && !keyword){ toast('행사를 선택하거나 검색할 키워드를 입력해주세요', false); return; }
+  if(!keyword){ toast('검색할 키워드를 입력해주세요', false); return; }
   el.innerHTML = `<div style="text-align:center;padding:30px;color:var(--t-300);font-size:12px">검색 중...</div>`;
-  const params = new URLSearchParams();
-  if(eventId) params.set('event_id', eventId); else params.set('keyword', keyword);
+  const params = new URLSearchParams({keyword});
   if(dateFrom) params.set('date_from', dateFrom);
   if(dateTo) params.set('date_to', dateTo);
   const r = await api(`/api/sales/event-search?${params}`);
@@ -5728,12 +5259,8 @@ async function loadEventSales(){
     return;
   }
   const s = r.summary;
-  const evMeta = eventId ? evRegisteredEvents.find(e=>String(e.id)===String(eventId)) : null;
-  const warnHtml = (evMeta && !evMeta.note_tags)
-    ? `<div style="background:#FFFBEB;border:1px solid #FDE68A;border-radius:10px;padding:10px 14px;margin-bottom:12px;font-size:11.5px;color:#92400E">⚠ 이 행사는 아직 "비고 표기 분류"가 등록되지 않아서 행사명 전체로만 매칭해요. 같은 기간에 겹치는 다른 행사가 있다면 "행사 관리"에서 정확한 비고 표기를 등록해주는 게 좋아요.</div>`
-    : '';
   if(!s.row_count){
-    el.innerHTML = warnHtml + `<div style="text-align:center;padding:40px;color:var(--t-300);font-size:12px">"${r.keyword}"${evMeta&&evMeta.note_tags?' 비고 표기':''}가 포함된 특이사항(비고)의 판매 건이 없어요</div>`;
+    el.innerHTML = `<div style="text-align:center;padding:40px;color:var(--t-300);font-size:12px">"${keyword}"가 포함된 특이사항(비고)의 판매 건이 없어요</div>`;
     return;
   }
   el.innerHTML = `
@@ -5763,13 +5290,6 @@ async function loadEventSales(){
       </div>
     </div>
     ${r.matched_events && r.matched_events.length ? `<div style="font-size:11px;color:var(--t-400);margin-top:10px">적용된 행사: ${r.matched_events.map(e=>`${e.name}(${e.date_start}~${e.date_end})`).join(', ')}</div>` : ''}
-    ${(r.matched_events||[]).filter(e=>(e.terms_note||'').trim()).length ? `
-    <div style="background:#FFFBEB;border:1px solid #FDE68A;border-radius:10px;padding:12px 14px;margin-top:10px">
-      <div style="font-size:11.5px;font-weight:700;color:#92400E;margin-bottom:4px">📋 공급가 추가 인하 조건</div>
-      ${r.matched_events.filter(e=>(e.terms_note||'').trim()).map(e=>`
-        <div style="font-size:11px;color:#78350F;white-space:pre-wrap;line-height:1.5;margin-bottom:6px"><b>${e.name}</b><br>${e.terms_note.replace(/</g,'&lt;')}</div>
-      `).join('')}
-    </div>` : ''}
     <div style="background:var(--paper);border:1px solid var(--border);border-radius:12px;padding:16px;margin-top:16px">
       <div style="font-size:12.5px;font-weight:700;color:var(--t-700);margin-bottom:10px">브랜드별 제품상세 — 어떤 제품이 얼마나 나갔는지</div>
       <table style="width:100%;border-collapse:collapse;font-size:11.5px">
@@ -5850,10 +5370,10 @@ async function loadPromoEventList(){
     return;
   }
   list.innerHTML = r.events.map(e=>`
-    <div onclick="openPromoEventDetail(${e.id}, '${e.name.replace(/'/g,"\\'")}', '${e.date_start}', '${e.date_end}', '${(e.note_tags||'').replace(/'/g,"\\'").replace(/\n/g,'\\n')}', '${(e.exclude_keywords||'').replace(/'/g,"\\'").replace(/\n/g,'\\n')}', '${(e.exclude_items||'').replace(/'/g,"\\'").replace(/\n/g,'\\n')}', '${(e.terms_note||'').replace(/'/g,"\\'").replace(/\n/g,'\\n')}')"
+    <div onclick="openPromoEventDetail(${e.id}, '${e.name.replace(/'/g,"\\'")}', '${e.date_start}', '${e.date_end}')"
       style="display:flex;justify-content:space-between;align-items:center;padding:10px 12px;background:var(--bg);border-radius:8px;cursor:pointer">
       <div>
-        <div style="font-size:12.5px;font-weight:700;color:var(--t-800)">${e.name}${e.note_tags?' <span style="color:var(--p);font-weight:600">✓ 비고 등록됨</span>':''}</div>
+        <div style="font-size:12.5px;font-weight:700;color:var(--t-800)">${e.name}</div>
         <div style="font-size:11px;color:var(--t-400)">${e.date_start} ~ ${e.date_end} · 제품 ${e.product_count}개 등록됨</div>
       </div>
       <button onclick="event.stopPropagation();deletePromoEvent(${e.id})" style="background:none;border:none;color:var(--red);cursor:pointer;font-size:11px">삭제</button>
@@ -5868,7 +5388,7 @@ async function createPromoEvent(){
   const r = await api('/api/promo-events', {method:'POST', body:{name, date_start, date_end}});
   if(r?.ok){
     toast(`"${name}" 행사를 만들었어요`);
-    openPromoEventDetail(r.id, name, date_start, date_end, '', '', '', '');
+    openPromoEventDetail(r.id, name, date_start, date_end);
   }
 }
 
@@ -5885,45 +5405,15 @@ function closePromoEventDetail(){
   loadPromoEventList();
 }
 
-async function openPromoEventDetail(id, name, dateStart, dateEnd, noteTags, excludeKeywords, excludeItems, termsNote){
+async function openPromoEventDetail(id, name, dateStart, dateEnd){
   promoCurrentEventId = id;
   document.getElementById('promo-event-list-view').style.display = 'none';
   document.getElementById('promo-event-new-form').style.display = 'none';
   document.getElementById('promo-event-detail-view').style.display = 'block';
-  const ntVal = (noteTags||'').replace(/\\n/g,'\n');
-  const exkVal = (excludeKeywords||'').replace(/\\n/g,'\n');
-  const exiVal = (excludeItems||'').replace(/\\n/g,'\n');
-  const tnVal = (termsNote||'').replace(/\\n/g,'\n');
   document.getElementById('promo-event-detail-header').innerHTML =
-    `<div style="font-size:13px;font-weight:800;color:var(--t-800)">${name}</div><div style="font-size:11px;color:var(--t-400);margin-bottom:10px">${dateStart} ~ ${dateEnd}</div>
-    <div style="background:var(--bg);border-radius:10px;padding:10px 12px">
-      <div style="font-size:11.5px;font-weight:700;color:var(--t-700);margin-bottom:4px">비고(특이사항) 표기 분류</div>
-      <div style="font-size:10.5px;color:var(--t-400);margin-bottom:6px">판매 데이터의 비고란에 이 행사가 실제로 어떤 글자로 표기되는지 적어주세요. 여러 표기가 있다면 줄바꿈으로 구분해주세요. (예: 레카로행사). 등록해두면 "행사별 실적"에서 같은 날 겹치는 다른 행사와 섞이지 않고 정확하게 매칭돼요.</div>
-      <textarea id="pe-note-tags" rows="2" placeholder="예: 레카로행사" style="width:100%;border:1px solid var(--border-md);border-radius:6px;padding:6px 8px;font-size:11.5px;resize:vertical">${ntVal.replace(/</g,'&lt;')}</textarea>
-      <div style="font-size:11.5px;font-weight:700;color:var(--t-700);margin:10px 0 4px">제외 키워드 <span style="font-weight:400;color:var(--t-400)">(선택)</span></div>
-      <div style="font-size:10.5px;color:var(--t-400);margin-bottom:6px">비고가 위 표기와 일치해도, 비고에 이 키워드가 포함돼 있으면 이 행사에서 제외해요. 여러 개는 줄바꿈으로 구분. (예: 다른 행사와 합쳐 표기되는 경우)</div>
-      <textarea id="pe-exclude-keywords" rows="2" placeholder="예: (필요시에만 입력)" style="width:100%;border:1px solid var(--border-md);border-radius:6px;padding:6px 8px;font-size:11.5px;resize:vertical">${exkVal.replace(/</g,'&lt;')}</textarea>
-      <div style="font-size:11.5px;font-weight:700;color:var(--t-700);margin:10px 0 4px">제외 품목(품목그룹) <span style="font-weight:400;color:var(--t-400)">(선택)</span></div>
-      <div style="font-size:10.5px;color:var(--t-400);margin-bottom:6px">이 품목그룹은 비고가 일치해도 항상 이 행사에서 제외해요. 여러 개는 줄바꿈/쉼표로 구분. (예: TAFTOYS, 보행기)</div>
-      <textarea id="pe-exclude-items" rows="2" placeholder="예: TAFTOYS, 보행기" style="width:100%;border:1px solid var(--border-md);border-radius:6px;padding:6px 8px;font-size:11.5px;resize:vertical">${exiVal.replace(/</g,'&lt;')}</textarea>
-      <div style="font-size:11.5px;font-weight:700;color:var(--t-700);margin:10px 0 4px">공급가 추가 인하 조건 <span style="font-weight:400;color:var(--t-400)">(선택)</span></div>
-      <div style="font-size:10.5px;color:var(--t-400);margin-bottom:6px">제품별 공급율표만으로는 담기 어려운 조건(예: 두 브랜드 동시구매 시 공급가 추가 인하)을 자유롭게 적어두면, "행사별 판매실적" 화면과 다운로드 엑셀에 그대로 표시돼요. 실제 계산(추가마진)에 자동 반영되진 않고, 왜 마진이 이렇게 나왔는지 확인하는 참고용이에요.</div>
-      <textarea id="pe-terms-note" rows="4" placeholder="예: 신생아유모차+신생아카시트 동시구매 시 5만원 공급가 할인 (직송 건만 해당)" style="width:100%;border:1px solid var(--border-md);border-radius:6px;padding:6px 8px;font-size:11.5px;resize:vertical">${tnVal.replace(/</g,'&lt;')}</textarea>
-      <button onclick="savePromoEventNoteTags()" class="btn btn-dark btn-sm" style="margin-top:6px">저장</button>
-    </div>`;
+    `<div style="font-size:13px;font-weight:800;color:var(--t-800)">${name}</div><div style="font-size:11px;color:var(--t-400)">${dateStart} ~ ${dateEnd}</div>`;
   await loadPromoRateRows();
   await loadPromoMissingProducts();
-}
-
-async function savePromoEventNoteTags(){
-  if(!promoCurrentEventId) return;
-  const note_tags = document.getElementById('pe-note-tags').value.trim();
-  const exclude_keywords = document.getElementById('pe-exclude-keywords').value.trim();
-  const exclude_items = document.getElementById('pe-exclude-items').value.trim();
-  const terms_note = document.getElementById('pe-terms-note').value.trim();
-  const r = await api(`/api/promo-events/${promoCurrentEventId}/note-tags`, {method:'POST', body:{note_tags, exclude_keywords, exclude_items, terms_note}});
-  if(r?.ok){ toast('비고 표기 분류를 저장했어요'); loadEventPicker(); }
-  else toast(r?.msg || '저장에 실패했습니다', false);
 }
 
 async function loadPromoMissingProducts(){
@@ -6027,13 +5517,11 @@ async function uploadPromoRateFile(){
 }
 
 function downloadEventReport(){
-  const eventId = document.getElementById('event-picker').value;
   const keyword = document.getElementById('event-keyword').value.trim();
   const dateFrom = document.getElementById('event-date-from').value;
   const dateTo = document.getElementById('event-date-to').value;
-  if(!eventId && !keyword){ toast('행사를 선택하거나 검색할 키워드를 먼저 입력해주세요', false); return; }
-  const params = new URLSearchParams();
-  if(eventId) params.set('event_id', eventId); else params.set('keyword', keyword);
+  if(!keyword){ toast('검색할 키워드를 먼저 입력해주세요', false); return; }
+  const params = new URLSearchParams({keyword});
   if(dateFrom) params.set('date_from', dateFrom);
   if(dateTo) params.set('date_to', dateTo);
   window.open(`/api/export/xlsx/event-report?${params}`, '_blank');

@@ -8107,6 +8107,178 @@ def _parse_visit_report_sheet(ws, source_filename=''):
     }
 
 
+# ── 수정사항4: 새 3탭 양식('매장명_정보'/'매장명_기본정보' + '매장명_매출정보' + '매장명_이력')
+#    업로드 → 매장현황(store_profile) + 방문이력(store_visit_log) 자동 누적 ──
+_NEW_FMT_INFO_SUFFIXES = ('_정보', '_기본정보')
+_NEW_FMT_HIST_SUFFIX = '_이력'
+
+
+def _detect_new_format_groups(wb):
+    """워크북 안에서 '매장명_정보'(또는 '_기본정보') + '매장명_이력' 시트 쌍을 매장별로 찾는다.
+    반환: {매장 베이스명: {'info': ws, 'hist': ws}}"""
+    hist_sheets = {}
+    info_sheets = {}
+    for name in wb.sheetnames:
+        if name.endswith(_NEW_FMT_HIST_SUFFIX):
+            hist_sheets[name[:-len(_NEW_FMT_HIST_SUFFIX)]] = wb[name]
+        else:
+            for suf in _NEW_FMT_INFO_SUFFIXES:
+                if name.endswith(suf):
+                    info_sheets[name[:-len(suf)]] = wb[name]
+                    break
+    groups = {}
+    for base, info_ws in info_sheets.items():
+        if base in hist_sheets:
+            groups[base] = {'info': info_ws, 'hist': hist_sheets[base]}
+    return groups
+
+
+def _parse_new_format_info_sheet(ws):
+    """새 양식 '_정보'/'_기본정보' 탭 — 기본정보 + 매장현황(직원현황/매장현황/지역상품권) 파싱."""
+    def cell(r, c):
+        try: return ws.cell(r, c).value
+        except Exception: return None
+
+    def find_row(label, max_row=50):
+        for r in range(1, min(max_row, ws.max_row + 1)):
+            for c in (2, 9):
+                v = cell(r, c)
+                if v and label in str(v):
+                    return r
+        return None
+
+    def val_after(row, label):
+        if not row: return ''
+        for c in range(1, 18):
+            v = cell(row, c)
+            if v and label in str(v):
+                for c2 in range(c + 1, 18):
+                    v2 = cell(row, c2)
+                    if v2 is not None and str(v2).strip() != '':
+                        return v2
+        return ''
+
+    store_row = find_row('매장명')
+    store_raw = str(val_after(store_row, '매장명') or '').strip()
+    rank_m = _re_visit.search(r'\((\d+위\s*/\s*\d+위)\)', store_raw)
+    store_rank = rank_m.group(1) if rank_m else ''
+    store_name = _re_visit.sub(r'\s*\([^)]*\)', '', store_raw).strip()
+
+    manager_row = find_row('담당자')
+    manager = str(val_after(manager_row, '담당자') or '').strip()
+    author = str(val_after(manager_row, '작성자') or '').strip()
+
+    region = detect_region_from_name(store_name) or str(val_after(store_row, '지역') or '').strip()
+
+    # 직원현황 표 — '직원현황' 라벨 다음 행부터, D=직함/E=인원/F=이름/G=특이사항(이후 2칸씩 반복)
+    staff_hdr_row = find_row('직원현황')
+    staff_rows = []
+    if staff_hdr_row:
+        r = staff_hdr_row + 1
+        while r <= ws.max_row:
+            # B열(섹션 라벨)에 '매장현황'/'지역상품권'/'자사입점브랜드'가 나오면 직원현황 표 종료
+            label_b = cell(r, 2)
+            if label_b and any(kw in str(label_b) for kw in ('매장현황', '지역상품권', '자사입점브랜드')):
+                break
+            title = cell(r, 4)
+            if title is None or str(title).strip() == '':
+                break
+            title_s = str(title).strip()
+            count = cell(r, 5)
+            entries = []
+            c = 6
+            while c < 18:
+                name_v = cell(r, c); note_v = cell(r, c + 1)
+                if (name_v is None or str(name_v).strip() == '') and (note_v is None or str(note_v).strip() == ''):
+                    break
+                entries.append({'name': str(name_v or '').strip(), 'note': str(note_v or '').strip()})
+                c += 2
+            staff_rows.append({'title': title_s, 'count': str(count or '').strip(), 'entries': entries})
+            r += 1
+
+    # 매장현황 — 'B열=매장현황' 라벨 행부터, D열 텍스트를 '지역상품권'/'자사입점브랜드' 전까지 한 줄씩
+    store_status_lines = []
+    section_row = None
+    for r in range(1, ws.max_row + 1):
+        v = cell(r, 2)
+        if v and '매장현황' in str(v):
+            section_row = r; break
+    voucher_rows = []
+    if section_row:
+        r = section_row
+        while r <= ws.max_row:
+            label = cell(r, 2)
+            if label and ('지역상품권' in str(label) or '자사입점브랜드' in str(label)):
+                break
+            txt = cell(r, 4)
+            if txt is not None and str(txt).strip() != '':
+                store_status_lines.append(str(txt).strip())
+            r += 1
+        if r <= ws.max_row and cell(r, 2) and '지역상품권' in str(cell(r, 2)):
+            while r <= ws.max_row:
+                label = cell(r, 2)
+                if label and '자사입점브랜드' in str(label):
+                    break
+                d, e = cell(r, 4), cell(r, 5)
+                if (d is not None and str(d).strip() != '') or (e is not None and str(e).strip() != ''):
+                    voucher_rows.append({'label': str(d or '').strip(), 'detail': str(e or '').strip()})
+                r += 1
+
+    return {
+        'store_name': store_name, 'store_rank': store_rank, 'manager': manager, 'author': author,
+        'region': region, 'staff_rows': staff_rows, 'store_status_lines': store_status_lines,
+        'voucher_rows': voucher_rows,
+    }
+
+
+def _parse_new_format_hist_sheet(ws):
+    """새 양식 '_이력' 탭 — 방문일/방문목적/면담자/자사주요내용/타사동향/조치사항/완료예정일/
+    진행상태/활동비구분/활동비금액/활동비내용(B~L열)을 헤더행('방문일' 포함) 다음부터 읽는다."""
+    def cell(r, c):
+        try: return ws.cell(r, c).value
+        except Exception: return None
+
+    def date_str(v):
+        if v is None: return ''
+        if hasattr(v, 'strftime'): return v.strftime('%Y-%m-%d')
+        s = str(v).strip()
+        return _normalize_visit_date_str(s) if s else ''
+
+    hdr_row = None
+    for r in range(1, min(20, ws.max_row + 1)):
+        v = cell(r, 2)
+        if v and '방문일' in str(v):
+            hdr_row = r; break
+
+    rows = []
+    if hdr_row:
+        r = hdr_row + 1
+        while r <= ws.max_row:
+            vdate = date_str(cell(r, 2))
+            if not vdate:
+                break
+            amt_raw = cell(r, 11)
+            try:
+                expense_amount = int(float(amt_raw)) if amt_raw not in (None, '') else 0
+            except Exception:
+                expense_amount = 0
+            rows.append({
+                'visit_date': vdate,
+                'purpose': str(cell(r, 3) or '').strip(),
+                'contact_person': str(cell(r, 4) or '').strip(),
+                'our_content': str(cell(r, 5) or '').strip(),
+                'competitor_trend': str(cell(r, 6) or '').strip(),
+                'action_item': str(cell(r, 7) or '').strip(),
+                'due_date': date_str(cell(r, 8)),
+                'status': str(cell(r, 9) or '').strip(),
+                'expense_type': str(cell(r, 10) or '').strip(),
+                'expense_amount': expense_amount,
+                'expense_note': str(cell(r, 12) or '').strip(),
+            })
+            r += 1
+    return rows
+
+
 def _format_our_content(content, requests_list):
     """store_visit_report의 content(카테고리별 텍스트)+requests를 새 방문이력 양식의
     "자사 주요내용 (매장 의견·요청)" 한 칸짜리 텍스트로 합친다."""
@@ -8455,6 +8627,28 @@ def _build_store_card_data(store_name, year=None, author_name=''):
     profile = conn.execute("SELECT * FROM store_profile WHERE store_name=?", (store_name,)).fetchone()
     profile = dict(profile) if profile else {'staff_status': '', 'store_status': '', 'voucher_info': ''}
 
+    # ── 매장현황 구조화 (수정사항1): 직원현황/지역상품권은 JSON 목록, 매장현황은 줄단위 텍스트 ──
+    raw_staff = (profile.get('staff_status') or '').strip()
+    try:
+        staff_rows = json.loads(raw_staff) if raw_staff.startswith('[') else []
+    except Exception:
+        staff_rows = []
+    if not staff_rows:
+        staff_rows = [{'title': '사장', 'count': '', 'entries': []},
+                      {'title': '점장', 'count': '', 'entries': []},
+                      {'title': '직원', 'count': '', 'entries': []}]
+
+    raw_voucher = (profile.get('voucher_info') or '').strip()
+    try:
+        voucher_rows = json.loads(raw_voucher) if raw_voucher.startswith('[') else []
+    except Exception:
+        voucher_rows = []
+    if not voucher_rows:
+        voucher_rows = [{'label': ' - 온누리 ', 'detail': ''}, {'label': ' - 지역화폐 ', 'detail': ''}]
+
+    store_status_text = (profile.get('store_status') or '').strip()
+    store_status_lines = store_status_text.split('\n') if store_status_text else ['']
+
     conn.close()
 
     return {
@@ -8486,6 +8680,7 @@ def _build_store_card_data(store_name, year=None, author_name=''):
         'ongoing_actions': ongoing_actions, 'total_expense': total_expense, 'this_month_expense': this_month_expense,
         'staff_status': profile.get('staff_status', ''), 'store_status': profile.get('store_status', ''),
         'voucher_info': profile.get('voucher_info', ''),
+        'staff_rows': staff_rows, 'store_status_lines': store_status_lines, 'voucher_rows': voucher_rows,
     }
 
 
@@ -8504,9 +8699,65 @@ def api_visit_report_upload():
 
     def _process_workbook(wb, fname, raw_file_bytes=None):
         nonlocal inserted, updated, skipped
+
+        # ── 수정사항4: 새 3탭 양식(정보/매출정보/이력) 매장 그룹을 먼저 처리하고,
+        #    그 시트들은 아래 옛 포맷 루프에서 건너뛴다 ──
+        new_groups = _detect_new_format_groups(wb)
+        consumed_sheets = set()
+        for base, grp in new_groups.items():
+            consumed_sheets.add(grp['info'].title)
+            consumed_sheets.add(grp['hist'].title)
+            # '_매출정보' 시트도 같은 매장 그룹에 속하므로 건너뛴다
+            for sh_name2 in wb.sheetnames:
+                if sh_name2.startswith(base) and sh_name2.endswith('_매출정보'):
+                    consumed_sheets.add(sh_name2)
+            try:
+                info = _parse_new_format_info_sheet(grp['info'])
+                hist_rows = _parse_new_format_hist_sheet(grp['hist'])
+            except Exception as e:
+                errors.append(f"{fname}/{base}: {e}")
+                continue
+            store_name = info.get('store_name') or base
+            if not store_name:
+                skipped += 1
+                continue
+            try:
+                staff_json = json.dumps(info['staff_rows'], ensure_ascii=False)
+                voucher_json = json.dumps(info['voucher_rows'], ensure_ascii=False)
+                store_status_text = '\n'.join(info['store_status_lines'])
+                conn.execute("""INSERT INTO store_profile
+                        (store_name, staff_status, store_status, voucher_info, updated_by, updated_at)
+                    VALUES (?,?,?,?,?,?)
+                    ON CONFLICT(store_name) DO UPDATE SET
+                        staff_status=excluded.staff_status, store_status=excluded.store_status,
+                        voucher_info=excluded.voucher_info, updated_by=excluded.updated_by,
+                        updated_at=excluded.updated_at""",
+                    (store_name, staff_json, store_status_text, voucher_json, fname, now_str))
+            except Exception as e:
+                errors.append(f"{fname}/{base} 매장현황 저장 실패: {e}")
+
+            # 방문이력 — 같은 (매장, 방문일, source='upload_v3')이면 덮어쓰고(수정분 반영),
+            # 새 날짜면 새로 쌓인다 → 재업로드해도 중복 없이 "누적" 저장된다.
+            for row in hist_rows:
+                if not row.get('visit_date'):
+                    continue
+                try:
+                    _upsert_visit_log(conn, store_name=store_name, visit_date=row['visit_date'],
+                        purpose=row['purpose'], contact_person=row['contact_person'],
+                        our_content=row['our_content'], competitor_trend=row['competitor_trend'],
+                        action_item=row['action_item'], due_date=row['due_date'], status=row['status'],
+                        expense_type=row['expense_type'], expense_amount=row['expense_amount'],
+                        expense_note=row['expense_note'], manager=info.get('manager', ''),
+                        author=info.get('author', ''), source='upload_v3')
+                    inserted += 1
+                except Exception as e:
+                    errors.append(f"{fname}/{base}/{row.get('visit_date')}: {e}")
+
         for sh_name in wb.sheetnames:
             if sh_name.strip() in ('매장별 방문현황',):
                 continue  # 집계 시트는 건너뜀 (개별 보고서 시트만 파싱)
+            if sh_name in consumed_sheets:
+                continue  # 새 양식(정보/매출정보/이력)으로 이미 처리됨
             ws = wb[sh_name]
             try:
                 parsed = _parse_visit_report_sheet(ws, fname)
@@ -9181,31 +9432,107 @@ def _write_store_info_sheet(wb, ws, data, FNAME):
         ws.row_dimensions[r].height = 19
     spacer(9, 8)
 
-    # ── 2. 매장 현황 ──
+    # ── 2. 매장 현황 (수정사항1: 직원현황은 직함/인원/이름/특이사항 표로, 매장현황은
+    #    줄 단위로, 지역상품권 관련은 구분/상세 두 칸으로 나눠 — 현우가 직접 다듬은
+    #    엑셀 양식과 동일한 구조로 맞춘다. 행 수는 데이터에 맞춰 늘어난다) ──
     section2_row = 10
     band(f'B{section2_row}:Q{section2_row}', '2. 매장 현황', f_section, mf_section(), align=left, height=22)
-    r1 = section2_row + 1
-    status_rows = [
-        ('직원현황', data['staff_status'], 2),
-        ('매장현황', data['store_status'], 2),
-        ('지역상품권 관련', data['voucher_info'], 2),
-    ]
-    cur = r1
-    for label_txt, val, span in status_rows:
-        ws.merge_cells(f'B{cur}:C{cur+span-1}')
-        c = ws[f'B{cur}']; c.value = label_txt
-        c.font = f_label; c.fill = mf('FFFFFF'); c.border = bdr_dot; c.alignment = ctr
-        for rr in range(cur, cur + span):
-            for col_letter in ('B', 'C'):
-                ws[f'{col_letter}{rr}'].border = bdr_dot; ws[f'{col_letter}{rr}'].fill = mf('FFFFFF')
-        ws.merge_cells(f'D{cur}:Q{cur+span-1}')
-        vc = ws[f'D{cur}']; vc.value = val or ''
-        vc.font = f_value
-        vc.fill = mf('FFFFFF'); vc.alignment = left_top
-        for rr in range(cur, cur + span):
-            for col_letter in [get_column_letter(ci) for ci in range(4, 18)]:
-                ws[f'{col_letter}{rr}'].border = bdr_dot
-        cur += span
+    cur = section2_row + 1
+
+    # 직원현황 — 직함/인원/이름/특이사항 (한 직함에 여러 명이면 이름·특이사항 칸을 더 늘림)
+    staff_rows_data = data.get('staff_rows') or []
+    if not staff_rows_data:
+        staff_rows_data = [{'title': t, 'count': '', 'entries': []} for t in ('사장', '점장', '직원')]
+    max_entries = max([len((s.get('entries') or [])) for s in staff_rows_data] + [1])
+
+    staff_hdr = ['직함', '인원'] + ['이름', '특이사항'] * max_entries
+    bounds = [(4, 4), (5, 5)]  # D=직함, E=인원
+    c0 = 6
+    for i in range(max_entries):
+        last = (i == max_entries - 1)
+        w = (17 - c0 + 1) if last else max(2, (17 - 5) // max_entries)
+        half = max(1, w // 2)
+        bounds.append((c0, c0 + half - 1))      # 이름
+        bounds.append((c0 + half, c0 + w - 1))  # 특이사항
+        c0 += w
+
+    n_data_rows = len(staff_rows_data)
+    label_top = cur
+    ws.merge_cells(f'B{label_top}:C{label_top + n_data_rows}')  # 헤더행+데이터행 전체를 아우름
+    lc = ws[f'B{label_top}']; lc.value = '직원현황'
+    lc.font = f_label; lc.fill = mf('FFFFFF'); lc.border = bdr_dot; lc.alignment = ctr
+    for rr in range(label_top, label_top + n_data_rows + 1):
+        for col_letter in ('B', 'C'):
+            ws[f'{col_letter}{rr}'].border = bdr_dot; ws[f'{col_letter}{rr}'].fill = mf('FFFFFF')
+
+    hdr_row = cur
+    for (bc0, bc1), txt in zip(bounds, staff_hdr):
+        l0, l1 = get_column_letter(bc0), get_column_letter(bc1)
+        if bc0 != bc1:
+            ws.merge_cells(f'{l0}{hdr_row}:{l1}{hdr_row}')
+        hc = ws[f'{l0}{hdr_row}']; hc.value = txt
+        hc.font = f_label; hc.fill = mf('FFFFFF'); hc.border = bdr_dot; hc.alignment = ctr
+        for cc in range(bc0, bc1 + 1):
+            ws[f'{get_column_letter(cc)}{hdr_row}'].border = bdr_dot
+            ws[f'{get_column_letter(cc)}{hdr_row}'].fill = mf('FFFFFF')
+    cur += 1
+
+    for srow in staff_rows_data:
+        entries = list(srow.get('entries') or [])[:max_entries]
+        while len(entries) < max_entries:
+            entries.append({'name': '', 'note': ''})
+        vals = [srow.get('title', ''), srow.get('count', '')]
+        for e in entries:
+            vals.append(e.get('name', '')); vals.append(e.get('note', ''))
+        for (bc0, bc1), v in zip(bounds, vals):
+            l0, l1 = get_column_letter(bc0), get_column_letter(bc1)
+            if bc0 != bc1:
+                ws.merge_cells(f'{l0}{cur}:{l1}{cur}')
+            vc = ws[f'{l0}{cur}']; vc.value = v
+            vc.font = f_value; vc.fill = mf('FFFFFF'); vc.border = bdr_dot; vc.alignment = ctr
+            for cc in range(bc0, bc1 + 1):
+                ws[f'{get_column_letter(cc)}{cur}'].border = bdr_dot
+                ws[f'{get_column_letter(cc)}{cur}'].fill = mf('FFFFFF')
+        cur += 1
+
+    # 매장현황 — 줄 단위로 한 줄씩 (라벨은 전체 줄에 걸쳐 세로로 한 번만)
+    store_status_lines = data.get('store_status_lines') or ['']
+    label_top = cur
+    n_lines = len(store_status_lines)
+    for i, line in enumerate(store_status_lines):
+        rr = cur
+        if i == 0:
+            ws.merge_cells(f'B{label_top}:C{label_top + n_lines - 1}')
+            lc = ws[f'B{label_top}']; lc.value = '매장현황'
+            lc.font = f_label; lc.fill = mf('FFFFFF'); lc.border = bdr_dot; lc.alignment = ctr
+        ws.merge_cells(f'D{rr}:Q{rr}')
+        vc = ws[f'D{rr}']; vc.value = line
+        vc.font = f_value; vc.fill = mf('FFFFFF'); vc.alignment = left_top
+        for col_letter in [get_column_letter(ci) for ci in range(2, 18)]:
+            ws[f'{col_letter}{rr}'].border = bdr_dot
+            ws[f'{col_letter}{rr}'].fill = mf('FFFFFF')
+        cur += 1
+
+    # 지역상품권 관련 — 줄 단위, D=구분/E~Q=상세
+    voucher_rows_data = data.get('voucher_rows') or [{'label': '', 'detail': ''}]
+    label_top = cur
+    n_v = len(voucher_rows_data)
+    for i, vrow in enumerate(voucher_rows_data):
+        rr = cur
+        if i == 0:
+            ws.merge_cells(f'B{label_top}:C{label_top + n_v - 1}')
+            lc = ws[f'B{label_top}']; lc.value = '지역상품권 관련'
+            lc.font = f_label; lc.fill = mf('FFFFFF'); lc.border = bdr_dot; lc.alignment = ctr
+        dc = ws[f'D{rr}']; dc.value = vrow.get('label', '')
+        dc.font = f_value; dc.fill = mf('FFFFFF'); dc.alignment = left
+        ws.merge_cells(f'E{rr}:Q{rr}')
+        ec = ws[f'E{rr}']; ec.value = vrow.get('detail', '')
+        ec.font = f_value; ec.fill = mf('FFFFFF'); ec.alignment = left
+        for col_letter in [get_column_letter(ci) for ci in range(2, 18)]:
+            ws[f'{col_letter}{rr}'].border = bdr_dot
+            ws[f'{col_letter}{rr}'].fill = mf('FFFFFF')
+        cur += 1
+
     spacer(cur, 8)
     cur += 1
 
@@ -9450,10 +9777,9 @@ def _write_store_sales_sheet(wb, ws, data, FNAME):
     spacer(dr, 8)
     dr += 1
 
-    # ── 주요 제품 최근 흐름 분석 (사용자가 직접 다듬은 최종본 기준: 라벨은 B:C만 병합,
-    #    값은 D칸에 한 줄로(줄바꿈 없이) 흘러나가게 적고, 테두리도 좌/우 없이 상/하 hair
-    #    점선만 — 표가 아니라 구분선이 있는 목록처럼 가볍게 보이도록) ──
-    bdr_hline = Border(top=dot, bottom=dot)
+    # ── 주요 제품 최근 흐름 분석 (수정사항2: 점선을 모두 제거 — 라벨은 B:C만 병합,
+    #    값은 D칸에 한 줄로(줄바꿈 없이) 흘러나가게 적는다) ──
+    bdr_hline = Border()  # 수정사항2: 테두리 없음
     # 수정사항(겹침 버그): 공용 `left`는 wrap_text=True라서 좁은 칸에서 줄바꿈되어 다음 줄과
     # 겹쳐 보였다 — 이 목록은 줄바꿈 없이 옆 칸으로 자연스럽게 흘러나가야 하므로 별도 정의.
     left_nowrap = Alignment(horizontal='left', vertical='center', wrap_text=False)
@@ -9485,13 +9811,12 @@ def _write_store_sales_sheet(wb, ws, data, FNAME):
     spacer(dr, 8)
     dr += 1
 
-    # ── 브랜드별 매출액 상세 (사용자가 직접 다듬은 최종본 기준: 셀 병합 없이 B(라벨)/C(값)
-    #    /D(여백) 세 칸짜리 좁은 박스로 모아서 더 "모여있게"(수정사항3) 보이도록 하고,
-    #    브랜드 합계 줄은 아래쪽만, 제품 줄은 상/하 모두 hair 점선을 적용한다) ──
-    bdr_total = Border(bottom=dot)
-    bdr_total_div = Border(bottom=dot, right=dot)
-    bdr_prod = Border(top=dot, bottom=dot)
-    bdr_prod_div = Border(top=dot, bottom=dot, right=dot)
+    # ── 브랜드별 매출액 상세 (수정사항2: 점선을 모두 제거 — 셀 병합 없이 B(라벨)/C(값)
+    #    /D(여백) 세 칸짜리 좁은 박스로 모아서 "모여있게"만 유지한다) ──
+    bdr_total = Border()  # 수정사항2: 테두리 없음
+    bdr_total_div = Border()
+    bdr_prod = Border()
+    bdr_prod_div = Border()
     band(f'B{dr}:Q{dr}', '브랜드별 매출액 상세', f_subhdr, mf_section(), align=left, height=20)
     dr += 1
     if data['brand_breakdown']:
@@ -9586,6 +9911,12 @@ def _write_visit_log_sheet(ws, data, FNAME):
     ws.merge_cells('F5:G5'); ws['F5'] = f"진행중 조치  {data['ongoing_actions']}건"
     ws.merge_cells('H5:J5'); ws['H5'] = f"누적 활동비  {data['total_expense']:,}원"
     ws.merge_cells('K5:L5'); ws['K5'] = f"이번 달 활동비  {data['this_month_expense']:,}원"
+    # 수정사항3: 5행(실제 내용이 시작되는 요약 통계 줄)도 6행·7행과 동일한 hair 테두리 박스로
+    # 감싸서 깔끔하게 — 이전에는 5행만 테두리 없이 텍스트만 떠 있었다.
+    for col_letter in [get_column_letter(ci) for ci in range(2, 13)]:
+        ws[f'{col_letter}5'].border = bdr
+        ws[f'{col_letter}5'].fill = mf('FFFFFF')
+    ws.row_dimensions[5].height = 20
     for addr in ('B5','D5','F5','H5','K5'):
         ws[addr].font = f_sub
 
