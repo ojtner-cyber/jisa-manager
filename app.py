@@ -8328,22 +8328,50 @@ def _split_out_requests(content):
 def _upsert_visit_log(conn, *, store_name, visit_date, our_content='', competitor_trend='', action_item='',
                        manager='', author='', purpose='', contact_person='', due_date='', status='',
                        expense_type='', expense_amount=0, expense_note='', source='manual', source_report_id=None):
-    """store_visit_log에 한 건 반영 — upload/migrated 출처는 같은 (매장,방문일,출처) 건이면 덮어쓰고,
-    manual(보고서작성 폼) 입력은 같은 날 여러 번 방문해도 각각 별개 행으로 쌓이게 둔다."""
+    """store_visit_log에 한 건 반영.
+
+    수정(중복 방지): 업로드(출처 upload/upload_v3) 건은 "출처"가 아니라 (매장,방문일)만으로
+    기존 기록을 찾는다 — 예전에는 같은 (매장,방문일)이라도 출처(source)가 다르면(예: 수동으로
+    적어둔 방문기록이 있는 날짜에 새 양식을 업로드) 별개 행으로 또 쌓여서 같은 날짜가 목록에
+    두 번 보이는 "중복"으로 느껴졌다. 이제는 같은 날짜의 기존 기록이 있으면(출처 무관) 그 한
+    행에 합쳐 넣되, 새로 들어오는 값이 비어 있으면(업로드 양식에 없는 항목) 기존 값을 그대로
+    보존해서 수동으로 적어둔 진행상태·활동비 등을 업로드가 덮어써 날리지 않게 한다.
+    manual(보고서작성 폼) 입력만 같은 날 여러 번 방문해도 각각 별개 행으로 쌓이게 둔다."""
     now_str = datetime.now().strftime('%Y-%m-%d %H:%M')
     existing = None
     if source != 'manual':
         existing = conn.execute(
-            "SELECT id FROM store_visit_log WHERE store_name=? AND visit_date=? AND source=?",
-            (store_name, visit_date, source)).fetchone()
+            "SELECT * FROM store_visit_log WHERE store_name=? AND visit_date=?",
+            (store_name, visit_date)).fetchone()
     if existing:
+        ex = dict(existing)
+
+        def pick(new_val, old_val):
+            if new_val in (None, '', 0) and old_val not in (None, '', 0):
+                return old_val
+            return new_val
+
+        purpose = pick(purpose, ex.get('purpose'))
+        contact_person = pick(contact_person, ex.get('contact_person'))
+        our_content = pick(our_content, ex.get('our_content'))
+        competitor_trend = pick(competitor_trend, ex.get('competitor_trend'))
+        action_item = pick(action_item, ex.get('action_item'))
+        due_date = pick(due_date, ex.get('due_date'))
+        status = pick(status, ex.get('status'))
+        expense_type = pick(expense_type, ex.get('expense_type'))
+        expense_amount = pick(expense_amount, ex.get('expense_amount'))
+        expense_note = pick(expense_note, ex.get('expense_note'))
+        manager = pick(manager, ex.get('manager'))
+        author = pick(author, ex.get('author'))
         conn.execute("""UPDATE store_visit_log SET
             purpose=?, contact_person=?, our_content=?, competitor_trend=?, action_item=?, due_date=?, status=?,
-            expense_type=?, expense_amount=?, expense_note=?, manager=?, author=?, source_report_id=?, updated_at=?
+            expense_type=?, expense_amount=?, expense_note=?, manager=?, author=?, source=?, source_report_id=?,
+            updated_at=?
             WHERE id=?""",
             (purpose, contact_person, our_content, competitor_trend, action_item, due_date, status,
-             expense_type, expense_amount, expense_note, manager, author, source_report_id, now_str, existing[0]))
-        return existing[0]
+             expense_type, expense_amount, expense_note, manager, author, source, source_report_id, now_str,
+             ex['id']))
+        return ex['id']
     else:
         cur = conn.execute("""INSERT INTO store_visit_log
             (store_name, visit_date, purpose, contact_person, our_content, competitor_trend, action_item,
@@ -8354,6 +8382,46 @@ def _upsert_visit_log(conn, *, store_name, visit_date, our_content='', competito
              due_date, status, expense_type, expense_amount, expense_note, manager, author, source,
              source_report_id, now_str, now_str))
         return cur.lastrowid
+
+
+def _staff_status_display_text(raw):
+    """store_profile.staff_status 표시용 변환 (수정사항2 — JSON이 화면에 그대로 노출되던 버그 수정).
+
+    수정사항1(새 3탭 업로드)에서 staff_status를 직함/인원/이름/특이사항 구조의 JSON으로 바꿨는데,
+    '매장 방문 보고서' 목록·상세의 '직원현황' 칸은 여전히 이 값을 사람이 읽는 텍스트로 그대로
+    보여주는 곳이라 JSON 원문이 그대로 노출됐다 — 여기서 보기 좋은 여러 줄 텍스트로 바꿔서 반환한다.
+    예전 평문(JSON이 아님) 데이터는 그대로 돌려줘서 하위 호환."""
+    raw = (raw or '').strip()
+    if not raw:
+        return ''
+    if raw.startswith('['):
+        try:
+            rows = json.loads(raw)
+            lines = []
+            for row in rows:
+                if not isinstance(row, dict):
+                    continue
+                title = str(row.get('title', '') or '').strip()
+                count = str(row.get('count', '') or '').strip()
+                if not title:
+                    continue
+                names = []
+                for e in (row.get('entries') or []):
+                    if not isinstance(e, dict):
+                        continue
+                    name = str(e.get('name', '') or '').strip()
+                    note = str(e.get('note', '') or '').strip()
+                    if not name and not note:
+                        continue
+                    names.append(f"{name}({note})" if name and note else (name or note))
+                line = f"{title} {count}".strip()
+                if names:
+                    line += ' — ' + ', '.join(names)
+                lines.append(line)
+            return '\n'.join(lines)
+        except Exception:
+            return raw
+    return raw
 
 
 def _polish_visit_text(our_content, competitor_trend, action_item):
@@ -8897,6 +8965,7 @@ def api_visit_report_list():
     conn.close()
 
     for r in rows:
+        r['staff_info'] = _staff_status_display_text(r.get('staff_info'))
         content = _parse_our_content_categories(r.get('our_content'))
         r['content'], r['requests'] = _split_out_requests(content)
         r['followup_text'] = r.get('competitor_trend') or ''
@@ -9135,6 +9204,7 @@ def api_visit_report_detail(rid):
     if not row:
         return jsonify({'ok': False, 'msg': '찾을 수 없습니다'}), 404
     r = dict(row)
+    r['staff_info'] = _staff_status_display_text(r.get('staff_info'))
     content = _parse_our_content_categories(r.get('our_content'))
     r['content'], r['requests'] = _split_out_requests(content)
     r['followup_text'] = r.get('competitor_trend') or ''

@@ -1350,6 +1350,7 @@ td.center{text-align:center}
       <div class="ph">
         <div><h2>매장 방문 보고서</h2><p>현장 방문 기록을 날짜별 · 매장별로 관리하고 누적 현황을 한눈에 확인합니다</p></div>
         <div class="ph-r">
+          <button class="btn btn-primary btn-sm" onclick="openVrCreate()">📝 보고서 작성</button>
           <button class="btn btn-ghost btn-sm" onclick="document.getElementById('vr-file-input').click()">📤 보고서 업로드 (xlsx/zip)</button>
           <input type="file" id="vr-file-input" accept=".xlsx,.xls,.zip" multiple style="display:none" onchange="uploadVisitReports(event)">
         </div>
@@ -1416,6 +1417,13 @@ td.center{text-align:center}
     <div id="vr-edit-overlay" style="display:none;position:fixed;inset:0;background:rgba(15,23,42,.5);backdrop-filter:blur(2px);z-index:1001;align-items:center;justify-content:center;padding:20px">
       <div style="background:var(--paper);border-radius:16px;width:640px;max-width:100%;max-height:90vh;overflow-y:auto;box-shadow:0 25px 60px -12px rgba(0,0,0,.35)">
         <div id="vr-edit-body"></div>
+      </div>
+    </div>
+
+    <!-- 매장 카드 모달 (매장 클릭 시 그래프 + 누적 내용 + 엑셀 다운로드) -->
+    <div id="vr-store-card-overlay" style="display:none;position:fixed;inset:0;background:rgba(15,23,42,.5);backdrop-filter:blur(2px);z-index:999;align-items:center;justify-content:center;padding:20px">
+      <div style="background:var(--paper);border-radius:16px;width:880px;max-width:100%;max-height:92vh;overflow-y:auto;box-shadow:0 25px 60px -12px rgba(0,0,0,.35)">
+        <div id="vr-store-card-body"></div>
       </div>
     </div>
 
@@ -2480,23 +2488,16 @@ function closeVrDetail(){
   document.getElementById('vr-detail-overlay').style.display = 'none';
 }
 
-// ── 방문 보고서 수정 (수정사항5): 기존 /api/visit-log/* 백엔드(저장/조회/옵션)는
-//    이미 다 구현되어 있었고, 화면에 수정 폼만 없었다 — 그 폼을 붙인다. ──
-async function openVrEdit(rid){
-  const overlay = document.getElementById('vr-edit-overlay');
-  const body = document.getElementById('vr-edit-body');
-  body.innerHTML = `<div style="padding:60px;text-align:center;color:var(--t-300)">불러오는 중...</div>`;
-  overlay.style.display = 'flex';
+// ── 방문 보고서 작성/수정 (수정사항3·5): 기존 /api/visit-log/* 백엔드(저장/조회/옵션)는
+//    이미 다 구현되어 있었고, 화면에 작성·수정 폼만 없었다 — 그 폼을 붙인다.
+//    rid가 있으면 수정, null이면("" 신규 작성) 새 방문기록 등록. ──
+function _vrFormField(id, val, type){
+  const fieldStyle = "width:100%;padding:8px 10px;border:1px solid var(--border-md);border-radius:8px;font-size:12.5px;box-sizing:border-box";
+  const esc = v => (v==null?'':String(v)).replace(/"/g,'&quot;');
+  return `<input id="${id}" type="${type||'text'}" value="${esc(val)}" style="${fieldStyle}">`;
+}
 
-  const [log, opts] = await Promise.all([
-    api(`/api/visit-log/${rid}`),
-    api('/api/visit-log/purpose-options')
-  ]);
-  if(!log || log.ok === false){
-    body.innerHTML = `<div style="padding:40px;text-align:center;color:var(--red)">불러오지 못했습니다</div>`;
-    return;
-  }
-
+function _renderVrLogForm(log, opts, rid, presetStoreName){
   const fieldStyle = "width:100%;padding:8px 10px;border:1px solid var(--border-md);border-radius:8px;font-size:12.5px;box-sizing:border-box";
   const esc = v => (v==null?'':String(v)).replace(/"/g,'&quot;');
   const sel = (id, list, cur) => `<select id="${id}" style="${fieldStyle}">
@@ -2506,16 +2507,18 @@ async function openVrEdit(rid){
   const inp = (id, val, type='text') => `<input id="${id}" type="${type}" value="${esc(val)}" style="${fieldStyle}">`;
   const txt = (id, val) => `<textarea id="${id}" rows="3" style="${fieldStyle};resize:vertical;font-family:inherit">${val||''}</textarea>`;
   const lbl = t => `<label style="display:block;font-size:11px;font-weight:700;color:var(--t-500);margin-bottom:4px">${t}</label>`;
+  const isCreate = rid == null;
+  const today = new Date().toISOString().slice(0,10);
 
-  body.innerHTML = `
+  return `
     <div style="padding:20px 24px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center">
-      <div style="font-size:16px;font-weight:800;color:var(--t-900)">방문 보고서 수정</div>
+      <div style="font-size:16px;font-weight:800;color:var(--t-900)">${isCreate ? '방문 보고서 작성' : '방문 보고서 수정'}</div>
       <button onclick="closeVrEdit()" style="background:none;border:none;font-size:18px;color:var(--t-400);cursor:pointer">✕</button>
     </div>
     <div style="padding:20px 24px;display:flex;flex-direction:column;gap:12px">
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
-        <div>${lbl('매장명')}${inp('vre-store', log.store_name)}</div>
-        <div>${lbl('방문일')}${inp('vre-date', log.visit_date, 'date')}</div>
+        <div>${lbl('매장명')}${inp('vre-store', log.store_name || presetStoreName || '')}</div>
+        <div>${lbl('방문일')}${inp('vre-date', log.visit_date || today, 'date')}</div>
       </div>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
         <div>${lbl('방문목적')}${sel('vre-purpose', opts?.purpose, log.purpose)}</div>
@@ -2535,9 +2538,35 @@ async function openVrEdit(rid){
       </div>
       <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:8px">
         <button onclick="closeVrEdit()" style="font-size:12px;color:var(--t-500);background:none;border:1px solid var(--border-md);padding:8px 16px;border-radius:8px;cursor:pointer">취소</button>
-        <button onclick="submitVrEdit(${rid})" style="font-size:12px;font-weight:700;color:#fff;background:var(--p);border:none;padding:8px 20px;border-radius:8px;cursor:pointer">저장</button>
+        <button onclick="submitVrEdit(${rid==null?'null':rid})" style="font-size:12px;font-weight:700;color:#fff;background:var(--p);border:none;padding:8px 20px;border-radius:8px;cursor:pointer">저장</button>
       </div>
     </div>`;
+}
+
+async function openVrEdit(rid){
+  const overlay = document.getElementById('vr-edit-overlay');
+  const body = document.getElementById('vr-edit-body');
+  body.innerHTML = `<div style="padding:60px;text-align:center;color:var(--t-300)">불러오는 중...</div>`;
+  overlay.style.display = 'flex';
+
+  const [log, opts] = await Promise.all([
+    api(`/api/visit-log/${rid}`),
+    api('/api/visit-log/purpose-options')
+  ]);
+  if(!log || log.ok === false){
+    body.innerHTML = `<div style="padding:40px;text-align:center;color:var(--red)">불러오지 못했습니다</div>`;
+    return;
+  }
+  body.innerHTML = _renderVrLogForm(log, opts, rid);
+}
+
+async function openVrCreate(presetStoreName){
+  const overlay = document.getElementById('vr-edit-overlay');
+  const body = document.getElementById('vr-edit-body');
+  body.innerHTML = `<div style="padding:60px;text-align:center;color:var(--t-300)">불러오는 중...</div>`;
+  overlay.style.display = 'flex';
+  const opts = await api('/api/visit-log/purpose-options');
+  body.innerHTML = _renderVrLogForm({}, opts, null, presetStoreName);
 }
 
 function closeVrEdit(){
@@ -2546,7 +2575,6 @@ function closeVrEdit(){
 
 async function submitVrEdit(rid){
   const payload = {
-    id: rid,
     store_name: document.getElementById('vre-store').value.trim(),
     visit_date: document.getElementById('vre-date').value,
     purpose: document.getElementById('vre-purpose').value,
@@ -2560,16 +2588,20 @@ async function submitVrEdit(rid){
     expense_amount: parseInt(document.getElementById('vre-expamt').value || '0', 10) || 0,
     expense_note: document.getElementById('vre-expnote').value.trim(),
   };
+  if(rid != null) payload.id = rid;
   if(!payload.store_name || !payload.visit_date){
     toast('매장명과 방문일은 필수입니다', false);
     return;
   }
   const r = await api('/api/visit-log/save', {method:'POST', body: payload});
   if(r?.ok){
-    toast('수정되었습니다');
+    toast(rid == null ? '방문 보고서가 등록되었습니다' : '수정되었습니다');
     closeVrEdit();
     closeVrDetail();
     reloadVisitReportView();
+    if(typeof vrStoreCardCurrentStore !== 'undefined' && vrStoreCardCurrentStore){
+      openStoreCardModal(vrStoreCardCurrentStore);
+    }
   } else {
     toast(r?.msg || '저장에 실패했습니다', false);
   }
@@ -2582,12 +2614,146 @@ async function deleteVrReport(rid){
     toast('삭제되었습니다');
     closeVrDetail();
     reloadVisitReportView();
+    if(vrStoreCardCurrentStore) openStoreCardModal(vrStoreCardCurrentStore);
   }
 }
 
+// ── 매장 카드 모달 (수정사항4·5): 매장을 클릭하면 매출 그래프·누적 방문이력을 한 번에
+//    보여주고, 그 자리에서 보고서 작성/엑셀 다운로드까지 할 수 있게 한다. ──
+let vrStoreCardCurrentStore = null;
+let _vrscMonthlyChart = null, _vrscBrandChart = null;
+
 async function openVrStoreHistory(storeName){
-  document.getElementById('vr-store-filter').value = storeName;
-  switchVrTab('date');
+  openStoreCardModal(storeName);
+}
+
+async function openStoreCardModal(storeName){
+  vrStoreCardCurrentStore = storeName;
+  const overlay = document.getElementById('vr-store-card-overlay');
+  const body = document.getElementById('vr-store-card-body');
+  body.innerHTML = `<div style="padding:80px;text-align:center;color:var(--t-300)">불러오는 중...</div>`;
+  overlay.style.display = 'flex';
+
+  const d = await api(`/api/visit-report/store-card?store=${encodeURIComponent(storeName)}&year=${TY()}`);
+  if(!d || d.ok === false){
+    body.innerHTML = `<div style="padding:40px;text-align:center;color:var(--red)">불러오지 못했습니다</div>`;
+    return;
+  }
+
+  const safeName = storeName.replace(/'/g,"\\'").replace(/"/g,'&quot;');
+  const col = '#2563EB';
+  const visitRows = [...(d.visit_log||[])].reverse();
+
+  body.innerHTML = `
+    <div style="padding:20px 24px;border-bottom:1px solid var(--border);background:linear-gradient(135deg,${col}12,${col}05);display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:10px">
+      <div>
+        <div style="font-size:17px;font-weight:800;color:var(--t-900);margin-bottom:4px">${d.store_name}</div>
+        <div style="font-size:12px;color:var(--t-500)">${d.region||'—'} · 담당 ${d.manager||'—'}${d.store_rank?` · ${d.store_rank}`:''}</div>
+      </div>
+      <div style="display:flex;gap:8px;align-items:center">
+        <button onclick="downloadStoreCardXlsx('${safeName}')" style="font-size:11.5px;font-weight:700;color:${col};background:${col}15;border:none;padding:7px 14px;border-radius:8px;cursor:pointer">📥 이 매장 엑셀 다운로드</button>
+        <button onclick="openVrCreate('${safeName}')" style="font-size:11.5px;font-weight:700;color:#fff;background:${col};border:none;padding:7px 14px;border-radius:8px;cursor:pointer">📝 방문 기록 작성</button>
+        <button onclick="closeStoreCardModal()" style="background:none;border:none;font-size:18px;color:var(--t-400);cursor:pointer">✕</button>
+      </div>
+    </div>
+    <div style="padding:20px 24px">
+      <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:18px">
+        <div style="background:var(--bg);border-radius:8px;padding:12px"><div style="font-size:10px;color:var(--t-400)">${d.year}년 누적 매출</div><div style="font-size:14px;font-weight:800;color:var(--t-900)">${N(d.year_total)}원</div></div>
+        <div style="background:var(--bg);border-radius:8px;padding:12px"><div style="font-size:10px;color:var(--t-400)">월 평균 매출</div><div style="font-size:14px;font-weight:800;color:var(--t-900)">${N(Math.round(d.monthly_avg||0))}원</div></div>
+        <div style="background:var(--bg);border-radius:8px;padding:12px"><div style="font-size:10px;color:var(--t-400)">총 방문</div><div style="font-size:14px;font-weight:800;color:var(--t-900)">${d.total_visits}회</div></div>
+        <div style="background:var(--bg);border-radius:8px;padding:12px"><div style="font-size:10px;color:var(--t-400)">누적 활동비</div><div style="font-size:14px;font-weight:800;color:var(--t-900)">${N(d.total_expense)}원</div></div>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:18px">
+        <div style="background:var(--paper);border:1px solid var(--border);border-radius:10px;padding:12px">
+          <div style="font-size:12px;font-weight:700;color:var(--t-700);margin-bottom:8px">월별 매출 추이</div>
+          <div style="height:180px"><canvas id="vrsc-monthly-chart"></canvas></div>
+        </div>
+        <div style="background:var(--paper);border:1px solid var(--border);border-radius:10px;padding:12px">
+          <div style="font-size:12px;font-weight:700;color:var(--t-700);margin-bottom:8px">브랜드별 매출 비율</div>
+          <div style="height:180px">${(d.brand_breakdown||[]).length ? '<canvas id="vrsc-brand-chart"></canvas>' : '<div style="display:flex;align-items:center;justify-content:center;height:100%;color:var(--t-300);font-size:12px">올해 판매 데이터가 없습니다</div>'}</div>
+        </div>
+      </div>
+      <div style="font-size:13px;font-weight:800;color:var(--t-900);margin-bottom:10px">📋 방문 이력 (${visitRows.length}건)</div>
+      <div style="display:flex;flex-direction:column;gap:8px;max-height:340px;overflow-y:auto">
+        ${visitRows.length ? visitRows.map(v=>`
+          <div style="background:var(--bg);border-radius:8px;padding:10px 12px;cursor:pointer;transition:.15s" onclick="openVrDetail(${v.id})"
+            onmouseenter="this.style.background='var(--border)'" onmouseleave="this.style.background='var(--bg)'">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
+              <span style="font-size:12px;font-weight:700;color:var(--t-800)">${v.visit_date}${v.purpose?` · ${v.purpose}`:''}</span>
+              <span style="font-size:10.5px;color:var(--t-400)">${v.contact_person||''}</span>
+            </div>
+            <div style="font-size:11.5px;color:var(--t-600);line-height:1.5;white-space:pre-wrap;max-height:3.2em;overflow:hidden">${(v.our_content||'').slice(0,160)}</div>
+          </div>`).join('') : `<div style="text-align:center;padding:30px;color:var(--t-300);font-size:12px">방문 이력이 없습니다</div>`}
+      </div>
+    </div>`;
+
+  // 차트는 캔버스가 DOM에 붙은 뒤에 그려야 하므로 innerHTML 삽입 다음에 생성.
+  // Chart.js가 어떤 이유로든(네트워크 등) 로드되지 않은 경우에도 전체 화면이 깨지지 않도록 방어.
+  if(_vrscMonthlyChart){ _vrscMonthlyChart.destroy(); _vrscMonthlyChart = null; }
+  if(_vrscBrandChart){ _vrscBrandChart.destroy(); _vrscBrandChart = null; }
+  if(typeof Chart === 'undefined'){
+    const mc = document.getElementById('vrsc-monthly-chart'), bc = document.getElementById('vrsc-brand-chart');
+    if(mc) mc.outerHTML = '<div style="display:flex;align-items:center;justify-content:center;height:100%;color:var(--t-300);font-size:12px">차트를 불러올 수 없습니다</div>';
+    if(bc) bc.outerHTML = '<div style="display:flex;align-items:center;justify-content:center;height:100%;color:var(--t-300);font-size:12px">차트를 불러올 수 없습니다</div>';
+    return;
+  }
+  const monthlyCanvas = document.getElementById('vrsc-monthly-chart');
+  if(monthlyCanvas){
+    try{
+      _vrscMonthlyChart = new Chart(monthlyCanvas, {
+        type: 'bar',
+        data: {
+          labels: (d.monthly_trend||[]).map(m=>`${m.month}월`),
+          datasets: [{label:'매출', data:(d.monthly_trend||[]).map(m=>m.amount), backgroundColor:'rgba(37,99,235,.65)', borderRadius:4}]
+        },
+        options: {
+          plugins: {legend:{display:false}},
+          scales: {
+            x: {grid:{display:false}, ticks:{font:{size:9}}},
+            y: {grid:{color:'rgba(232,232,240,.6)'}, ticks:{font:{size:9}, callback:v=>N(v)}}
+          }
+        }
+      });
+    } catch(e){ console.warn('월별 매출 차트 렌더 실패', e); }
+  }
+  const brandCanvas = document.getElementById('vrsc-brand-chart');
+  if(brandCanvas){
+    try{
+    const brandColors = ['#2563EB','#16A34A','#D97706','#DC2626','#7C3AED','#0891B2','#DB2777'];
+    _vrscBrandChart = new Chart(brandCanvas, {
+      type: 'doughnut',
+      data: {
+        labels: d.brand_breakdown.map(b=>b.brand),
+        datasets: [{data: d.brand_breakdown.map(b=>b.amount), backgroundColor:brandColors, borderWidth:2, borderColor:'#fff'}]
+      },
+      options: {plugins:{legend:{position:'right', labels:{font:{size:10}, usePointStyle:true, boxWidth:7, padding:6}}}, cutout:'60%'}
+    });
+    } catch(e){ console.warn('브랜드 비율 차트 렌더 실패', e); }
+  }
+}
+
+function closeStoreCardModal(){
+  document.getElementById('vr-store-card-overlay').style.display = 'none';
+  vrStoreCardCurrentStore = null;
+}
+
+function downloadStoreCardXlsx(storeName){
+  toast('엑셀 생성 중입니다...');
+  fetch('/api/export/xlsx/visit-report/by-store', {
+    method: 'POST', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({store_names: [storeName]})
+  }).then(async resp=>{
+    if(resp.ok){
+      const blob = await resp.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url; a.download = `방문보고서_${storeName}.xlsx`;
+      document.body.appendChild(a); a.click(); a.remove();
+      URL.revokeObjectURL(url);
+    } else {
+      toast('다운로드에 실패했습니다', false);
+    }
+  });
 }
 
 async function uploadVisitReports(e){
@@ -2601,11 +2767,10 @@ async function uploadVisitReports(e){
     const resp = await fetch('/api/visit-report/upload', {method:'POST', body:formData});
     const r = await resp.json();
     if(r.ok){
-      toast(`업로드 완료 — 신규 ${r.inserted}건, 갱신 ${r.updated}건`);
-      if(r.errors?.length){
-        console.warn('업로드 오류/진단:', r.errors);
-        alert('업로드 중 참고할 메시지가 있습니다 (그림 복원 진단 포함):\n\n' + r.errors.join('\n'));
-      }
+      // 수정사항1: 내부 진단 메시지(서식 복원 실패 등 — 업로드 자체는 정상 처리됨)는
+      // 더 이상 alert()로 사용자 작업을 막지 않는다. 콘솔에만 남기고 조용히 넘어간다.
+      if(r.errors?.length) console.warn('업로드 참고 메시지:', r.errors);
+      toast(`업로드 완료 — 신규/갱신 ${r.inserted + r.updated}건`);
       loadVisitReportPage();
     } else {
       toast(r.msg || '업로드에 실패했습니다', false);
