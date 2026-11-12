@@ -564,6 +564,13 @@ def init_db():
             conn.execute("ALTER TABLE promo_event_rate ADD COLUMN normal_price REAL")
         if 'event_price' not in per_cols:
             conn.execute("ALTER TABLE promo_event_rate ADD COLUMN event_price REAL")
+        # 수정사항(수량별 차등 공급율): 같은 제품 안에서 "5대 이상 60% / 10대 이상 58% / 20대 이상 57%"처럼
+        # 주문 수량 구간별로 공급율·공급가가 달라지는 행사 조건을 그대로 등록해둘 수 있도록
+        # tiers(JSON 배열: [{qty, rate, price, note}, ...])를 추가한다. 실제 매장별 추가마진 계산은
+        # (이미) 실제 판매 단가와 정상 공급가를 직접 비교해서 구하므로 수량 구간이 달라도 자동으로
+        # 정확히 반영되고, 이 tiers는 "어떤 구간 조건이 걸려 있었는지"를 화면/엑셀에 보여주는 용도다.
+        if 'tiers' not in per_cols:
+            conn.execute("ALTER TABLE promo_event_rate ADD COLUMN tiers TEXT DEFAULT ''")
     except Exception:
         pass
 
@@ -3994,9 +4001,22 @@ def _note_contains_tag(note_text, tag):
         start = idx + 1
 
 
+def _row_excluded_by_items(item_group, item_name, exclude_items):
+    """제외 품목 설정과 비교 — 원본 품목그룹(raw item_group, 예: 'TAFTOYS'·'보행기') 뿐 아니라
+    정규화된 브랜드명(remap_group 결과, 예: '줄즈'·'원더폴드'·'타프토이즈')으로도 매칭한다.
+    예: '토론 감사제'로 출고됐어도 브랜드가 줄즈/원더폴드/타프토이즈인 건은 빼고 싶다는 식의
+    '브랜드 단위' 제외 요청은 item_group이 아니라 브랜드명 기준이라, 둘 다 비교해야 한다."""
+    if not exclude_items:
+        return False
+    if (item_group or '') in exclude_items:
+        return True
+    brand = remap_group(item_group or '', item_name or '')
+    return brand in exclude_items
+
+
 def _promo_filter_candidate_rows(cand_rows, ev):
     """LIKE로 넓게 가져온 후보 판매건들을, (1) 태그 경계 정확 매칭과 (2) 등록된 제외 키워드/제외
-    품목으로 다시 걸러서 이 행사에 정말 해당하는 건들만 남긴다."""
+    품목(품목그룹 또는 브랜드명)으로 다시 걸러서 이 행사에 정말 해당하는 건들만 남긴다."""
     tags = _promo_event_tags(ev)
     exclude_kw = _promo_event_exclude_keywords(ev)
     exclude_items = set(_promo_event_exclude_items(ev))
@@ -4007,10 +4027,159 @@ def _promo_filter_candidate_rows(cand_rows, ev):
             continue
         if exclude_kw and any(kw in note_text for kw in exclude_kw):
             continue
-        if exclude_items and (r['item_group'] or '') in exclude_items:
+        if _row_excluded_by_items(r['item_group'], r['item_name'], exclude_items):
             continue
         out.append(r)
     return out
+
+
+_PROMO_BRAND_DETECT_TERMS = {
+    '레카로': ['레카로', 'recaro'], '줄즈': ['줄즈', 'joolz'], '원더폴드': ['원더폴드', 'wonderfold'],
+    'ABC디자인': ['abc디자인', 'abc design'], '카오스': ['카오스'], '엔픽스': ['엔픽스'],
+    '타프토이즈': ['타프토이즈', 'taftoys'],
+}
+
+
+def _detect_brand_from_sheet_text(ws):
+    """시트 전체 텍스트에서 알려진 브랜드명(한글 또는 영문 표기)을 찾아본다 — 행사 안내문 엑셀은
+    표에 '브랜드' 열이 따로 없고 상단 제목 문구에만(예: '* RECARO 토론 ADAC위너 감사제...') 브랜드가
+    적혀 있는 경우가 많아서, 업로드 화면에서 브랜드를 직접 입력하지 않았을 때의 보조 수단으로 쓴다."""
+    full_text = ''
+    for row in ws.iter_rows():
+        for c in row:
+            if c.value:
+                full_text += str(c.value) + ' '
+    low = full_text.lower()
+    for brand, terms in _PROMO_BRAND_DETECT_TERMS.items():
+        if any(t.lower() in low for t in terms):
+            return brand
+    return ''
+
+
+def _parse_qty_threshold(text):
+    """'5대 이상'/'10개 이상' 같은 수량 구간 텍스트에서 기준 수량(정수)을 뽑아낸다."""
+    m = re.search(r'(\d+)\s*(?:대|개|세트|박스|조)?\s*이상', str(text or ''))
+    if m:
+        return int(m.group(1))
+    m2 = re.search(r'(\d+)', str(text or ''))
+    return int(m2.group(1)) if m2 else None
+
+
+def _tier_summary_note(tiers):
+    """저장된 tiers를 '수량별 차등: 5대 이상 60%(798,000원) / 10대 이상 58%(771,400원) / ...'처럼
+    사람이 바로 읽을 수 있는 한 줄 비고로 요약한다."""
+    if not tiers:
+        return ''
+    parts = []
+    for t in tiers:
+        q = t.get('qty')
+        label = f"{q}대 이상" if q else '해당구간'
+        bits = []
+        if t.get('rate') is not None:
+            bits.append(f"{t['rate']:.0f}%")
+        if t.get('price') is not None:
+            bits.append(f"{t['price']:,.0f}원")
+        parts.append(f"{label} {'/'.join(bits)}".strip())
+    return '수량별 차등: ' + ' · '.join(parts)
+
+
+def _try_parse_tiered_promo_xlsx(ws, default_brand, save_fn, num_fn, norm_h_fn):
+    """'구분'(정상/행사) + '발주수량'(수량 구간) 열이 있고, 공급율·공급가격은 각각 한 열씩만 있는
+    (정상/행사가 별도 열이 아니라 '구분' 값으로 행이 나뉘는) 행사 안내문 표를 인식한다.
+    같은 제품 안에서 '정상' 행 1개 + 수량구간별 '행사' 행 여러 개로 구성되며, 제품명/구분 칸은
+    그 제품의 첫 행에만 채워져 있고 그 아래 이어지는 행들은 비어 있어 "바로 위 값이 이어지는
+    행"으로 읽어야 한다. 이 형식이 아니면 0을 반환하고(= 기존 단순 표 인식 로직으로 넘어감),
+    인식에 성공하면 저장한 제품(브랜드+제품명) 수를 반환한다."""
+    header_row = None
+    product_col = category_col = qty_col = rate_col = price_col = note_col = None
+    for ri in range(1, min(40, ws.max_row + 1)):
+        row_vals = {ci: norm_h_fn(ws.cell(ri, ci).value) for ci in range(1, ws.max_column + 1) if ws.cell(ri, ci).value}
+        vals = set(row_vals.values())
+        if not any(v in ('제품명', '상품명') for v in vals):
+            continue
+        if '구분' not in vals or '발주수량' not in vals:
+            continue
+        pc = next((ci for ci, v in row_vals.items() if v in ('제품명', '상품명')), None)
+        cc = next((ci for ci, v in row_vals.items() if v == '구분'), None)
+        qc = next((ci for ci, v in row_vals.items() if v == '발주수량'), None)
+        for sr in (ri, ri + 1):
+            if sr > ws.max_row:
+                continue
+            sub_vals = {ci: norm_h_fn(ws.cell(sr, ci).value) for ci in range(1, ws.max_column + 1) if ws.cell(sr, ci).value}
+            if '공급율' in sub_vals.values() and any(v in ('공급가격', '공급가') for v in sub_vals.values()):
+                rc = next(ci for ci, v in sub_vals.items() if v == '공급율')
+                prc = next(ci for ci, v in sub_vals.items() if v in ('공급가격', '공급가'))
+                nc = next((ci for ci, v in sub_vals.items() if v == '비고'), None) or \
+                     next((ci for ci, v in row_vals.items() if v == '비고'), None)
+                header_row = sr
+                product_col, category_col, qty_col, rate_col, price_col, note_col = pc, cc, qc, rc, prc, nc
+                break
+        if header_row:
+            break
+    if not header_row or rate_col is None or price_col is None or product_col is None:
+        return 0
+
+    brand = default_brand or _detect_brand_from_sheet_text(ws)
+    if not brand:
+        return 0
+
+    saved = set()
+    pending = None  # {'product','normal_rate','normal_price','tiers':[...],'note'}
+
+    def _flush():
+        if pending and pending.get('product') and (pending.get('normal_rate') is not None
+                                                     or pending.get('normal_price') is not None
+                                                     or pending['tiers']):
+            tiers = pending['tiers']
+            first_tier = tiers[0] if tiers else {}
+            note = pending.get('note') or _tier_summary_note(tiers)
+            save_fn(brand, pending['product'], pending.get('normal_rate'), first_tier.get('rate'),
+                    pending.get('normal_price'), first_tier.get('price'), note, tiers=tiers or None)
+            saved.add(pending['product'])
+
+    last_category = ''
+    for ri in range(header_row + 1, ws.max_row + 1):
+        product_v = ws.cell(ri, product_col).value
+        category_v = ws.cell(ri, category_col).value if category_col else None
+        qty_v = ws.cell(ri, qty_col).value if qty_col else None
+        rate_v = num_fn(ws.cell(ri, rate_col).value)
+        price_v = num_fn(ws.cell(ri, price_col).value)
+        note_v = str(ws.cell(ri, note_col).value or '').strip() if note_col else ''
+
+        has_row_data = bool(str(category_v or '').strip()) or bool(str(qty_v or '').strip()) \
+            or rate_v is not None or price_v is not None
+
+        if product_v is not None and str(product_v).strip():
+            _flush()
+            if not has_row_data:
+                # 표가 끝나고 각주/안내 문구로 넘어간 것으로 보고 더 이상 읽지 않는다
+                # (예: '* 행사기간 내 발주 수량 합산 기준...'처럼 B열에만 텍스트가 있는 각주 줄,
+                #  또는 뒤에 이어지는 다른 표의 헤더 '상품명'이 다시 나타나는 경우)
+                pending = None
+                break
+            pending = {'product': str(product_v).strip(), 'tiers': [], 'note': ''}
+            last_category = ''
+
+        if pending is None:
+            continue
+        if category_v is not None and str(category_v).strip():
+            last_category = str(category_v).strip()
+        if rate_v is None and price_v is None:
+            if note_v and not pending['note']:
+                pending['note'] = note_v
+            continue
+        # 공급율 셀이 퍼센트 서식의 소수(예: 0.62)로 저장돼 있으면 62(%)로 환산한다
+        if rate_v is not None and rate_v <= 1:
+            rate_v = round(rate_v * 100, 2)
+        if last_category == '정상':
+            pending['normal_rate'] = rate_v
+            pending['normal_price'] = price_v
+        elif last_category == '행사':
+            pending['tiers'].append({'qty': _parse_qty_threshold(qty_v), 'rate': rate_v, 'price': price_v, 'note': note_v})
+        if note_v and not pending['note']:
+            pending['note'] = note_v
+    _flush()
+    return len(saved)
 
 
 def _load_event_rate_map(event_ids):
@@ -4286,8 +4455,8 @@ def _compute_promo_margins(rows, date_from='', date_to=''):
             exclude_kw = _promo_event_exclude_keywords(ev)
             if exclude_kw and any(kw in note_text for kw in exclude_kw):
                 continue
-            exclude_items = _promo_event_exclude_items(ev)
-            if exclude_items and (r.get('item_group') or '') in exclude_items:
+            exclude_items = set(_promo_event_exclude_items(ev))
+            if _row_excluded_by_items(r.get('item_group'), r.get('item_name'), exclude_items):
                 continue
             is_combo_ev = any(t in _COMBO_EVENT_TAGS for t in _promo_event_tags(ev))
             rc = _lookup_promo_rate(rate_map, by_brand_keys, ev['id'], brand, pkey)
@@ -4428,10 +4597,19 @@ def api_promo_events_delete(event_id):
 @login_required
 def api_promo_event_rates_list(event_id):
     conn = get_db()
-    rows = conn.execute("""SELECT id, brand, product_name, normal_rate, event_rate, normal_price, event_price, note FROM promo_event_rate
-                            WHERE event_id=? ORDER BY brand, product_name""", (event_id,)).fetchall()
+    rows = conn.execute("""SELECT id, brand, product_name, normal_rate, event_rate, normal_price, event_price, note, tiers
+                            FROM promo_event_rate WHERE event_id=? ORDER BY brand, product_name""", (event_id,)).fetchall()
     conn.close()
-    return jsonify({'ok': True, 'rates': [dict(r) for r in rows]})
+    out = []
+    for r in rows:
+        d = dict(r)
+        raw_tiers = d.pop('tiers', '') or ''
+        try:
+            d['tiers'] = json.loads(raw_tiers) if raw_tiers else []
+        except Exception:
+            d['tiers'] = []
+        out.append(d)
+    return jsonify({'ok': True, 'rates': out})
 
 
 @app.route("/api/promo-events/<int:event_id>/missing-products")
@@ -4474,8 +4652,11 @@ def api_promo_event_missing_products(event_id):
 @app.route("/api/promo-events/<int:event_id>/rates", methods=["POST"])
 @login_required
 def api_promo_event_rates_save(event_id):
-    """제품별 공급율 한 줄 추가/수정 — body: {brand, product_name, normal_rate, event_rate, normal_price, event_price, note}.
-    공급가격(원)까지 넣어두면 매출액×%가 아니라 수량×(정상가−행사가)로 더 정확하게 추가마진을 계산한다."""
+    """제품별 공급율 한 줄 추가/수정 — body: {brand, product_name, normal_rate, event_rate, normal_price,
+    event_price, note, tiers}. 공급가격(원)까지 넣어두면 매출액×%가 아니라 수량×(정상가−행사가)로
+    더 정확하게 추가마진을 계산한다. tiers(수정사항: 수량별 차등 공급율)는 [{qty, rate, price, note}, ...]
+    형태의 리스트 — "5대 이상 60% / 10대 이상 58% / 20대 이상 57%"처럼 주문 수량 구간별로 조건이
+    다른 행사를 등록해둘 때 쓴다(생략하면 기존 값을 그대로 둔다)."""
     d = request.json or {}
     brand = (d.get('brand') or '').strip()
     product_name = (d.get('product_name') or '').strip()
@@ -4484,17 +4665,31 @@ def api_promo_event_rates_save(event_id):
     def _f(v):
         try: return float(str(v).replace(',', '')) if v not in (None, '') else None
         except Exception: return None
+    tiers_in = d.get('tiers')
+    tiers_json = None
+    if isinstance(tiers_in, list):
+        cleaned = []
+        for t in tiers_in:
+            if not isinstance(t, dict):
+                continue
+            qty = t.get('qty')
+            try: qty = int(qty) if qty not in (None, '') else None
+            except Exception: qty = None
+            cleaned.append({'qty': qty, 'rate': _f(t.get('rate')), 'price': _f(t.get('price')),
+                             'note': str(t.get('note') or '').strip()})
+        tiers_json = json.dumps(cleaned, ensure_ascii=False)
     now = datetime.now().strftime('%Y-%m-%d %H:%M')
     conn = get_db()
     conn.execute("""INSERT INTO promo_event_rate
-        (event_id, brand, product_name, normal_rate, event_rate, normal_price, event_price, note, updated_at)
-        VALUES (?,?,?,?,?,?,?,?,?)
+        (event_id, brand, product_name, normal_rate, event_rate, normal_price, event_price, note, tiers, updated_at)
+        VALUES (?,?,?,?,?,?,?,?,?,?)
         ON CONFLICT(event_id, brand, product_name) DO UPDATE SET
         normal_rate=excluded.normal_rate, event_rate=excluded.event_rate,
         normal_price=excluded.normal_price, event_price=excluded.event_price,
-        note=excluded.note, updated_at=excluded.updated_at""",
+        note=excluded.note, tiers=COALESCE(?, promo_event_rate.tiers), updated_at=excluded.updated_at""",
         (event_id, brand, product_name, _f(d.get('normal_rate')), _f(d.get('event_rate')),
-         _f(d.get('normal_price')), _f(d.get('event_price')), (d.get('note') or '').strip(), now))
+         _f(d.get('normal_price')), _f(d.get('event_price')), (d.get('note') or '').strip(), tiers_json, now,
+         tiers_json))
     conn.commit(); conn.close()
     return jsonify({'ok': True})
 
@@ -4524,17 +4719,20 @@ def api_promo_event_rates_upload(event_id):
     now = datetime.now().strftime('%Y-%m-%d %H:%M')
     inserted = 0
 
-    def _save(brand, product_name, normal_rate, event_rate, normal_price=None, event_price=None, note=''):
+    def _save(brand, product_name, normal_rate, event_rate, normal_price=None, event_price=None, note='', tiers=None):
         nonlocal inserted
         if not brand or not product_name: return
+        tiers_json = json.dumps(tiers, ensure_ascii=False) if tiers else None
         conn2 = get_db()
         conn2.execute("""INSERT INTO promo_event_rate
-            (event_id, brand, product_name, normal_rate, event_rate, normal_price, event_price, note, updated_at)
-            VALUES (?,?,?,?,?,?,?,?,?)
+            (event_id, brand, product_name, normal_rate, event_rate, normal_price, event_price, note, tiers, updated_at)
+            VALUES (?,?,?,?,?,?,?,?,?,?)
             ON CONFLICT(event_id, brand, product_name) DO UPDATE SET
             normal_rate=excluded.normal_rate, event_rate=excluded.event_rate,
-            normal_price=excluded.normal_price, event_price=excluded.event_price, updated_at=excluded.updated_at""",
-            (event_id, brand, product_name, normal_rate, event_rate, normal_price, event_price, note, now))
+            normal_price=excluded.normal_price, event_price=excluded.event_price,
+            note=excluded.note, tiers=COALESCE(?, promo_event_rate.tiers), updated_at=excluded.updated_at""",
+            (event_id, brand, product_name, normal_rate, event_rate, normal_price, event_price, note, tiers_json, now,
+             tiers_json))
         conn2.commit(); conn2.close()
         inserted += 1
 
@@ -4554,6 +4752,28 @@ def api_promo_event_rates_upload(event_id):
         if wb is None:
             return jsonify({'ok': False, 'msg': '엑셀 파일을 읽을 수 없습니다'}), 400
         ws = wb[wb.sheetnames[0]]
+
+        # 수정사항(수량별 차등 공급율 인식): "구분"(정상/행사) + "발주수량"(수량 구간, 예: '5대 이상')
+        # 열이 있고, 공급율·공급가격이 각각 한 열씩만 있는(정상/행사가 별도 열이 아니라 "구분"
+        # 행으로 나뉘는) 행사 안내문 표를 먼저 인식해본다. 이런 표는 제품명 칸이 그 제품의
+        # 첫 번째 행(보통 '정상' 행)에만 채워져 있고, 같은 제품의 나머지 수량구간(행사) 행들은
+        # 제품명 칸이 비어 있어 "바로 위 제품이 이어지는 행"으로 읽어야 한다 — 기존 "제품명/구분
+        # 열이 모든 행에 다 채워진" 단순 표만 인식하던 로직으로는 이 형식에서 '정상' 행 하나만
+        # 겨우 잡히고 수량구간별 행사 조건은 전부 누락됐었다.
+        # 공급가격 등은 수식(예: '=E26*F26')으로 들어있는 경우가 많아, 수식 문자열이 아니라
+        # 엑셀이 마지막으로 계산해 캐시해둔 값을 읽도록 data_only=True로 별도 로드해서 사용한다.
+        ws_values = None
+        try:
+            wb_values = _load_workbook_resilient(data, data_only=True)
+            if wb_values is not None:
+                ws_values = wb_values[ws.title]
+        except Exception:
+            ws_values = None
+        tiered_saved = _try_parse_tiered_promo_xlsx(ws_values or ws, default_brand, _save, _num, _norm_h)
+        if tiered_saved:
+            return jsonify({'ok': True, 'inserted': inserted,
+                             'msg': f'{tiered_saved}개 제품을 수량별 차등 조건과 함께 반영했어요'})
+
         header_row = None; col_map = {}
         for ri in range(1, min(8, ws.max_row + 1)):
             row_vals = {ci: _norm_h(ws.cell(ri, ci).value) for ci in range(1, ws.max_column + 1) if ws.cell(ri, ci).value}

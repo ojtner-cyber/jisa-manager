@@ -668,6 +668,29 @@ td.center{text-align:center}
               <div style="font-size:10.5px;color:#92400E;margin-bottom:8px">분명 파일을 올렸는데 반영이 안 된 것 같다면, 여기 나오는 제품들이 빠진 거예요 — 매출 많은 순으로 정렬돼요.</div>
               <div id="promo-missing-list" style="display:flex;flex-direction:column;gap:4px"></div>
             </div>
+            <div style="background:var(--bg);border-radius:10px;padding:14px;margin-bottom:14px">
+              <div style="font-size:12px;font-weight:700;color:var(--t-700);margin-bottom:6px">⚙ 이 행사의 매칭·제외 조건</div>
+              <div style="font-size:10.5px;color:var(--t-300);margin-bottom:10px">판매건의 특이사항(비고)이 이 조건과 맞는지로 "이 행사에 해당하는 판매"를 가려내요. 예: "토론 감사제"로 비고가 찍혔어도 브랜드가 줄즈·원더폴드·타프토이즈면 빼고 싶다면, 아래 "제외할 브랜드/품목"에 "줄즈,원더폴드,타프토이즈"라고 적어주세요.</div>
+              <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:8px">
+                <div>
+                  <div style="font-size:10.5px;font-weight:700;color:var(--t-500);margin-bottom:3px">비고 표기(쉼표로 구분, 비워두면 행사명 전체로 매칭)</div>
+                  <input type="text" id="pe-note-tags" placeholder="예: 토론감사제, 토론ADAC위너감사제" style="width:100%;border:1px solid var(--border-md);border-radius:6px;padding:6px 8px;font-size:11.5px;box-sizing:border-box">
+                </div>
+                <div>
+                  <div style="font-size:10.5px;font-weight:700;color:var(--t-500);margin-bottom:3px">제외 키워드(비고에 이 글자가 있으면 무조건 제외)</div>
+                  <input type="text" id="pe-exclude-keywords" placeholder="예: 반품, 취소" style="width:100%;border:1px solid var(--border-md);border-radius:6px;padding:6px 8px;font-size:11.5px;box-sizing:border-box">
+                </div>
+              </div>
+              <div style="margin-bottom:8px">
+                <div style="font-size:10.5px;font-weight:700;color:var(--t-500);margin-bottom:3px">제외할 브랜드/품목(쉼표로 구분 — 브랜드명 또는 품목그룹 모두 인식해요)</div>
+                <input type="text" id="pe-exclude-items" placeholder="예: 줄즈, 원더폴드, 타프토이즈" style="width:100%;border:1px solid var(--border-md);border-radius:6px;padding:6px 8px;font-size:11.5px;box-sizing:border-box">
+              </div>
+              <div style="margin-bottom:10px">
+                <div style="font-size:10.5px;font-weight:700;color:var(--t-500);margin-bottom:3px">부연 조건(추가마진이 왜 이렇게 나왔는지 설명 — 자유 메모)</div>
+                <textarea id="pe-terms-note" rows="2" placeholder="예: 두 브랜드 동시구매 시 공급가 추가 인하 등" style="width:100%;border:1px solid var(--border-md);border-radius:6px;padding:6px 8px;font-size:11.5px;box-sizing:border-box;resize:vertical"></textarea>
+              </div>
+              <button class="btn btn-dark btn-sm" onclick="savePromoEventConditions()">조건 저장</button>
+            </div>
             <div style="display:flex;gap:8px;align-items:center;margin-bottom:12px;flex-wrap:wrap">
               <button class="btn btn-dark btn-sm" onclick="importPromoFromPlatform()">📥 매장관리 플랫폼에 업로드된 프로모션에서 가져오기</button>
               <label class="btn btn-ghost btn-sm" style="cursor:pointer">
@@ -5515,6 +5538,8 @@ async function loadEventSales(){
 
 let promoCurrentEventId = null;
 let promoRateRowSeq = 0;
+let promoEventsCache = [];
+let promoTierRowSeq = 0;
 
 async function openPromoEventModal(){
   document.getElementById('promo-event-modal').style.display = 'flex';
@@ -5539,8 +5564,9 @@ async function loadPromoEventList(){
     list.innerHTML = `<div style="text-align:center;padding:20px;color:var(--t-300);font-size:12px">등록된 행사가 없어요. "+ 새 행사 만들기"로 시작해보세요.</div>`;
     return;
   }
+  promoEventsCache = r.events;
   list.innerHTML = r.events.map(e=>`
-    <div onclick="openPromoEventDetail(${e.id}, '${e.name.replace(/'/g,"\\'")}', '${e.date_start}', '${e.date_end}')"
+    <div onclick="openPromoEventDetail(${e.id})"
       style="display:flex;justify-content:space-between;align-items:center;padding:10px 12px;background:var(--bg);border-radius:8px;cursor:pointer">
       <div>
         <div style="font-size:12.5px;font-weight:700;color:var(--t-800)">${e.name}</div>
@@ -5558,7 +5584,8 @@ async function createPromoEvent(){
   const r = await api('/api/promo-events', {method:'POST', body:{name, date_start, date_end}});
   if(r?.ok){
     toast(`"${name}" 행사를 만들었어요`);
-    openPromoEventDetail(r.id, name, date_start, date_end);
+    promoEventsCache.push({id:r.id, name, date_start, date_end, note:'', note_tags:'', exclude_keywords:'', exclude_items:'', terms_note:'', product_count:0});
+    openPromoEventDetail(r.id);
   }
 }
 
@@ -5575,15 +5602,38 @@ function closePromoEventDetail(){
   loadPromoEventList();
 }
 
-async function openPromoEventDetail(id, name, dateStart, dateEnd){
+async function openPromoEventDetail(id){
   promoCurrentEventId = id;
+  const ev = promoEventsCache.find(e => e.id === id) || {};
   document.getElementById('promo-event-list-view').style.display = 'none';
   document.getElementById('promo-event-new-form').style.display = 'none';
   document.getElementById('promo-event-detail-view').style.display = 'block';
   document.getElementById('promo-event-detail-header').innerHTML =
-    `<div style="font-size:13px;font-weight:800;color:var(--t-800)">${name}</div><div style="font-size:11px;color:var(--t-400)">${dateStart} ~ ${dateEnd}</div>`;
+    `<div style="font-size:13px;font-weight:800;color:var(--t-800)">${ev.name||''}</div><div style="font-size:11px;color:var(--t-400)">${ev.date_start||''} ~ ${ev.date_end||''}</div>`;
+  document.getElementById('pe-note-tags').value = ev.note_tags || '';
+  document.getElementById('pe-exclude-keywords').value = ev.exclude_keywords || '';
+  document.getElementById('pe-exclude-items').value = ev.exclude_items || '';
+  document.getElementById('pe-terms-note').value = ev.terms_note || '';
   await loadPromoRateRows();
   await loadPromoMissingProducts();
+}
+
+async function savePromoEventConditions(){
+  if(!promoCurrentEventId) return;
+  const note_tags = document.getElementById('pe-note-tags').value.trim();
+  const exclude_keywords = document.getElementById('pe-exclude-keywords').value.trim();
+  const exclude_items = document.getElementById('pe-exclude-items').value.trim();
+  const terms_note = document.getElementById('pe-terms-note').value.trim();
+  const r = await api(`/api/promo-events/${promoCurrentEventId}/note-tags`,
+    {method:'POST', body:{note_tags, exclude_keywords, exclude_items, terms_note}});
+  if(r?.ok){
+    toast('행사 조건을 저장했어요');
+    const ev = promoEventsCache.find(e => e.id === promoCurrentEventId);
+    if(ev){ ev.note_tags=note_tags; ev.exclude_keywords=exclude_keywords; ev.exclude_items=exclude_items; ev.terms_note=terms_note; }
+    loadPromoMissingProducts();
+  } else {
+    toast(r?.msg || '저장에 실패했습니다', false);
+  }
 }
 
 async function loadPromoMissingProducts(){
@@ -5616,7 +5666,13 @@ async function loadPromoRateRows(){
 function addPromoRateRow(rt){
   rt = rt || {};
   const rowId = 'pr-row-' + (promoRateRowSeq++);
+  const tiersWrapId = rowId + '-tiers-wrap';
+  const tiersBodyId = rowId + '-tiers-body';
   const container = document.getElementById('promo-rate-rows');
+  const wrap = document.createElement('div');
+  wrap.id = 'pr-wrap-' + rowId;
+  wrap.style.cssText = 'border:1px solid var(--border-md);border-radius:8px;padding:8px;margin-bottom:2px';
+  const tiers = Array.isArray(rt.tiers) ? rt.tiers : [];
   const div = document.createElement('div');
   div.id = rowId;
   div.style.cssText = 'display:grid;grid-template-columns:1fr 1.3fr 0.7fr 0.7fr 1fr 1fr 1.3fr 50px;gap:6px;align-items:center';
@@ -5630,9 +5686,35 @@ function addPromoRateRow(rt){
     <input type="text" class="pr-note" value="${(rt.note||'').replace(/"/g,'&quot;')}" placeholder="비고" style="border:1px solid var(--border-md);border-radius:5px;padding:5px 6px;font-size:10.5px">
     <div style="display:flex;gap:4px">
       <button onclick="savePromoRateRow('${rowId}')" style="background:none;border:none;color:var(--p);cursor:pointer;font-size:11px">저장</button>
-      <button onclick="document.getElementById('${rowId}').remove()" style="background:none;border:none;color:var(--red);cursor:pointer;font-size:11px">✕</button>
+      <button onclick="document.getElementById('pr-wrap-${rowId}').remove()" style="background:none;border:none;color:var(--red);cursor:pointer;font-size:11px">✕</button>
     </div>`;
-  container.appendChild(div);
+  const tiersWrap = document.createElement('div');
+  tiersWrap.id = tiersWrapId;
+  tiersWrap.style.cssText = 'margin-top:6px;padding-top:6px;border-top:1px dashed var(--border-md)';
+  tiersWrap.innerHTML = `
+    <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px">
+      <span style="font-size:10.5px;font-weight:700;color:var(--t-500)">📦 수량별 차등 공급조건(선택)</span>
+      <button onclick="addPromoTierRow('${tiersBodyId}')" style="background:none;border:none;color:var(--p);cursor:pointer;font-size:10.5px;text-decoration:underline">+ 구간 추가</button>
+    </div>
+    <div id="${tiersBodyId}" style="display:flex;flex-direction:column;gap:4px"></div>`;
+  wrap.appendChild(div);
+  wrap.appendChild(tiersWrap);
+  container.appendChild(wrap);
+  tiers.forEach(t => addPromoTierRow(tiersBodyId, t));
+}
+
+function addPromoTierRow(tiersBodyId, t){
+  t = t || {};
+  const body = document.getElementById(tiersBodyId);
+  const row = document.createElement('div');
+  row.style.cssText = 'display:grid;grid-template-columns:1fr 1fr 1fr 1.5fr 30px;gap:6px';
+  row.innerHTML = `
+    <input type="number" class="prt-qty" value="${t.qty ?? ''}" placeholder="수량(이상)" style="border:1px solid var(--border-md);border-radius:5px;padding:4px 6px;font-size:11px;text-align:right">
+    <input type="number" step="0.1" class="prt-rate" value="${t.rate ?? ''}" placeholder="공급율%" style="border:1px solid var(--border-md);border-radius:5px;padding:4px 6px;font-size:11px;text-align:right">
+    <input type="number" class="prt-price" value="${t.price ?? ''}" placeholder="공급가" style="border:1px solid var(--border-md);border-radius:5px;padding:4px 6px;font-size:11px;text-align:right">
+    <input type="text" class="prt-note" value="${(t.note||'').replace(/"/g,'&quot;')}" placeholder="비고" style="border:1px solid var(--border-md);border-radius:5px;padding:4px 6px;font-size:10.5px">
+    <button onclick="this.parentElement.remove()" style="background:none;border:none;color:var(--red);cursor:pointer;font-size:11px">✕</button>`;
+  body.appendChild(row);
 }
 
 async function savePromoRateRow(rowId){
@@ -5645,8 +5727,15 @@ async function savePromoRateRow(rowId){
   const event_price = div.querySelector('.pr-event-price').value;
   const note = div.querySelector('.pr-note').value.trim();
   if(!brand || !product_name){ toast('브랜드와 제품명을 입력해주세요', false); return; }
-  const r = await api(`/api/promo-events/${promoCurrentEventId}/rates`, {method:'POST', body:{brand, product_name, normal_rate, event_rate, normal_price, event_price, note}});
-  if(r?.ok){ toast(`${brand} · ${product_name} 저장했어요`); loadPromoMissingProducts(); }
+  const tiersBody = document.getElementById(rowId + '-tiers-body');
+  const tiers = tiersBody ? Array.from(tiersBody.children).map(row => ({
+    qty: row.querySelector('.prt-qty').value || null,
+    rate: row.querySelector('.prt-rate').value || null,
+    price: row.querySelector('.prt-price').value || null,
+    note: row.querySelector('.prt-note').value.trim(),
+  })).filter(t => t.qty || t.rate || t.price) : [];
+  const r = await api(`/api/promo-events/${promoCurrentEventId}/rates`, {method:'POST', body:{brand, product_name, normal_rate, event_rate, normal_price, event_price, note, tiers}});
+  if(r?.ok){ toast(`${brand} · ${product_name} 저장했어요${tiers.length ? ` (수량구간 ${tiers.length}개 포함)` : ''}`); loadPromoMissingProducts(); }
 }
 
 async function importPromoFromPlatform(){
