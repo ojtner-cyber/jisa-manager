@@ -4945,6 +4945,323 @@ def api_promo_event_rates_upload(event_id):
     return jsonify({'ok': False, 'msg': '엑셀(.xlsx) 또는 PDF 파일만 지원해요'}), 400
 
 
+# ══════════════════════════════════════════════════════════════════
+# 연간 행사 개요 ('행사 및 진열 신청' 탭에 새로 구축) ─ 행사별 실적(promo_event)
+# 데이터를 그대로 활용해서, 1~12월 전체 행사를 한눈에 보고 참여율·참여매장을 확인하는 기능.
+# ══════════════════════════════════════════════════════════════════
+
+def _promo_event_rows(ev):
+    """행사 기간(date_start~date_end) 안에서, 이 행사의 비고 표기·제외 조건에 맞는 판매건만 가져온다.
+    연간 개요/참여매장 현황/연간 엑셀에서 반복해서 쓰는 조회 로직을 한 곳에 모아둔 것."""
+    tags = _promo_event_tags(ev)
+    if not tags:
+        return []
+    conn = get_db()
+    where_clause = " OR ".join(["note LIKE ?"] * len(tags))
+    q = f"""SELECT sale_date, real_seller, item_name, item_group, quantity, total, note
+            FROM sales_data WHERE ({where_clause})"""
+    params = [f"%{t}%" for t in tags]
+    if ev.get('date_start'):
+        q += " AND sale_date >= ?"; params.append(ev['date_start'])
+    if ev.get('date_end'):
+        q += " AND sale_date <= ?"; params.append(ev['date_end'])
+    cand_rows = conn.execute(q, params).fetchall()
+    conn.close()
+    return _promo_filter_candidate_rows(cand_rows, ev)
+
+
+def _all_active_store_names():
+    """전체 매장 수의 기준 — 거래 종료된 곳을 빼고 '운영중'인 매장만 참여율 분모로 쓴다."""
+    conn = get_db()
+    names = [r[0] for r in conn.execute("SELECT name FROM branches WHERE status='운영중' ORDER BY name").fetchall()]
+    conn.close()
+    return names
+
+
+_PROMO_NAME_SUFFIXES = ['감사제', '프로모션', '이벤트', '런칭전', '런칭', '위크', '특가전', '할인전',
+                         '페스티벌', '챌린지', '기획전', '행사']
+_PROMO_NAME_RE = re.compile(r'[가-힣A-Za-z0-9]{1,10}(?:' + '|'.join(_PROMO_NAME_SUFFIXES) + ')')
+
+
+@app.route("/api/promo-events/overview")
+@login_required
+def api_promo_events_overview():
+    """연간 행사 개요 — 선택한 연도에 걸쳐있는 모든 등록 행사를, 행사별 참여 매장수·참여율·
+    수량·매출과 함께 한 번에 보여준다. '1~12월 진행했던 행사를 일괄적으로 볼 수 있는 전체
+    개요'를 위한 화면용 데이터."""
+    year = request.args.get('year', '').strip()
+    conn = get_db()
+    years = [r[0] for r in conn.execute(
+        "SELECT DISTINCT substr(date_start,1,4) y FROM promo_event WHERE date_start!='' ORDER BY y DESC").fetchall() if r[0]]
+    if not year:
+        year = years[0] if years else str(datetime.now().year)
+    if year not in years:
+        years = sorted(set(years + [year]), reverse=True)
+    evs = conn.execute("""SELECT id, name, date_start, date_end, note, note_tags, exclude_keywords,
+                                 exclude_items, terms_note FROM promo_event
+                           WHERE substr(date_start,1,4)<=? AND substr(date_end,1,4)>=?
+                           ORDER BY date_start""", (year, year)).fetchall()
+    conn.close()
+
+    total_store_count = len(_all_active_store_names())
+    out = []
+    for ev_row in evs:
+        ev = dict(ev_row)
+        rows = _promo_event_rows(ev)
+        store_set = set((r['real_seller'] or '').strip() for r in rows if (r['real_seller'] or '').strip())
+        qty = sum(r['quantity'] or 0 for r in rows)
+        amount = sum(r['total'] or 0 for r in rows)
+        store_cnt = len(store_set)
+        rate = (store_cnt / total_store_count * 100) if total_store_count else 0
+        out.append({
+            'id': ev['id'], 'name': ev['name'], 'date_start': ev['date_start'], 'date_end': ev['date_end'],
+            'note': ev.get('note') or '', 'configured': bool((ev.get('note_tags') or '').strip()),
+            'store_count': store_cnt, 'total_store_count': total_store_count,
+            'participation_rate': round(rate, 1), 'qty': qty, 'amount': amount,
+        })
+
+    return jsonify({'ok': True, 'year': year, 'years': years or [str(datetime.now().year)],
+                     'total_store_count': total_store_count, 'events': out})
+
+
+@app.route("/api/promo-events/<int:event_id>/participation")
+@login_required
+def api_promo_event_participation(event_id):
+    """행사 하나를 클릭했을 때 — 참여율과 함께, 전체 매장 중 어떤 매장이 참여했고(수량·매출 포함)
+    어떤 매장이 아직 참여하지 않았는지 전부 보여준다."""
+    conn = get_db()
+    ev_row = conn.execute("""SELECT id, name, date_start, date_end, note, note_tags, exclude_keywords,
+                                     exclude_items, terms_note FROM promo_event WHERE id=?""", (event_id,)).fetchone()
+    if not ev_row:
+        conn.close()
+        return jsonify({'ok': False, 'msg': '행사를 찾을 수 없습니다'}), 404
+    ev = dict(ev_row)
+    all_stores = [r[0] for r in conn.execute("SELECT name FROM branches WHERE status='운영중' ORDER BY name").fetchall()]
+    conn.close()
+
+    rows = _promo_event_rows(ev)
+    store_agg = {}
+    for r in rows:
+        s = (r['real_seller'] or '').strip()
+        if not s:
+            continue
+        g = store_agg.setdefault(s, {'store': s, 'qty': 0, 'amount': 0})
+        g['qty'] += r['quantity'] or 0
+        g['amount'] += r['total'] or 0
+
+    seen = set(all_stores)
+    participants = []
+    for s in all_stores:
+        if s in store_agg:
+            g = store_agg[s]
+            participants.append({'store': s, 'participated': True, 'qty': g['qty'], 'amount': g['amount']})
+        else:
+            participants.append({'store': s, 'participated': False, 'qty': 0, 'amount': 0})
+    # 매장 마스터에 등록된 이름과 다르게(가맹점명 표기차 등) 찍힌 판매건도 놓치지 않고 보여준다
+    for s, g in store_agg.items():
+        if s not in seen:
+            participants.append({'store': s, 'participated': True, 'qty': g['qty'], 'amount': g['amount']})
+
+    participants.sort(key=lambda x: (not x['participated'], -x['amount'], x['store']))
+    total_cnt = len(all_stores) if all_stores else len(participants)
+    participated_cnt = sum(1 for p in participants if p['participated'])
+
+    return jsonify({'ok': True, 'event': ev, 'total_store_count': total_cnt,
+                     'participated_count': participated_cnt,
+                     'participation_rate': round(participated_cnt / total_cnt * 100, 1) if total_cnt else 0,
+                     'participants': participants})
+
+
+@app.route("/api/promo-events/<int:event_id>", methods=["PUT"])
+@login_required
+def api_promo_events_update(event_id):
+    """행사 수정 — 지금까지 등록/삭제만 가능했던 것을 보완, 이름·기간·비고를 바꿀 수 있게 한다."""
+    d = request.json or {}
+    name = (d.get('name') or '').strip()
+    date_start = (d.get('date_start') or '').strip()
+    date_end = (d.get('date_end') or '').strip()
+    if not name or not date_start or not date_end:
+        return jsonify({'ok': False, 'msg': '행사명과 기간(시작~종료)이 필요합니다'}), 400
+    conn = get_db()
+    ev = conn.execute("SELECT id FROM promo_event WHERE id=?", (event_id,)).fetchone()
+    if not ev:
+        conn.close()
+        return jsonify({'ok': False, 'msg': '행사를 찾을 수 없습니다'}), 404
+    conn.execute("UPDATE promo_event SET name=?, date_start=?, date_end=?, note=? WHERE id=?",
+                 (name, date_start, date_end, (d.get('note') or '').strip(), event_id))
+    conn.commit(); conn.close()
+    return jsonify({'ok': True})
+
+
+@app.route("/api/promo-events/auto-detect")
+@login_required
+def api_promo_events_autodetect():
+    """기초데이터 비고란에서 아직 등록되지 않은 '행사로 보이는' 표기를 찾아 제안한다 — 토론감사제/
+    ADAC감사제/줄즈감사제/특별프로모션/줄레행사처럼 비고에 행사명이 함께 적혀있는 패턴(…감사제,
+    …프로모션, …행사 등)을 모아 등장 빈도·기간·매장수와 함께 보여주고, 이미 등록된 행사의
+    비고 표기와 겹치는 건 제외한다. 제안을 확인한 뒤엔 행사 등록(+ 비고 표기 등록)으로 그대로
+    이어가면 된다."""
+    conn = get_db()
+    existing_evs = [dict(r) for r in conn.execute("SELECT name, note_tags FROM promo_event").fetchall()]
+    existing_tags_norm = set()
+    for ev in existing_evs:
+        for t in _promo_event_tags(ev):
+            existing_tags_norm.add(re.sub(r'\s+', '', t))
+
+    rows = conn.execute("SELECT note, sale_date, real_seller FROM sales_data WHERE note IS NOT NULL AND note!=''").fetchall()
+    conn.close()
+
+    cand = {}
+    for r in rows:
+        note = r['note'] or ''
+        for m in _PROMO_NAME_RE.finditer(note):
+            tok = m.group(0)
+            idx = m.start()
+            before = note[idx - 1] if idx > 0 else None
+            if not _tag_boundary_ok(before):
+                continue
+            tok_norm = re.sub(r'\s+', '', tok)
+            if tok_norm in existing_tags_norm:
+                continue
+            g = cand.setdefault(tok_norm, {'tag': tok, 'count': 0, 'dates': [], 'stores': set()})
+            g['count'] += 1
+            if r['sale_date']:
+                g['dates'].append(r['sale_date'])
+            if r['real_seller']:
+                g['stores'].add(r['real_seller'])
+
+    suggestions = []
+    for g in cand.values():
+        if g['count'] < 2:
+            continue
+        dates = sorted(g['dates'])
+        suggestions.append({'tag': g['tag'], 'count': g['count'], 'store_count': len(g['stores']),
+                             'date_from': dates[0] if dates else '', 'date_to': dates[-1] if dates else ''})
+    suggestions.sort(key=lambda x: -x['count'])
+    return jsonify({'ok': True, 'suggestions': suggestions[:40]})
+
+
+@app.route("/api/export/xlsx/promo-events-overview")
+@login_required
+def export_xlsx_promo_events_overview():
+    """연간 행사 전체 개요 엑셀 — 1시트: 행사별 개요(기간·참여매장수·참여율·수량·매출),
+    2시트: 매장×행사 참여 매트릭스(매장마다 어느 행사에 얼마나 참여했는지 한 번에 비교)."""
+    year = request.args.get('year', '').strip() or str(datetime.now().year)
+
+    conn = get_db()
+    evs = conn.execute("""SELECT id, name, date_start, date_end, note, note_tags, exclude_keywords,
+                                 exclude_items, terms_note FROM promo_event
+                           WHERE substr(date_start,1,4)<=? AND substr(date_end,1,4)>=?
+                           ORDER BY date_start""", (year, year)).fetchall()
+    all_stores = [r[0] for r in conn.execute("SELECT name FROM branches WHERE status='운영중' ORDER BY name").fetchall()]
+    conn.close()
+
+    events = [dict(r) for r in evs]
+    total_store_count = len(all_stores)
+    ev_store_agg = {}
+    for ev in events:
+        rows = _promo_event_rows(ev)
+        agg = {}
+        for r in rows:
+            s = (r['real_seller'] or '').strip()
+            if not s:
+                continue
+            g = agg.setdefault(s, {'qty': 0, 'amount': 0})
+            g['qty'] += r['quantity'] or 0
+            g['amount'] += r['total'] or 0
+        ev_store_agg[ev['id']] = agg
+
+    def mf(hex_): return PatternFill('solid', fgColor=hex_)
+    NAVY = '1F2937'; HGRAY = 'E5E7EB'; BORDERC = 'D1D5DB'
+    thin = Side(style='thin', color=BORDERC); bdr = Border(left=thin, right=thin, top=thin, bottom=thin)
+    ctr = Alignment(horizontal='center', vertical='center'); left = Alignment(horizontal='left', vertical='center')
+    FNAME = '맑은 고딕'
+
+    wb = openpyxl.Workbook()
+    ws1 = wb.active; ws1.title = '연간 개요'
+    headers = ['행사명', '기간', '참여 매장수', '전체 매장수', '참여율', '총 수량', '총 매출']
+    ws1.merge_cells(f'A1:{get_column_letter(len(headers))}1')
+    c = ws1.cell(row=1, column=1, value=f'{year}년 행사 연간 개요')
+    c.font = Font(bold=True, size=13, name=FNAME, color='FFFFFF'); c.fill = mf(NAVY); c.alignment = ctr
+    ws1.row_dimensions[1].height = 26
+    hr = 3
+    for ci, h in enumerate(headers, start=1):
+        c = ws1.cell(row=hr, column=ci, value=h)
+        c.font = Font(bold=True, size=10, name=FNAME); c.fill = mf(HGRAY); c.alignment = ctr; c.border = bdr
+    r = hr + 1
+    tot_store_sum = tot_qty_sum = tot_amt_sum = 0
+    for ev in events:
+        agg = ev_store_agg[ev['id']]
+        store_cnt = len(agg)
+        qty = sum(g['qty'] for g in agg.values())
+        amount = sum(g['amount'] for g in agg.values())
+        rate = (store_cnt / total_store_count * 100) if total_store_count else 0
+        tot_store_sum += store_cnt; tot_qty_sum += qty; tot_amt_sum += amount
+        vals = [ev['name'], f"{ev['date_start']} ~ {ev['date_end']}", store_cnt, total_store_count,
+                f'{rate:.1f}%', qty, amount]
+        for ci, v in enumerate(vals, start=1):
+            c = ws1.cell(row=r, column=ci, value=v)
+            c.font = Font(size=10, name=FNAME); c.border = bdr
+            c.alignment = left if ci in (1, 2) else ctr
+            if ci in (6, 7):
+                c.number_format = '#,##0'
+        r += 1
+    if not events:
+        c = ws1.cell(row=r, column=1, value=f'{year}년에 등록된 행사가 없습니다')
+        c.font = Font(size=10, name=FNAME, color='9CA3AF')
+        r += 1
+    widths1 = [26, 24, 12, 12, 10, 10, 16]
+    for ci, w in enumerate(widths1, start=1):
+        ws1.column_dimensions[get_column_letter(ci)].width = w
+
+    ws2 = wb.create_sheet('매장별 참여현황')
+    ev_names = [ev['name'] for ev in events]
+    headers2 = ['매장명'] + ev_names + ['참여 행사수']
+    if headers2:
+        ws2.merge_cells(f'A1:{get_column_letter(len(headers2))}1')
+    c = ws2.cell(row=1, column=1, value=f'{year}년 매장×행사 참여 현황 (셀 값 = 참여 매출액)')
+    c.font = Font(bold=True, size=13, name=FNAME, color='FFFFFF'); c.fill = mf(NAVY); c.alignment = ctr
+    ws2.row_dimensions[1].height = 26
+    hr2 = 2
+    for ci, h in enumerate(headers2, start=1):
+        c = ws2.cell(row=hr2, column=ci, value=h)
+        c.font = Font(bold=True, size=10, name=FNAME); c.fill = mf(HGRAY); c.alignment = ctr; c.border = bdr
+
+    all_names = list(all_stores)
+    seen_names = set(all_names)
+    for ev in events:
+        for s in ev_store_agg[ev['id']].keys():
+            if s not in seen_names:
+                seen_names.add(s); all_names.append(s)
+
+    r = hr2 + 1
+    for s in all_names:
+        join_cnt = 0
+        vals = [s]
+        for ev in events:
+            agg = ev_store_agg[ev['id']]
+            if s in agg:
+                vals.append(agg[s]['amount']); join_cnt += 1
+            else:
+                vals.append('')
+        vals.append(join_cnt)
+        for ci, v in enumerate(vals, start=1):
+            c = ws2.cell(row=r, column=ci, value=v)
+            c.font = Font(size=10, name=FNAME); c.border = bdr
+            c.alignment = left if ci == 1 else ctr
+            if 1 < ci <= len(ev_names) + 1 and isinstance(v, (int, float)) and v != '':
+                c.number_format = '#,##0'
+        r += 1
+    ws2.column_dimensions['A'].width = 22
+    for ci in range(2, len(headers2) + 1):
+        ws2.column_dimensions[get_column_letter(ci)].width = 16
+
+    buf = io.BytesIO(); wb.save(buf); buf.seek(0)
+    fname = f'{year}년_행사_연간개요.xlsx'
+    return send_file(buf, mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                      as_attachment=True, download_name=fname)
+
+
 @app.route("/api/sales/event-search")
 @login_required
 def api_sales_event_search():
@@ -8534,16 +8851,60 @@ def _parse_new_format_hist_sheet(ws):
     rows = []
     if hdr_row:
         r = hdr_row + 1
+        last = None
         while r <= ws.max_row:
             vdate = date_str(cell(r, 2))
+            content_cols = (3, 4, 5, 6, 7, 8, 9, 10, 11, 12)
+            has_any_content = any(str(cell(r, ci) or '').strip() for ci in content_cols)
             if not vdate:
-                break
+                # 수정(이력 업로드 데이터 유실 버그): 내용이 길어서 같은 방문을 두 물리적 행으로
+                # 나눠 적은 경우(예: 윗줄엔 '자사 주요내용'만, 바로 아랫줄엔 방문일 없이 '타사 동향'만
+                # 채워진 경우) 예전에는 방문일이 빈 줄을 보자마자 표가 끝난 걸로 보고 그 자리에서
+                # 읽기를 완전히 멈춰버렸다 — 그 아래 있는 더 최근 방문 기록까지 통째로 날아가는
+                # 심각한 유실이었다. 이제는 방문일만 비어있고 다른 칸에 내용이 있으면 "바로 위
+                # 방문이 이어지는 줄"로 보고 그 내용을 이어 붙이고, 모든 칸이 완전히 빈 줄을
+                # 만났을 때만("표가 진짜로 끝남") 읽기를 멈춘다.
+                if not has_any_content:
+                    break
+                if last is None:
+                    r += 1
+                    continue
+
+                def _append(key, ci):
+                    extra = str(cell(r, ci) or '').strip()
+                    if extra:
+                        last[key] = (last[key] + '\n' + extra) if last[key] else extra
+                _append('purpose', 3)
+                _append('contact_person', 4)
+                _append('our_content', 5)
+                _append('competitor_trend', 6)
+                _append('action_item', 7)
+                dd = date_str(cell(r, 8))
+                if dd:
+                    last['due_date'] = dd
+                st = str(cell(r, 9) or '').strip()
+                if st:
+                    last['status'] = st
+                et = str(cell(r, 10) or '').strip()
+                if et:
+                    last['expense_type'] = (last['expense_type'] + '/' + et) if last['expense_type'] else et
+                amt_raw = cell(r, 11)
+                try:
+                    amt = int(float(amt_raw)) if amt_raw not in (None, '') else 0
+                except Exception:
+                    amt = 0
+                if amt:
+                    last['expense_amount'] = (last.get('expense_amount') or 0) + amt
+                _append('expense_note', 12)
+                r += 1
+                continue
+
             amt_raw = cell(r, 11)
             try:
                 expense_amount = int(float(amt_raw)) if amt_raw not in (None, '') else 0
             except Exception:
                 expense_amount = 0
-            rows.append({
+            last = {
                 'visit_date': vdate,
                 'purpose': str(cell(r, 3) or '').strip(),
                 'contact_person': str(cell(r, 4) or '').strip(),
@@ -8555,7 +8916,8 @@ def _parse_new_format_hist_sheet(ws):
                 'expense_type': str(cell(r, 10) or '').strip(),
                 'expense_amount': expense_amount,
                 'expense_note': str(cell(r, 12) or '').strip(),
-            })
+            }
+            rows.append(last)
             r += 1
     return rows
 
@@ -8592,6 +8954,30 @@ def _parse_our_content_categories(text):
         if body:
             result.setdefault(header, []).append(body)
     return result
+
+
+def _split_content_blocks(text):
+    """"[카테고리]\\n내용..." 형태 텍스트를 등장 순서 그대로 블록(문자열) 리스트로 쪼갠다 —
+    방문이력 엑셀에서 같은 방문일 안에 [유모차]/[카시트]처럼 카테고리가 여러 개 섞여 있을 때,
+    한 칸에 몰아넣지 않고 카테고리별로 행을 나눠 보여주기 위해 쓴다(_parse_our_content_categories와
+    달리 같은 헤더가 여러 번 나와도 등장 순서를 그대로 보존하고, 각 블록에 '[헤더]' 줄을 그대로
+    남겨서 어떤 카테고리인지 각 칸만 보고도 알 수 있게 한다). 대괄호 헤더가 전혀 없으면 전체
+    텍스트를 통짜 블록 하나로 돌려준다."""
+    text = (text or '').strip()
+    if not text:
+        return []
+    parts = _re_visit.split(r'(?m)^\[([^\[\]]+)\]\s*$', text)
+    if len(parts) == 1:
+        return [text]
+    blocks = []
+    preamble = parts[0].strip()
+    if preamble:
+        blocks.append(preamble)
+    for i in range(1, len(parts), 2):
+        header = parts[i].strip()
+        body = parts[i + 1].strip() if i + 1 < len(parts) else ''
+        blocks.append(f"[{header}]\n{body}" if body else f"[{header}]")
+    return blocks
 
 
 def _split_out_requests(content):
@@ -10330,24 +10716,64 @@ def _write_visit_log_sheet(ws, data, FNAME):
         c.font = f_hdr; c.fill = mf('FFFFFF'); c.border = bdr; c.alignment = ctr
     ws.row_dimensions[7].height = 24
 
-    for i, v in enumerate(data['visit_log']):
-        r = 8 + i
-        vals = [v['visit_date'], v.get('purpose',''), v.get('contact_person',''), v.get('our_content',''),
-                v.get('competitor_trend',''), v.get('action_item',''), v.get('due_date',''), v.get('status',''),
-                v.get('expense_type',''), v.get('expense_amount') or '', v.get('expense_note','')]
-        for ci, val in enumerate(vals):
-            c = ws.cell(row=r, column=2+ci, value=val)
-            c.font = f_val; c.border = bdr
-            c.alignment = left if ci in (3, 4, 5, 10) else ctr
-            if ci == 9 and val != '':
+    def _border_merged_range(r_from, r_to, col, border, fill=None):
+        # 병합 범위는 맨 위 칸만 테두리를 칠하면 엑셀에서 나머지 칸의 점선이 끊겨 보이므로,
+        # 범위에 포함된 모든 물리 행에 동일하게 테두리를 칠한다(fill은 지정했을 때만 적용).
+        for rr in range(r_from, r_to + 1):
+            cc = ws.cell(row=rr, column=col)
+            cc.border = border
+            if fill is not None:
+                cc.fill = fill
+
+    r = 8
+    for v in data['visit_log']:
+        # 수정사항(이력 엑셀 가독성): 한 방문일 안에 [유모차]/[카시트]처럼 카테고리가 여러 개
+        # 섞여 있으면 예전에는 자사 주요내용 한 칸에 전부 몰아넣어서 읽기 어려웠다. 이제는
+        # 자사 주요내용·타사 동향을 각각 카테고리 블록 단위로 쪼개서 같은 방문일 안에서
+        # 여러 줄(행)로 나눠 보여주고, 방문일/방문목적/면담자/완료예정일/진행상태/활동비처럼
+        # 방문 전체에 공통인 값들은 그 줄들을 세로로 병합해서 한 번만 보이게 한다.
+        our_blocks = _split_content_blocks(v.get('our_content', ''))
+        comp_blocks = _split_content_blocks(v.get('competitor_trend', ''))
+        sub_n = max(len(our_blocks), len(comp_blocks), 1)
+        start_r, end_r = r, r + sub_n - 1
+
+        for si in range(sub_n):
+            rr = start_r + si
+            our_t = our_blocks[si] if si < len(our_blocks) else ''
+            comp_t = comp_blocks[si] if si < len(comp_blocks) else ''
+            for ci, val in ((3, our_t), (4, comp_t)):
+                c = ws.cell(row=rr, column=2+ci, value=val)
+                c.font = f_val; c.border = bdr; c.alignment = left
+            wrap_pairs = [(our_t, widths['E']), (comp_t, widths['F'])]
+            max_lines = max(_estimate_wrapped_lines(t, w) for t, w in wrap_pairs)
+            ws.row_dimensions[rr].height = max(20, min(14.5 * max_lines + 6, 300))
+
+        # 방문 전체에 공통인 칸들(방문일/방문목적/면담자/조치사항/완료예정일/진행상태/
+        # 활동비구분/활동비금액/활동비내용)은 카테고리 줄 수만큼 세로로 병합한다.
+        # 열 번호: B=방문일(2) C=방문목적(3) D=면담자(4) E=자사내용(5,위에서 별도 처리)
+        # F=타사동향(6,위에서 별도 처리) G=조치사항(7) H=완료예정일(8) I=진행상태(9)
+        # J=활동비구분(10) K=활동비금액(11) L=활동비내용(12)
+        common_vals = {2: v['visit_date'], 3: v.get('purpose',''), 4: v.get('contact_person',''),
+                       7: v.get('action_item',''), 8: v.get('due_date',''), 9: v.get('status',''),
+                       10: v.get('expense_type',''), 11: v.get('expense_amount') or '', 12: v.get('expense_note','')}
+        for col, val in common_vals.items():
+            if sub_n > 1:
+                ws.merge_cells(start_row=start_r, start_column=col, end_row=end_r, end_column=col)
+            c = ws.cell(row=start_r, column=col, value=val)
+            c.font = f_val
+            c.alignment = left if col in (7, 12) else ctr
+            if col == 11 and val != '':
                 c.number_format = '#,##0"원"'
-        # 수정사항2: 글자 길이에 맞춰 박스(행 높이)가 자동으로 조정되도록 — 긴 줄글이 들어가는
-        # 자사 주요내용(E,46칸)/타사 동향(F,30칸)/조치사항(G,36칸)/활동비 내용(L,24칸) 중
-        # 가장 많이 줄바꿈되는 칸을 기준으로 높이를 계산한다(사용자가 직접 늘리지 않아도 되도록).
-        wrap_pairs = [(v.get('our_content', ''), widths['E']), (v.get('competitor_trend', ''), widths['F']),
-                      (v.get('action_item', ''), widths['G']), (v.get('expense_note', ''), widths['L'])]
-        max_lines = max(_estimate_wrapped_lines(t, w) for t, w in wrap_pairs)
-        ws.row_dimensions[r].height = max(20, min(14.5 * max_lines + 6, 300))
+            _border_merged_range(start_r, end_r, col, bdr)
+        # 조치사항(G)/활동비 내용(L)도 내용 길이에 맞춰 병합된 전체 높이를 고려해 최소 높이 보정
+        extra_wrap = [(v.get('action_item', ''), widths['G']), (v.get('expense_note', ''), widths['L'])]
+        extra_lines = max(_estimate_wrapped_lines(t, w) for t, w in extra_wrap)
+        total_h = sum(ws.row_dimensions[rr].height or 20 for rr in range(start_r, end_r + 1))
+        needed_h = max(20, min(14.5 * extra_lines + 6, 300))
+        if needed_h > total_h and sub_n > 0:
+            ws.row_dimensions[end_r].height = (ws.row_dimensions[end_r].height or 20) + (needed_h - total_h)
+
+        r = end_r + 1
 
     if not data['visit_log']:
         ws.merge_cells('B8:L8'); ws['B8'] = '등록된 방문 이력이 없습니다. "보고서작성"으로 첫 방문 기록을 남겨보세요.'

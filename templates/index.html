@@ -1729,6 +1729,62 @@ td.center{text-align:center}
         </div>
       </div>
 
+      <!-- 연간 행사 참여 개요 (판매현황 비고란 기준 — 판매실적 > 행사별 실적 데이터를 그대로 활용) -->
+      <div style="background:var(--paper);border:1.5px solid var(--border);border-radius:var(--r-lg);padding:16px 20px;margin-bottom:20px">
+        <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px">
+          <div>
+            <div style="font-size:13px;font-weight:700;color:var(--t-900)">📅 연간 행사 참여 개요</div>
+            <div style="font-size:11px;color:var(--t-300);margin-top:2px">판매현황 엑셀의 비고란 기준으로, 행사별 참여 매장·참여율을 1~12월 한눈에 모아 본다</div>
+          </div>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+            <select class="ysel" id="promo-ov-year" onchange="loadPromoOverview()"></select>
+            <button class="btn btn-ghost btn-sm" onclick="togglePromoSuggest()">🔍 행사 자동 감지</button>
+            <button class="btn btn-ghost btn-sm" onclick="downloadPromoOverviewExcel()">📥 연간 전체 엑셀</button>
+            <button class="btn btn-primary btn-sm" onclick="openCreatePromoEvent()">+ 행사 등록</button>
+          </div>
+        </div>
+
+        <div id="promo-suggest-wrap" style="display:none;margin-top:14px;background:var(--p-lt);border-radius:var(--r-md);padding:12px 14px">
+          <div style="font-size:11px;color:var(--t-300);margin-bottom:8px">아직 등록되지 않았지만 비고란에 2건 이상 등장한 '행사로 보이는' 표기 — 클릭하면 바로 행사 등록으로 이어집니다</div>
+          <div id="promo-suggest-list" style="display:flex;flex-wrap:wrap;gap:6px"></div>
+        </div>
+
+        <div id="promo-ov-kpi" style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin:16px 0"></div>
+        <div class="tw">
+          <table><thead><tr>
+            <th style="width:24%">행사명</th>
+            <th style="width:16%">기간</th>
+            <th style="width:12%;text-align:center">참여 매장</th>
+            <th style="width:12%;text-align:center">참여율</th>
+            <th style="width:10%;text-align:right">수량</th>
+            <th style="width:14%;text-align:right">매출</th>
+            <th style="width:12%;text-align:center">관리</th>
+          </tr></thead>
+          <tbody id="promo-ov-tbody"></tbody>
+        </table></div>
+      </div>
+
+      <!-- 행사 참여 상세 (매장별 참여 현황) -->
+      <div id="promo-ev-detail-wrap" style="display:none;background:var(--paper);border:1.5px solid var(--border);border-radius:var(--r-lg);padding:16px 20px;margin-bottom:20px">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:10px">
+          <div style="font-size:14px;font-weight:700;color:var(--t-900)" id="promo-ev-detail-title">행사 상세</div>
+          <div style="display:flex;gap:8px">
+            <button class="btn btn-ghost btn-sm" onclick="downloadPromoEventDetailExcel()">📥 이 행사만 엑셀</button>
+            <button class="btn btn-ghost btn-sm" onclick="document.getElementById('promo-ev-detail-wrap').style.display='none'">닫기</button>
+          </div>
+        </div>
+        <div id="promo-ev-detail-kpi" style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:14px"></div>
+        <div class="tw">
+          <table><thead><tr>
+            <th style="width:30%">매장명</th>
+            <th style="width:20%;text-align:center">참여여부</th>
+            <th style="width:20%;text-align:right">수량</th>
+            <th style="width:30%;text-align:right">매출</th>
+          </tr></thead>
+          <tbody id="promo-ev-detail-tbody"></tbody>
+        </table></div>
+      </div>
+
       <!-- 캠페인 목록 -->
       <div id="display-campaigns-wrap" style="margin-bottom:24px"></div>
 
@@ -1799,6 +1855,27 @@ td.center{text-align:center}
           <button class="btn btn-primary" onclick="saveCampaign()">저장</button>
         </div>
         <input type="hidden" id="cm-edit-id">
+      </div>
+    </div>
+
+    <!-- 행사 등록/수정 모달 (연간 행사 참여 개요) -->
+    <div id="promo-event-modal" style="display:none;position:fixed;inset:0;background:rgba(16,24,40,.4);z-index:1000;align-items:center;justify-content:center">
+      <div style="background:var(--paper);border-radius:var(--r-xl);padding:26px;width:min(420px,95vw);box-shadow:0 24px 60px rgba(0,0,0,.2)">
+        <div style="font-size:15px;font-weight:700;margin-bottom:20px" id="pem-title">행사 등록</div>
+        <div style="margin-bottom:12px"><div class="flbl">행사명</div>
+          <input class="fi" id="pem-name" placeholder="예: 토론 감사제"></div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px">
+          <div><div class="flbl">시작일</div><input class="fi" type="date" id="pem-start"></div>
+          <div><div class="flbl">종료일</div><input class="fi" type="date" id="pem-end"></div>
+        </div>
+        <div style="margin-bottom:14px"><div class="flbl">비고 <span style="font-weight:400;color:var(--t-400)">(선택)</span></div>
+          <input class="fi" id="pem-note" placeholder="메모"></div>
+        <div style="font-size:11px;color:var(--t-300);margin-bottom:14px">등록 후 "판매실적 &gt; 행사별 실적" 화면에서 비고 표기·제외 브랜드 같은 세부 매칭 조건을 설정할 수 있어요.</div>
+        <div style="display:flex;gap:8px;justify-content:flex-end">
+          <button class="btn btn-ghost" onclick="document.getElementById('promo-event-modal').style.display='none'">취소</button>
+          <button class="btn btn-primary" onclick="savePromoEventModal()">저장</button>
+        </div>
+        <input type="hidden" id="pem-edit-id">
       </div>
     </div>
 
@@ -4090,6 +4167,167 @@ async function loadDisplay(){
     if(found) await loadCampaignDetail(currentCampaignId, year);
   }
   if(allRankingOpen) loadAllRanking(year);
+  loadPromoOverview();
+}
+
+// ── 연간 행사 참여 개요 (판매실적 > 행사별 실적의 promo_event 데이터를 그대로 활용) ──
+let promoOverviewCache=[];
+let currentPromoEventId=null;
+
+async function loadPromoOverview(){
+  const yrSel=document.getElementById('promo-ov-year');
+  if(yrSel && !yrSel.options.length){
+    const cur=new Date().getFullYear();
+    for(let y=cur+1;y>=cur-4;y--) yrSel.innerHTML+=`<option value="${y}">${y}년</option>`;
+    yrSel.value=cur;
+  }
+  const year=yrSel?.value||new Date().getFullYear();
+  const r=await api(`/api/promo-events/overview?year=${year}`);
+  if(!r?.ok) return;
+  if(yrSel && r.years && r.years.length){
+    const have=new Set(Array.from(yrSel.options).map(o=>o.value));
+    r.years.forEach(y=>{ if(!have.has(String(y))) yrSel.innerHTML+=`<option value="${y}">${y}년</option>`; });
+    yrSel.value=String(r.year);
+  }
+  promoOverviewCache=r.events||[];
+  renderPromoOverviewTable(r);
+}
+
+function renderPromoOverviewTable(r){
+  const evs=r.events||[];
+  const avgRate = evs.length ? (evs.reduce((s,e)=>s+e.participation_rate,0)/evs.length) : 0;
+  const totalAmt = evs.reduce((s,e)=>s+e.amount,0);
+  const totalQty = evs.reduce((s,e)=>s+e.qty,0);
+  document.getElementById('promo-ov-kpi').innerHTML=[
+    {l:'등록된 행사',v:`${evs.length}개`,c:'var(--p)'},
+    {l:'전체 매장 수',v:`${r.total_store_count||0}개`,c:'var(--t-900)'},
+    {l:'평균 참여율',v:`${avgRate.toFixed(1)}%`,c:'#16A34A'},
+    {l:'행사 총 매출',v:`${N(totalAmt)}원`,c:'#D97706'},
+  ].map(k=>`<div class="kpi"><div class="kpi-accent" style="background:${k.c}"></div>
+    <div class="kpi-lbl">${k.l}</div><div class="kpi-val" style="font-size:18px;color:${k.c}">${k.v}</div></div>`).join('');
+
+  document.getElementById('promo-ov-tbody').innerHTML = evs.length ? evs.map(e=>{
+    const rateColor = e.participation_rate>=50?'#16A34A':(e.participation_rate>=20?'#D97706':'#9CA3AF');
+    const warn = e.configured?'':' <span style="font-size:10px;color:var(--red);font-weight:400">(비고표기 미설정)</span>';
+    return `<tr>
+      <td style="font-weight:600;cursor:pointer" onclick="openPromoEventParticipation(${e.id})">${e.name}${warn}</td>
+      <td style="font-size:12px;color:var(--t-300)">${e.date_start} ~ ${e.date_end}</td>
+      <td style="text-align:center">${e.store_count} / ${e.total_store_count}</td>
+      <td style="text-align:center;font-weight:700;color:${rateColor}">${e.participation_rate}%</td>
+      <td style="text-align:right">${N(e.qty)}</td>
+      <td style="text-align:right;font-weight:600">${N(e.amount)}원</td>
+      <td style="text-align:center">
+        <button class="btn btn-xs" onclick="editPromoEventRow(${e.id})">수정</button>
+        <button class="btn btn-xs" style="background:var(--red-lt);color:var(--red)" onclick="deletePromoEventRow(${e.id})">삭제</button>
+      </td>
+    </tr>`;
+  }).join('') : `<tr><td colspan="7" style="text-align:center;color:var(--t-300);padding:24px 0">이 연도에 등록된 행사가 없습니다</td></tr>`;
+}
+
+async function togglePromoSuggest(){
+  const wrap=document.getElementById('promo-suggest-wrap');
+  const show = wrap.style.display==='none';
+  wrap.style.display = show?'block':'none';
+  if(show) await loadPromoSuggestions();
+}
+
+async function loadPromoSuggestions(){
+  const list=document.getElementById('promo-suggest-list');
+  list.innerHTML='<span style="font-size:12px;color:var(--t-300)">찾는 중...</span>';
+  const r=await api('/api/promo-events/auto-detect');
+  if(!r?.ok) return;
+  if(!r.suggestions.length){ list.innerHTML='<span style="font-size:12px;color:var(--t-300)">새로 감지된 행사 표기가 없습니다</span>'; return; }
+  list.innerHTML=r.suggestions.map(s=>
+    `<button class="btn btn-ghost btn-sm" style="background:#fff" onclick='openCreatePromoEvent(${JSON.stringify(s.tag)},${JSON.stringify(s.date_from)},${JSON.stringify(s.date_to)})'>
+      ${s.tag} <span style="color:var(--t-300)">(${s.count}건·${s.store_count}개 매장)</span>
+    </button>`
+  ).join('');
+}
+
+function openCreatePromoEvent(tag, dateFrom, dateTo){
+  document.getElementById('pem-title').textContent='행사 등록';
+  document.getElementById('pem-edit-id').value='';
+  document.getElementById('pem-name').value=tag||'';
+  document.getElementById('pem-start').value=dateFrom||'';
+  document.getElementById('pem-end').value=dateTo||'';
+  document.getElementById('pem-note').value='';
+  document.getElementById('promo-event-modal').style.display='flex';
+}
+
+function editPromoEventRow(id){
+  const ev=promoOverviewCache.find(e=>e.id===id);
+  if(!ev) return;
+  document.getElementById('pem-title').textContent='행사 수정';
+  document.getElementById('pem-edit-id').value=id;
+  document.getElementById('pem-name').value=ev.name;
+  document.getElementById('pem-start').value=ev.date_start;
+  document.getElementById('pem-end').value=ev.date_end;
+  document.getElementById('pem-note').value=ev.note||'';
+  document.getElementById('promo-event-modal').style.display='flex';
+}
+
+async function savePromoEventModal(){
+  const id=document.getElementById('pem-edit-id').value;
+  const name=document.getElementById('pem-name').value.trim();
+  const date_start=document.getElementById('pem-start').value;
+  const date_end=document.getElementById('pem-end').value;
+  const note=document.getElementById('pem-note').value.trim();
+  if(!name||!date_start||!date_end){ toast('행사명과 기간을 입력해주세요', false); return; }
+  const body={name, date_start, date_end, note};
+  const r = id ? await api(`/api/promo-events/${id}`, {method:'PUT', body})
+               : await api('/api/promo-events', {method:'POST', body});
+  if(r?.ok){
+    toast(id?'행사 정보를 수정했습니다':'행사를 등록했습니다');
+    document.getElementById('promo-event-modal').style.display='none';
+    loadPromoOverview();
+    const sw=document.getElementById('promo-suggest-wrap');
+    if(sw && sw.style.display!=='none') loadPromoSuggestions();
+  } else {
+    toast(r?.msg||'저장에 실패했습니다', false);
+  }
+}
+
+async function deletePromoEventRow(id){
+  const ev=promoOverviewCache.find(e=>e.id===id);
+  if(!confirm(`'${ev?.name||'이 행사'}'를 삭제할까요? 등록된 공급율 조건도 함께 삭제됩니다.`)) return;
+  const r=await api(`/api/promo-events/${id}`, {method:'DELETE'});
+  if(r?.ok){
+    toast('삭제했습니다'); loadPromoOverview();
+    if(currentPromoEventId===id) document.getElementById('promo-ev-detail-wrap').style.display='none';
+  }
+}
+
+async function openPromoEventParticipation(id){
+  currentPromoEventId=id;
+  const r=await api(`/api/promo-events/${id}/participation`);
+  if(!r?.ok){ toast(r?.msg||'불러오기에 실패했습니다', false); return; }
+  document.getElementById('promo-ev-detail-wrap').style.display='block';
+  document.getElementById('promo-ev-detail-title').textContent=`${r.event.name} 참여 현황`;
+  document.getElementById('promo-ev-detail-kpi').innerHTML=[
+    {l:'전체 매장',v:`${r.total_store_count}개`,c:'var(--t-900)'},
+    {l:'참여 매장',v:`${r.participated_count}개`,c:'var(--p)'},
+    {l:'참여율',v:`${r.participation_rate}%`,c:'#16A34A'},
+  ].map(k=>`<div class="kpi"><div class="kpi-accent" style="background:${k.c}"></div>
+    <div class="kpi-lbl">${k.l}</div><div class="kpi-val" style="font-size:18px;color:${k.c}">${k.v}</div></div>`).join('');
+  document.getElementById('promo-ev-detail-tbody').innerHTML=r.participants.map(p=>`<tr>
+    <td>${p.store}</td>
+    <td style="text-align:center">${p.participated?'<span style="color:#16A34A;font-weight:700">참여 ✓</span>':'<span style="color:var(--t-300)">미참여</span>'}</td>
+    <td style="text-align:right">${p.participated?N(p.qty):'-'}</td>
+    <td style="text-align:right">${p.participated?N(p.amount)+'원':'-'}</td>
+  </tr>`).join('');
+  document.getElementById('promo-ev-detail-wrap').scrollIntoView({behavior:'smooth', block:'start'});
+}
+
+function downloadPromoOverviewExcel(){
+  const year=document.getElementById('promo-ov-year')?.value||new Date().getFullYear();
+  window.location.href=`/api/export/xlsx/promo-events-overview?year=${year}`;
+  toast('연간 행사 개요 엑셀 다운로드 중...');
+}
+
+function downloadPromoEventDetailExcel(){
+  if(!currentPromoEventId){ toast('행사를 먼저 선택해주세요', false); return; }
+  window.location.href=`/api/export/xlsx/event-report?event_id=${currentPromoEventId}`;
+  toast('행사 상세 엑셀 다운로드 중...');
 }
 
 async function toggleAllRanking(){
