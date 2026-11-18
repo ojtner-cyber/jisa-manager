@@ -9175,6 +9175,39 @@ def _detect_category_from_text(text):
     return None
 
 
+# 수정사항(Round B): "[브랜드명]\nL 요약..." 처럼 * 서브헤더 없이 괄호 제목 자체가 브랜드/제품명인
+# 옛 데이터 형식을 처리할 때, 이 목록에 있는 제목은 브랜드가 아니라 원래부터 카테고리/주제
+# 제목이므로 브랜드로 오인해 볼드 처리하지 않는다(그대로 카테고리 제목으로 유지).
+_NON_BRAND_HEADERS = {
+    '유모차', '카시트', '웨건', '하이체어', '아기침대', '식탁의자', '용품',
+    '기타', '시장상황', '요청사항',
+}
+
+
+def _parse_bullet_lines(lines):
+    """"L 한줄요약" + 바로 아래 들여쓴 설명 줄을 " - 요약: 설명" 한 줄 불릿으로 합친다.
+    이미 "- 설명" 형식으로 정리된 줄이 다시 들어와도(멱등성) 중복 대시 없이 그대로 유지한다."""
+    detail_lines = [ln for ln in lines if ln.strip()]
+    bullets = []
+    i = 0
+    while i < len(detail_lines):
+        ln = detail_lines[i].strip()
+        if ln.startswith('L '):
+            summary = ln[2:].strip()
+            detail = ''
+            if (i + 1 < len(detail_lines) and not detail_lines[i + 1].strip().startswith('L ')
+                    and not detail_lines[i + 1].strip().startswith('*')):
+                detail = detail_lines[i + 1].strip()
+                i += 1
+            bullets.append(f"{summary}: {detail}" if detail else summary)
+        else:
+            if ln.startswith('- '):
+                ln = ln[2:].strip()
+            bullets.append(ln)
+        i += 1
+    return bullets
+
+
 def _reformat_visit_content_clean(text):
     """방문이력 '자사 주요내용'/'타사 주요내용'을 깔끔한 고정 형식으로 자동 정리한다 (수정사항).
 
@@ -9216,6 +9249,26 @@ def _reformat_visit_content_clean(text):
 
         brand_idxs = [i for i, ln in enumerate(body_lines) if ln.strip().startswith('*')]
         if not brand_idxs:
+            # 수정사항(Round B): "[브랜드명]\nL 요약\n  설명" 형식(* 서브헤더가 없는 옛 데이터) —
+            # 대괄호 제목 자체가 알려진 카테고리/주제어(_NON_BRAND_HEADERS)가 아니라면 그 제목을
+            # 브랜드명으로 보고 똑같이 정리한다(카테고리는 브랜드로 다시 판별, 못 찾으면 [기타]).
+            if header:
+                bullets = _parse_bullet_lines(body_lines)
+                if bullets:
+                    if header in _NON_BRAND_HEADERS:
+                        # "[시장상황]"처럼 제목 자체가 브랜드가 아니라 원래부터 주제 제목인 경우 —
+                        # 브랜드로 오인해 볼드 처리하지 않고, 제목은 그대로 둔 채 세부줄만
+                        # " - 설명" 불릿 형식으로 정리한다.
+                        cat = header
+                        entry = (None, bullets)
+                    else:
+                        cat = _detect_category_from_text(header) or '기타'
+                        entry = (header, bullets)
+                    if cat not in cat_entries:
+                        cat_entries[cat] = []
+                        cat_order.append(cat)
+                    cat_entries[cat].append(entry)
+                    continue
             freeform_blocks.append(block)
             continue
 
@@ -9224,27 +9277,8 @@ def _reformat_visit_content_clean(text):
             if not brand_raw:
                 continue
             end = brand_idxs[bi + 1] if bi + 1 < len(brand_idxs) else len(body_lines)
-            detail_lines = [ln for ln in body_lines[idx + 1:end] if ln.strip()]
-
-            bullets = []
-            i = 0
-            while i < len(detail_lines):
-                ln = detail_lines[i].strip()
-                if ln.startswith('L '):
-                    summary = ln[2:].strip()
-                    detail = ''
-                    if (i + 1 < len(detail_lines) and not detail_lines[i + 1].strip().startswith('L ')
-                            and not detail_lines[i + 1].strip().startswith('*')):
-                        detail = detail_lines[i + 1].strip()
-                        i += 1
-                    bullets.append(f"{summary}: {detail}" if detail else summary)
-                else:
-                    # 이미 "- 설명" 형식으로 정리된 줄이 다시 들어온 경우(멱등성) 대비 —
-                    # 앞의 "- "를 한 번만 떼고 다시 붙인다(중복 대시 방지).
-                    if ln.startswith('- '):
-                        ln = ln[2:].strip()
-                    bullets.append(ln)
-                i += 1
+            detail_lines = body_lines[idx + 1:end]
+            bullets = _parse_bullet_lines(detail_lines)
 
             cat = _detect_category_from_text(brand_raw) or header or '기타'
             if cat not in cat_entries:
@@ -9256,12 +9290,58 @@ def _reformat_visit_content_clean(text):
     for cat in cat_order:
         lines_out = [f'[{cat}]']
         for brand_raw, bullets in cat_entries[cat]:
-            lines_out.append(f'*{brand_raw}*')
+            if brand_raw:
+                lines_out.append(f'*{brand_raw}*')
             for b in bullets:
                 lines_out.append(f' - {b}')
         out_parts.append('\n'.join(lines_out))
     out_parts.extend(freeform_blocks)
     return '\n\n'.join(p for p in out_parts if p.strip())
+
+
+def _split_blocks_with_header_rows(text):
+    """방문이력 엑셀 셀 렌더링용(수정사항): "[카테고리]" 제목 줄과 그 아래 내용(*브랜드*/ - 설명)을
+    같은 셀에 섞어 넣는 대신, 제목 줄은 별도의 "행"으로 떼어낸다 — 제목 행에만 배경색(SECTION_BG)을
+    넣어 "유모차/카시트/식탁의자/아기침대/용품" 구분이 한눈에 보이도록 하기 위함(엑셀 셀 하나의
+    텍스트 일부에만 배경색을 줄 수 없어서 행 자체를 나눔). 반환값: [(텍스트, 제목행여부), ...]."""
+    blocks = _split_content_blocks(_reformat_visit_content_clean(text))
+    rows = []
+    for block in blocks:
+        lines = block.split('\n')
+        if lines and lines[0].startswith('[') and lines[0].endswith(']'):
+            rows.append((lines[0], True))
+            body = '\n'.join(lines[1:]).strip()
+            if body:
+                rows.append((body, False))
+        elif block.strip():
+            rows.append((block, False))
+    return rows
+
+
+def _value_with_bold_brand_lines(text, FNAME, size=10):
+    """"*브랜드*" 형태로 통째로 된 줄만 실제 BOLD 폰트로 렌더링하고 나머지는 평문으로 — 수정사항:
+    "브랜드명은 *을 브랜드 앞에 써주고 브랜드명은 BOLD처리해줘". 브랜드 줄이 하나도 없으면
+    원래 문자열을 그대로 반환해서(엑셀 서식상 차이 없음) 멱등적으로 동작."""
+    if not text:
+        return text
+    lines = text.split('\n')
+    brand_pat = re.compile(r'^\*.+\*$')
+    is_brand = [bool(brand_pat.match(ln.strip())) for ln in lines]
+    if not any(is_brand):
+        return text
+    import itertools
+    from openpyxl.cell.rich_text import CellRichText, TextBlock
+    from openpyxl.cell.text import InlineFont
+    bold_f = InlineFont(rFont=FNAME, sz=size, b=True)
+    parts = []
+    first = True
+    for key, group in itertools.groupby(range(len(lines)), key=lambda i: is_brand[i]):
+        idxs = list(group)
+        chunk = '\n'.join(lines[i] for i in idxs)
+        prefix = '' if first else '\n'
+        parts.append(TextBlock(bold_f, prefix + chunk) if key else (prefix + chunk))
+        first = False
+    return CellRichText(*parts)
 
 
 def _split_out_requests(content):
@@ -9474,6 +9554,62 @@ def _strip_job_title(name):
     return s
 
 
+# ── 매장 방문 보고서(매출정보) 전용 — 제품 제외/이름다듬기/표시순서 규칙 (수정사항).
+# 다른 리포트(판매실적·행사별 실적 등)에는 영향을 주지 않도록 _build_store_card_data 안에서만 쓴다.
+_VISIT_REPORT_PRODUCT_EXCLUDE = {
+    '줄즈': ['에어+'],
+    '원더폴드': ['W시리즈 엘리트프로'],
+    '엔픽스': ['비바체+'],
+}
+_VISIT_REPORT_PRODUCT_ORDER = {
+    '줄즈': ['지오', '데이', '허브', '에어'],
+}
+
+def _visit_report_filter_product(brand, pname):
+    """매장 방문 보고서의 매출정보 표에서 특정 브랜드의 특정 제품을 숨기거나 이름을 다듬는다.
+    제외 대상이면 None, 아니면 (다듬어진) 이름을 반환한다.
+    - 줄즈: "에어+"는 숨김 / 원더폴드: "W시리즈 엘리트프로"는 숨김 / 엔픽스: "비바체+"는 숨김
+    - 엔픽스: 구버전 "스누즈"는 "스누즈2"로 리뉴얼됐으므로 구버전만 숨긴다("스누즈2"는 유지).
+    - 레카로: 제품명 뒤에 붙는 "1"은 모델 버전 표시일 뿐이라 화면에서는 빼고 보여준다(토론1→토론)."""
+    if not pname:
+        return pname
+    for excl in _VISIT_REPORT_PRODUCT_EXCLUDE.get(brand, []):
+        if excl in pname:
+            return None
+    if brand == '엔픽스' and '스누즈' in pname and '스누즈2' not in pname:
+        return None
+    if brand == '레카로':
+        pname = re.sub(r'1$', '', pname)
+    return pname
+
+
+def _visit_report_sort_products(brand, prods):
+    """브랜드별 제품 목록 정렬 — 줄즈는 "지오 데이 허브 에어" 고정 순서, 그 외는 매출액 내림차순.
+    prods는 {'product':..., 'amount':..., ...} 형태 dict들의 리스트/뷰."""
+    order = _VISIT_REPORT_PRODUCT_ORDER.get(brand)
+    if order:
+        def keyfn(p):
+            for i, prefix in enumerate(order):
+                if p['product'].startswith(prefix):
+                    return (i, p['product'])
+            return (len(order), p['product'])
+        return sorted(prods, key=keyfn)
+    return sorted(prods, key=lambda x: -x['amount'])
+
+
+def _visit_report_sort_product_names(brand, names):
+    """_visit_report_sort_products와 동일한 순서 규칙을, 금액 정보 없이 이름 문자열만 있을 때 적용."""
+    order = _VISIT_REPORT_PRODUCT_ORDER.get(brand)
+    if not order:
+        return sorted(names)
+    def keyfn(n):
+        for i, prefix in enumerate(order):
+            if n.startswith(prefix):
+                return (i, n)
+        return (len(order), n)
+    return sorted(names, key=keyfn)
+
+
 def _build_store_card_data(store_name, year=None, author_name=''):
     """매장정보 카드에 필요한 모든 값을 판매처관리(branches)+판매실적(sales_data)+store_visit_log+
     store_profile에서 실시간으로 계산해 한 번에 반환한다. 엑셀 다운로드와 화면 상세보기 양쪽에서 공용으로 쓴다."""
@@ -9520,18 +9656,25 @@ def _build_store_card_data(store_name, year=None, author_name=''):
         if b == '타프토이즈':
             continue
         pname = _display_product_name(r.get('item_name'))
+        pname = _visit_report_filter_product(b, pname)
+        if pname is None:
+            continue
         g = brand_product_map.setdefault(b, {}).setdefault(pname, {'product': pname, 'qty': 0, 'amount': 0})
         g['qty'] += r['quantity'] or 0
         g['amount'] += r['total'] or 0
     brand_product_breakdown = {
-        b: sorted(prods.values(), key=lambda x: -x['amount'])
+        b: _visit_report_sort_products(b, prods.values())
         for b, prods in brand_product_map.items()
     }
 
     # 베스트 제품 TOP5 (수량·금액·비중)
     product_map = {}
     for r in sale_rows:
+        b = remap_group(r.get('item_group') or '', r.get('item_name') or '') or '(미분류)'
         pname = _display_product_name(r.get('item_name'))
+        pname = _visit_report_filter_product(b, pname)
+        if pname is None:
+            continue
         g = product_map.setdefault(pname, {'product': pname, 'qty': 0, 'amount': 0})
         g['qty'] += r['quantity'] or 0
         g['amount'] += r['total'] or 0
@@ -9549,8 +9692,10 @@ def _build_store_card_data(store_name, year=None, author_name=''):
             mo = int(r['sale_date'][5:7])
         except Exception:
             continue
-        pname = _display_product_name(r.get('item_name'))
         b = remap_group(r.get('item_group') or '', r.get('item_name') or '') or '(미분류)'
+        pname = _visit_report_filter_product(b, _display_product_name(r.get('item_name')))
+        if pname is None:
+            continue
         ent = product_monthly_map.setdefault(pname, {'brand': b, 'months': {}})
         mo_ent = ent['months'].setdefault(mo, {'amount': 0, 'qty': 0})
         mo_ent['amount'] += r['total'] or 0
@@ -9590,8 +9735,10 @@ def _build_store_card_data(store_name, year=None, author_name=''):
             m = int(r['sale_date'][5:7])
         except Exception:
             continue
-        pname = _display_product_name(r.get('item_name'))
         b = remap_group(r.get('item_group') or '', r.get('item_name') or '') or '(미분류)'
+        pname = _visit_report_filter_product(b, _display_product_name(r.get('item_name')))
+        if pname is None:
+            continue
         g = monthly_product_map[m-1].setdefault(pname, {'product': pname, 'brand': b, 'qty': 0, 'amount': 0})
         g['qty'] += r['quantity'] or 0
         g['amount'] += r['total'] or 0
@@ -9607,7 +9754,9 @@ def _build_store_card_data(store_name, year=None, author_name=''):
         except Exception:
             continue
         b = remap_group(r.get('item_group') or '', r.get('item_name') or '') or '(미분류)'
-        p = _display_product_name(r.get('item_name'))
+        p = _visit_report_filter_product(b, _display_product_name(r.get('item_name')))
+        if p is None:
+            continue
         bm = brand_monthly.setdefault(b, [0]*12); bm[m-1] += r['total'] or 0
         pm = product_monthly.setdefault(p, [0]*12); pm[m-1] += r['total'] or 0
 
@@ -9628,9 +9777,11 @@ def _build_store_card_data(store_name, year=None, author_name=''):
     carried_brands = {}
     for item_name, item_group in all_sale_rows:
         b = remap_group(item_group or '', item_name or '') or '(미분류)'
-        p = _display_product_name(item_name)
+        p = _visit_report_filter_product(b, _display_product_name(item_name))
+        if p is None:
+            continue
         carried_brands.setdefault(b, set()).add(p)
-    carried_brands = {b: sorted(ps) for b, ps in carried_brands.items()}
+    carried_brands = {b: _visit_report_sort_product_names(b, ps) for b, ps in carried_brands.items()}
 
     # 방문·영업활동비 현황 (store_visit_log 자동 집계)
     # 수정사항6: 누적 히스토리를 차례차례 볼 수 있도록 날짜 오름차순(과거→최신, 최신이 맨 아래)으로 정렬
@@ -10972,9 +11123,7 @@ def _write_store_sales_sheet(wb, ws, data, FNAME):
     spacer(dr, 8)
     dr += 1
 
-    # ── 주요 제품 최근 흐름 분석 (수정사항: 한 줄에 "1월 N개 / 2월 N개 /..."로 길게 이어쓰던
-    #    것을, 1~12월이 열로 펼쳐진 표로 다시 구성 — 사용자가 보내준 참고 이미지와 동일하게
-    #    순위별 행을 남색/자주색으로 번갈아 칠해 한눈에 구분되도록 한다) ──
+    # ── 주요 제품 최근 흐름 분석 (1~12월이 열로 펼쳐진 표) ──
     # 수정사항(겹침 버그): 공용 `left`는 wrap_text=True라서 좁은 칸에서 줄바꿈되어 다음 줄과
     # 겹쳐 보였다 — 이 목록은 줄바꿈 없이 옆 칸으로 자연스럽게 흘러나가야 하므로 별도 정의.
     left_nowrap = Alignment(horizontal='left', vertical='center', wrap_text=False)
@@ -10982,7 +11131,8 @@ def _write_store_sales_sheet(wb, ws, data, FNAME):
     dr += 1
     trends = data.get('product_trends') or []
     month_cols = ['D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M', 'N', 'O']
-    TREND_ROW_COLORS = ['1F4E79', 'B8286E']  # 홀수 순위=남색, 짝수 순위=자주색 — 번갈아 눈에 띄게
+    # 수정사항: 순위별로 남색/자주색을 번갈아 칠했던 것을 사용자 피드백에 따라 되돌림 —
+    # "제품 글꼴색상은 검정색으로 통일".
     if trends:
         ws.merge_cells(f'B{dr}:C{dr}')
         hc = ws[f'B{dr}']; hc.value = '제품'; hc.font = Font(name=FNAME, size=9, bold=True)
@@ -10994,16 +11144,15 @@ def _write_store_sales_sheet(wb, ws, data, FNAME):
         dr += 1
         for idx, t in enumerate(trends):
             label = f"{t['rank']}위  [{t['brand']}] {t['product']}"
-            color = TREND_ROW_COLORS[idx % 2]
             ws.merge_cells(f'B{dr}:C{dr}')
             lc = ws[f'B{dr}']
-            lc.value = label; lc.font = Font(name=FNAME, size=9, bold=True, color=color)
+            lc.value = label; lc.font = Font(name=FNAME, size=9, bold=True)
             lc.fill = mf('FFFFFF'); lc.border = bdr; lc.alignment = left_nowrap
             bars_by_month = {b['month']: b['qty'] for b in t['bars']}
             for ci, col in enumerate(month_cols):
                 v = bars_by_month.get(f'{ci+1}월', 0)
                 c = ws[f'{col}{dr}']
-                c.value = v; c.font = Font(name=FNAME, size=9, bold=True, color=color)
+                c.value = v; c.font = Font(name=FNAME, size=9, bold=True)
                 c.fill = mf('FFFFFF'); c.border = bdr; c.alignment = ctr
             ws.row_dimensions[dr].height = 18
             dr += 1
@@ -11083,6 +11232,10 @@ def _write_visit_log_sheet(ws, data, FNAME):
     from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
     from openpyxl.styles.colors import Color
     def mf(h): return PatternFill("solid", fgColor=h)
+    # 수정사항: "[유모차]" 같은 카테고리 제목 행 배경색 — 다른 시트(매장정보/매출정보)의
+    # 섹션 제목 배경과 동일한 "흰색, 배경1, 5% 더 어둡게".
+    SECTION_BG = Color(theme=0, tint=-0.049989318521683403)
+    def mf_section(): return PatternFill("solid", fgColor=SECTION_BG)
     # 수정사항(날짜별 구분선): 점선(hair)이 너무 흐려서 방문일별로 잘 구분이 안 된다는 피드백 —
     # 기본(실선) 얇은 테두리로 변경.
     thin = Side(style='thin', color='D1D5DB')
@@ -11162,18 +11315,22 @@ def _write_visit_log_sheet(ws, data, FNAME):
         # 방문 전체에 공통인 값들은 그 줄들을 세로로 병합해서 한 번만 보이게 한다.
         # 수정사항: 엑셀로 내려받을 때 항상 깔끔한 고정 형식([카테고리]/*브랜드*/ - 설명)으로
         # 자동 정리해서 보여준다 — 저장된 원문이 예전 형식이어도 다운로드 시점에 자동 변환된다.
-        our_blocks = _split_content_blocks(_reformat_visit_content_clean(v.get('our_content', '')))
-        comp_blocks = _split_content_blocks(_reformat_visit_content_clean(v.get('competitor_trend', '')))
-        sub_n = max(len(our_blocks), len(comp_blocks), 1)
+        # 수정사항(카테고리 제목 배경색): "[유모차]" 같은 카테고리 제목 줄은 내용과 같은 셀에
+        # 섞어 넣지 않고 별도의 행으로 떼어내서, 그 행에만 SECTION_BG(흰색,배경1,5%더 어둡게)
+        # 배경색을 줘서 한눈에 구분되도록 한다. 브랜드명("*브랜드*")은 실제 BOLD 폰트로 렌더링.
+        our_rows = _split_blocks_with_header_rows(v.get('our_content', ''))
+        comp_rows = _split_blocks_with_header_rows(v.get('competitor_trend', ''))
+        sub_n = max(len(our_rows), len(comp_rows), 1)
         start_r, end_r = r, r + sub_n - 1
 
         for si in range(sub_n):
             rr = start_r + si
-            our_t = our_blocks[si] if si < len(our_blocks) else ''
-            comp_t = comp_blocks[si] if si < len(comp_blocks) else ''
-            for ci, val in ((3, our_t), (4, comp_t)):
-                c = ws.cell(row=rr, column=2+ci, value=val)
+            our_t, our_is_hdr = our_rows[si] if si < len(our_rows) else ('', False)
+            comp_t, comp_is_hdr = comp_rows[si] if si < len(comp_rows) else ('', False)
+            for ci, val, is_hdr in ((3, our_t, our_is_hdr), (4, comp_t, comp_is_hdr)):
+                c = ws.cell(row=rr, column=2+ci, value=_value_with_bold_brand_lines(val, FNAME))
                 c.font = f_val; c.border = bdr; c.alignment = left
+                c.fill = mf_section() if is_hdr else mf('FFFFFF')
             wrap_pairs = [(our_t, widths['E']), (comp_t, widths['F'])]
             max_lines = max(_estimate_wrapped_lines(t, w) for t, w in wrap_pairs)
             ws.row_dimensions[rr].height = max(20, min(14.5 * max_lines + 6, 300))
