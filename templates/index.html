@@ -626,6 +626,11 @@ td.center{text-align:center}
             <button class="btn btn-ghost btn-sm" onclick="downloadEventReport()">📊 보고서 다운로드</button>
             <button class="btn btn-ghost btn-sm" onclick="openPromoEventModal()">⚙️ 행사 관리</button>
           </div>
+          <!-- 수정사항3: 비고란에서 자동 감지된 행사 표기를 바로 보여줘서, 키워드를 몰라도 클릭 한 번으로 검색할 수 있게 -->
+          <div style="margin-top:12px;padding-top:12px;border-top:1px dashed var(--border)">
+            <div style="font-size:11px;color:var(--t-400);margin-bottom:6px">🔎 자동 감지된 행사 표기 (클릭하면 바로 검색)</div>
+            <div id="es-autodetect-list" style="display:flex;flex-wrap:wrap;gap:6px"></div>
+          </div>
         </div>
         <div id="event-sales-result"></div>
       </div>
@@ -2443,6 +2448,11 @@ function renderVrStoreView(){
           style="font-size:11.5px;font-weight:700;padding:7px 16px;border-radius:8px;border:1px solid var(--border-md);background:var(--bg);color:var(--t-400);cursor:not-allowed">
           📥 선택 매장 엑셀 다운로드 (<span id="vr-selected-count">0</span>)
         </button>
+        <button onclick="runVrCleanupFormat()"
+          title="예전 형식으로 저장된 방문이력을 [카테고리]/*브랜드*/ - 설명 형식으로 한 번에 자동 정리"
+          style="font-size:11.5px;font-weight:700;padding:7px 16px;border-radius:8px;border:1px solid var(--border-md);background:var(--bg);color:var(--t-500);cursor:pointer">
+          🧹 이력 서식 자동 정리
+        </button>
       </div>
     </div>
     <div style="background:var(--paper);border:1px solid var(--border);border-radius:12px;overflow:hidden">
@@ -2544,6 +2554,19 @@ async function executeVrMerge(names){
     reloadVisitReportView();
   } else {
     toast(r?.msg || '병합에 실패했습니다', false);
+  }
+}
+
+async function runVrCleanupFormat(){
+  // 수정사항: 예전 형식으로 저장된 방문이력 자사/타사 내용을 [카테고리]/*브랜드*/ - 설명 형식으로
+  // 한 번에 자동 정리 — 멱등적이라 여러 번 눌러도 안전하다.
+  if(!confirm('저장된 모든 방문이력의 자사·타사 주요내용을 새 형식([카테고리]/*브랜드*/ - 설명)으로 자동 정리할까요?\n내용 자체는 바뀌지 않고 표현 형식만 정리됩니다.')) return;
+  toast('방문이력 서식을 정리하는 중입니다...');
+  const r = await api('/api/visit-report/cleanup-format', {method:'POST', body:{}});
+  if(r?.ok){
+    toast(`서식 정리 완료 — 전체 ${r.checked}건 중 ${r.updated}건 정리됨`);
+  } else {
+    toast(r?.msg || '서식 정리에 실패했습니다', false);
   }
 }
 
@@ -2691,7 +2714,7 @@ function _renderVrLogForm(log, opts, rid, presetStoreName){
         <div>${lbl('면담자')}${inp('vre-contact', log.contact_person)}</div>
       </div>
       <div>${lbl('자사 주요내용 (매장 의견 · 요청)')}${txt('vre-our', log.our_content)}</div>
-      <div>${lbl('타사 동향')}${txt('vre-comp', log.competitor_trend)}</div>
+      <div>${lbl('타사 주요내용')}${txt('vre-comp', log.competitor_trend)}</div>
       <div>${lbl('조치사항 / 후속')}${txt('vre-action', log.action_item)}</div>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
         <div>${lbl('완료(예정)일')}${inp('vre-due', log.due_date, 'date')}</div>
@@ -4276,7 +4299,7 @@ function renderPromoOverviewTable(r){
       // 등록하지 않아도 자동 감지된 행사 — 기간·참여매장·참여율이 이미 자동 계산되어 있다
       const tagJs=JSON.stringify(e.tag);
       return `<tr style="background:var(--bg)">
-        <td style="font-weight:600;cursor:pointer" onclick='openPromoTagParticipation(${tagJs})'>${e.name} <span style="font-size:10px;color:var(--p);font-weight:500">(자동감지·미등록)</span></td>
+        <td style="font-weight:600;cursor:pointer" onclick='openPromoTagParticipation(${tagJs})'>${e.name}</td>
         <td style="font-size:12px;color:var(--t-300)">${e.date_start} ~ ${e.date_end}</td>
         <td style="text-align:center">${e.store_count} / ${e.total_store_count}</td>
         <td style="text-align:center;font-weight:700;color:${rateColor}">${e.participation_rate}%</td>
@@ -4395,7 +4418,7 @@ async function openPromoTagParticipation(tag){
 
 function renderPromoDetail(r, isAuto){
   document.getElementById('promo-ev-detail-wrap').style.display='block';
-  document.getElementById('promo-ev-detail-title').textContent=`${r.event.name} 참여 현황` + (isAuto?' (자동감지·미등록)':'');
+  document.getElementById('promo-ev-detail-title').textContent=`${r.event.name} 참여 현황`;
   document.getElementById('promo-ev-detail-kpi').innerHTML=[
     {l:'전체 매장',v:`${r.total_store_count}개`,c:'var(--t-900)'},
     {l:'참여 매장',v:`${r.participated_count}개`,c:'var(--p)'},
@@ -5789,8 +5812,28 @@ function switchSalesTab(tab){
   if(drBar) drBar.style.display = tab==='weekly' ? 'flex' : 'none';
   if(tab==='trend') { loadTrendData(); document.getElementById('raw-file-status-banner').style.display='none'; }
   else if(tab==='ranking') { renderRanking(); document.getElementById('raw-file-status-banner').style.display='none'; }
-  else if(tab==='event') { document.getElementById('raw-file-status-banner').style.display='none'; }
+  else if(tab==='event') { document.getElementById('raw-file-status-banner').style.display='none'; loadEventAutoDetect(); }
   else loadSalesPage();
+}
+
+async function loadEventAutoDetect(){
+  // 수정사항3: 행사별 실적 탭에도 자동 감지 기능을 붙여서, 키워드를 몰라도 클릭 한 번으로
+  // 검색하고 바로 보고서를 다운로드할 수 있게 한다.
+  const list=document.getElementById('es-autodetect-list');
+  if(!list) return;
+  list.innerHTML='<span style="font-size:11px;color:var(--t-300)">찾는 중...</span>';
+  const r=await api('/api/promo-events/auto-detect');
+  if(!r?.ok){ list.innerHTML=''; return; }
+  if(!r.suggestions.length){ list.innerHTML='<span style="font-size:11px;color:var(--t-300)">새로 감지된 행사 표기가 없습니다</span>'; return; }
+  list.innerHTML=r.suggestions.map(s=>
+    `<span style="cursor:pointer;display:inline-flex;align-items:center;background:var(--bg);border:1px solid var(--border);border-radius:20px;padding:4px 12px;font-size:11.5px"
+       onclick='fillEventKeywordAndSearch(${JSON.stringify(s.tag)})'>${s.tag} <span style="color:var(--t-300);margin-left:4px">(${s.count}건·${s.store_count}개 매장)</span></span>`
+  ).join('');
+}
+
+function fillEventKeywordAndSearch(tag){
+  document.getElementById('event-keyword').value=tag;
+  loadEventSales();
 }
 
 async function loadEventSales(){

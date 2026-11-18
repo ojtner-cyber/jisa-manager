@@ -1698,6 +1698,22 @@ def is_hidden_seller(name):
     """숨겨야 할 매장인지 확인"""
     return DISPLAY_NAME.get(name) is None and name in DISPLAY_NAME
 
+# 수정사항: 현우가 직접 관리하지 않는 매장(타 담당자/다른 유통망 거래처) — "판매처 현황 엑셀"에서
+# 본인이 관리하는 매장 위주로 보이도록 제외한다. 전체 매출 집계·대시보드 등 다른 화면에는
+# 영향을 주지 않도록, 이 명단은 판매처 현황 엑셀에서만 사용한다.
+UNMANAGED_SELLERS = {
+    '융건토이', '이케이원', '장난감마트 목포점', '장난감마트하당점 여수', '장난감마트하당점',
+    '토이나라 청주점', '토이박사 서산점', '토이박사 청주점', '토이빌리지 의왕점',
+    '토이스타 수원점', '토이스타 아산점', '토이스타 평택점', '토이스타 화성점', '토이스토리 아산점',
+}
+
+def is_unmanaged_seller(name):
+    """현우가 관리하지 않는 매장인지 확인 (판매처 현황 엑셀 전용 필터)"""
+    if not name:
+        return False
+    norm = re.sub(r'\s+', '', name)
+    return any(norm == re.sub(r'\s+', '', u) for u in UNMANAGED_SELLERS)
+
 def get_all_real_sellers_for(seller_name):
     """표시명에 해당하는 모든 DB real_seller 값 반환 (하남미시→미사 등 aliases 포함)"""
     # 표시명 → DB 저장명 역매핑
@@ -5240,7 +5256,8 @@ def api_promo_tag_participation():
 @login_required
 def export_xlsx_promo_events_overview():
     """연간 행사 전체 개요 엑셀 — 1시트: 행사별 개요(기간·참여매장수·참여율·수량·매출),
-    2시트: 매장×행사 참여 매트릭스(매장마다 어느 행사에 얼마나 참여했는지 한 번에 비교)."""
+    2시트: 매장×행사 참여 매트릭스(O 표시로 참여 여부만), 3시트: 매장×행사별 참여 수량·판매금액."""
+    from openpyxl.styles.colors import Color
     year = request.args.get('year', '').strip() or str(datetime.now().year)
 
     conn = get_db()
@@ -5275,13 +5292,18 @@ def export_xlsx_promo_events_overview():
         if not y_from or not y_to or y_from > year or y_to < year:
             continue
         ukey = f"tag:{c['tag']}"
-        events.append({'id': None, '_ukey': ukey, 'name': f"{c['tag']} (자동감지)",
+        # 수정사항: "(자동감지)" 표기 제거 — 등록 여부와 상관없이 행사명만 그대로 보여준다
+        events.append({'id': None, '_ukey': ukey, 'name': c['tag'],
                         'date_start': c['date_from'], 'date_end': c['date_to']})
         ev_store_agg[ukey] = {s: v for s, v in c['store_agg'].items()}
     events.sort(key=lambda e: e['date_start'] or '')
 
+    # 수정사항: 진한 남색(네이비) 타이틀바는 너무 어두워 보인다는 피드백 — 매장 방문 보고서 등
+    # 다른 엑셀에서 이미 확정된, 흰 배경에 아주 옅은 회색 섹션 밴드를 쓰는 절제된 스타일로 통일한다.
     def mf(hex_): return PatternFill('solid', fgColor=hex_)
-    NAVY = '1F2937'; HGRAY = 'E5E7EB'; BORDERC = 'D1D5DB'
+    SECTION_BG = Color(theme=0, tint=-0.049989318521683403)  # 흰색, 배경1, 5% 더 어둡게
+    def mf_section(): return PatternFill('solid', fgColor=SECTION_BG)
+    HGRAY = 'F2F2F2'; BORDERC = 'D1D5DB'
     thin = Side(style='thin', color=BORDERC); bdr = Border(left=thin, right=thin, top=thin, bottom=thin)
     ctr = Alignment(horizontal='center', vertical='center'); left = Alignment(horizontal='left', vertical='center')
     FNAME = '맑은 고딕'
@@ -5291,7 +5313,7 @@ def export_xlsx_promo_events_overview():
     headers = ['행사명', '기간', '참여 매장수', '전체 매장수', '참여율', '총 수량', '총 매출']
     ws1.merge_cells(f'A1:{get_column_letter(len(headers))}1')
     c = ws1.cell(row=1, column=1, value=f'{year}년 행사 연간 개요')
-    c.font = Font(bold=True, size=13, name=FNAME, color='FFFFFF'); c.fill = mf(NAVY); c.alignment = ctr
+    c.font = Font(bold=True, size=13, name=FNAME); c.fill = mf_section(); c.alignment = ctr
     ws1.row_dimensions[1].height = 26
     hr = 3
     for ci, h in enumerate(headers, start=1):
@@ -5323,25 +5345,26 @@ def export_xlsx_promo_events_overview():
     for ci, w in enumerate(widths1, start=1):
         ws1.column_dimensions[get_column_letter(ci)].width = w
 
-    ws2 = wb.create_sheet('매장별 참여현황')
-    ev_names = [ev['name'] for ev in events]
-    headers2 = ['매장명'] + ev_names + ['참여 행사수']
-    if headers2:
-        ws2.merge_cells(f'A1:{get_column_letter(len(headers2))}1')
-    c = ws2.cell(row=1, column=1, value=f'{year}년 매장×행사 참여 현황 (셀 값 = 참여 매출액)')
-    c.font = Font(bold=True, size=13, name=FNAME, color='FFFFFF'); c.fill = mf(NAVY); c.alignment = ctr
-    ws2.row_dimensions[1].height = 26
-    hr2 = 2
-    for ci, h in enumerate(headers2, start=1):
-        c = ws2.cell(row=hr2, column=ci, value=h)
-        c.font = Font(bold=True, size=10, name=FNAME); c.fill = mf(HGRAY); c.alignment = ctr; c.border = bdr
-
     all_names = list(all_stores)
     seen_names = set(all_names)
     for ev in events:
         for s in ev_store_agg[ev['_ukey']].keys():
             if s not in seen_names:
                 seen_names.add(s); all_names.append(s)
+    ev_names = [ev['name'] for ev in events]
+
+    # 수정사항: 참여현황 탭은 금액이 아니라 O 표시로 참여 여부만 — 수량·판매금액은 별도 탭으로 분리
+    ws2 = wb.create_sheet('매장별 참여현황')
+    headers2 = ['매장명'] + ev_names + ['참여 행사수']
+    if headers2:
+        ws2.merge_cells(f'A1:{get_column_letter(len(headers2))}1')
+    c = ws2.cell(row=1, column=1, value=f'{year}년 매장×행사 참여 현황')
+    c.font = Font(bold=True, size=13, name=FNAME); c.fill = mf_section(); c.alignment = ctr
+    ws2.row_dimensions[1].height = 26
+    hr2 = 2
+    for ci, h in enumerate(headers2, start=1):
+        c = ws2.cell(row=hr2, column=ci, value=h)
+        c.font = Font(bold=True, size=10, name=FNAME); c.fill = mf(HGRAY); c.alignment = ctr; c.border = bdr
 
     r = hr2 + 1
     for s in all_names:
@@ -5350,20 +5373,61 @@ def export_xlsx_promo_events_overview():
         for ev in events:
             agg = ev_store_agg[ev['_ukey']]
             if s in agg:
-                vals.append(agg[s]['amount']); join_cnt += 1
+                vals.append('O'); join_cnt += 1
             else:
                 vals.append('')
         vals.append(join_cnt)
         for ci, v in enumerate(vals, start=1):
             c = ws2.cell(row=r, column=ci, value=v)
-            c.font = Font(size=10, name=FNAME); c.border = bdr
+            c.font = Font(size=10, name=FNAME, bold=(ci not in (1, len(headers2)))); c.border = bdr
             c.alignment = left if ci == 1 else ctr
-            if 1 < ci <= len(ev_names) + 1 and isinstance(v, (int, float)) and v != '':
-                c.number_format = '#,##0'
         r += 1
     ws2.column_dimensions['A'].width = 22
     for ci in range(2, len(headers2) + 1):
-        ws2.column_dimensions[get_column_letter(ci)].width = 16
+        ws2.column_dimensions[get_column_letter(ci)].width = 14
+
+    # 수정사항: 매장별 참여 수량·판매금액을 별도 탭으로 — 행사마다 수량/판매금액 서브컬럼 2개씩
+    ws3 = wb.create_sheet('매장별 참여 수량·판매금액')
+    col_count3 = 1 + len(ev_names) * 2
+    if ev_names:
+        ws3.merge_cells(f'A1:{get_column_letter(col_count3)}1')
+    c = ws3.cell(row=1, column=1, value=f'{year}년 매장별 행사 참여 수량·판매금액')
+    c.font = Font(bold=True, size=13, name=FNAME); c.fill = mf_section(); c.alignment = ctr
+    ws3.row_dimensions[1].height = 26
+    hr3 = 2
+    # 매장명 헤더는 2행 세로 병합, 행사명은 수량/판매금액 두 칸을 가로 병합
+    ws3.merge_cells(f'A{hr3}:A{hr3+1}')
+    c = ws3.cell(row=hr3, column=1, value='매장명')
+    c.font = Font(bold=True, size=10, name=FNAME); c.fill = mf(HGRAY); c.alignment = ctr; c.border = bdr
+    ws3.cell(row=hr3+1, column=1).border = bdr
+    for ei, name in enumerate(ev_names):
+        col0 = 2 + ei * 2
+        ws3.merge_cells(start_row=hr3, start_column=col0, end_row=hr3, end_column=col0+1)
+        c = ws3.cell(row=hr3, column=col0, value=name)
+        c.font = Font(bold=True, size=10, name=FNAME); c.fill = mf(HGRAY); c.alignment = ctr; c.border = bdr
+        for sub_ci, sub_h in [(col0, '참여수량'), (col0+1, '참여판매금액')]:
+            cc = ws3.cell(row=hr3+1, column=sub_ci, value=sub_h)
+            cc.font = Font(bold=True, size=9.5, name=FNAME); cc.fill = mf(HGRAY); cc.alignment = ctr; cc.border = bdr
+
+    r = hr3 + 2
+    for s in all_names:
+        c = ws3.cell(row=r, column=1, value=s)
+        c.font = Font(size=10, name=FNAME); c.border = bdr; c.alignment = left
+        for ei, ev in enumerate(events):
+            agg = ev_store_agg[ev['_ukey']]
+            col0 = 2 + ei * 2
+            g = agg.get(s)
+            qty_v = g['qty'] if g else ''
+            amt_v = g['amount'] if g else ''
+            for ci, v in [(col0, qty_v), (col0+1, amt_v)]:
+                cc = ws3.cell(row=r, column=ci, value=v)
+                cc.font = Font(size=10, name=FNAME); cc.border = bdr; cc.alignment = ctr
+                if isinstance(v, (int, float)):
+                    cc.number_format = '#,##0'
+        r += 1
+    ws3.column_dimensions['A'].width = 22
+    for ci in range(2, col_count3 + 1):
+        ws3.column_dimensions[get_column_letter(ci)].width = 13
 
     buf = io.BytesIO(); wb.save(buf); buf.seek(0)
     fname = f'{year}년_행사_연간개요.xlsx'
@@ -6666,6 +6730,7 @@ def api_export_sellers_xlsx():
         raw_name = r[0]
         if is_hidden_seller(raw_name): continue
         disp_name = display_seller(raw_name) or raw_name
+        if is_unmanaged_seller(raw_name) or is_unmanaged_seller(disp_name): continue
         region = MANUAL_REGION.get(disp_name) or MANUAL_REGION.get(raw_name) or detect_region_from_name(disp_name) or '기타'
         info = branch_info.get(_K(raw_name), {})
 
@@ -9089,6 +9154,116 @@ def _split_content_blocks(text):
     return blocks
 
 
+# 수정사항: 브랜드/제품명으로 카테고리를 자동 판별 — 명시적으로 [아기침대]/[식탁의자] 같은
+# 카테고리 제목을 적지 않아도, 실제로 언급된 브랜드·제품을 보고 카테고리를 자동으로 붙인다.
+# (스누즈2=아기침대, 비바체플립=식탁의자처럼 제품명이 곧 카테고리를 특정하는 경우까지 포함)
+_CATEGORY_BRAND_MAP = {
+    '스누즈2': '아기침대', '스누즈': '아기침대',
+    '비바체플립': '식탁의자', '비바체': '식탁의자',
+    '줄즈': '유모차', 'joie': '유모차',
+    '레카로': '카시트', 'recaro': '카시트',
+    '원더폴드': '웨건', 'wonderfold': '웨건',
+    '타프토이즈': '용품', 'taftoys': '용품',
+}
+
+def _detect_category_from_text(text):
+    """브랜드/제품명 키워드로 카테고리를 추정 — 매칭되는 게 없으면 None."""
+    low = (text or '').lower()
+    for kw, cat in _CATEGORY_BRAND_MAP.items():
+        if kw.lower() in low:
+            return cat
+    return None
+
+
+def _reformat_visit_content_clean(text):
+    """방문이력 '자사 주요내용'/'타사 주요내용'을 깔끔한 고정 형식으로 자동 정리한다 (수정사항).
+
+    기존 "[카테고리]\\n* 브랜드\\nL 한줄요약\\n  설명" 구조(AI 다듬기 결과물)를 다음 형식으로 바꾼다:
+      [카테고리]
+      *브랜드*
+       - 설명
+    - 카테고리 제목은 원래 적힌 대괄호 제목을 그대로 믿지 않고, 그 안에 언급된 브랜드/제품명으로
+      다시 판별한다(스누즈2→아기침대, 비바체플립→식탁의자, 줄즈→유모차, 레카로→카시트 등). 그래서
+      실제로 그 브랜드 얘기가 없으면 [아기침대]/[식탁의자] 같은 빈 제목이 나오지 않는다.
+    - 브랜드명은 앞뒤로 *를 붙여 볼드 처리하고, "L 요약"과 바로 아래 들여쓴 설명 줄은 한 줄
+      " - 설명"으로 합친다(요약과 설명이 둘 다 있으면 "요약: 설명"으로 합쳐 정보 손실 없이 한 줄로).
+    - 브랜드(* 로 시작하는 줄) 구조가 전혀 없는 자유 텍스트 블록은 그대로 둔다(억지로 쪼개지 않음).
+    - 이미 이 함수로 한 번 정리된 텍스트를 다시 넣어도 같은 결과가 나온다(멱등성) — "기존 엑셀
+      자동 변환" 기능에서 몇 번을 다시 돌려도 안전하다."""
+    blocks = _split_content_blocks(text)
+    if not blocks:
+        return text or ''
+
+    # 카테고리별로 (브랜드, 불릿리스트) 를 등장 순서대로 모은다 — 같은 카테고리가 여러 블록에
+    # 흩어져 있어도 하나로 합친다.
+    cat_order = []
+    cat_entries = {}   # cat -> [(brand, [bullets]), ...]
+    freeform_blocks = []  # 브랜드 구조가 전혀 없는 블록은 원문 그대로 보존
+
+    for block in blocks:
+        lines = block.split('\n')
+        header = ''
+        body_lines = lines
+        if lines and lines[0].startswith('[') and lines[0].endswith(']'):
+            header = lines[0][1:-1].strip()
+            body_lines = lines[1:]
+
+        body_has_content = any(ln.strip() for ln in body_lines)
+        if header and not body_has_content:
+            # 수정사항: 카테고리 제목만 있고 실제 내용(브랜드/설명)이 전혀 없으면(예: 빈
+            # [식탁의자]) 그 카테고리 자체를 아예 보여주지 않는다.
+            continue
+
+        brand_idxs = [i for i, ln in enumerate(body_lines) if ln.strip().startswith('*')]
+        if not brand_idxs:
+            freeform_blocks.append(block)
+            continue
+
+        for bi, idx in enumerate(brand_idxs):
+            brand_raw = body_lines[idx].strip().lstrip('*').strip().rstrip('*').strip()
+            if not brand_raw:
+                continue
+            end = brand_idxs[bi + 1] if bi + 1 < len(brand_idxs) else len(body_lines)
+            detail_lines = [ln for ln in body_lines[idx + 1:end] if ln.strip()]
+
+            bullets = []
+            i = 0
+            while i < len(detail_lines):
+                ln = detail_lines[i].strip()
+                if ln.startswith('L '):
+                    summary = ln[2:].strip()
+                    detail = ''
+                    if (i + 1 < len(detail_lines) and not detail_lines[i + 1].strip().startswith('L ')
+                            and not detail_lines[i + 1].strip().startswith('*')):
+                        detail = detail_lines[i + 1].strip()
+                        i += 1
+                    bullets.append(f"{summary}: {detail}" if detail else summary)
+                else:
+                    # 이미 "- 설명" 형식으로 정리된 줄이 다시 들어온 경우(멱등성) 대비 —
+                    # 앞의 "- "를 한 번만 떼고 다시 붙인다(중복 대시 방지).
+                    if ln.startswith('- '):
+                        ln = ln[2:].strip()
+                    bullets.append(ln)
+                i += 1
+
+            cat = _detect_category_from_text(brand_raw) or header or '기타'
+            if cat not in cat_entries:
+                cat_entries[cat] = []
+                cat_order.append(cat)
+            cat_entries[cat].append((brand_raw, bullets))
+
+    out_parts = []
+    for cat in cat_order:
+        lines_out = [f'[{cat}]']
+        for brand_raw, bullets in cat_entries[cat]:
+            lines_out.append(f'*{brand_raw}*')
+            for b in bullets:
+                lines_out.append(f' - {b}')
+        out_parts.append('\n'.join(lines_out))
+    out_parts.extend(freeform_blocks)
+    return '\n\n'.join(p for p in out_parts if p.strip())
+
+
 def _split_out_requests(content):
     """content 딕셔너리에 "요청사항" 카테고리(업로드분 보고서에만 존재)가 있으면
     별도의 requests 리스트로 분리해서 반환 — (주요내용 카테고리에서 제외된 content, requests 리스트)."""
@@ -9386,14 +9561,15 @@ def _build_store_card_data(store_name, year=None, author_name=''):
         ent = product_monthly_map.get(p['product'])
         if not ent:
             continue
-        months_sorted = sorted(ent['months'].keys())
-        if not months_sorted:
+        if not ent['months']:
             continue
         # 수정사항: 금액 대신 "몇 대(개)" 판매됐는지가 더 직관적이라는 피드백 — 막대 비율은
         # 금액 기준(값 차이가 더 뚜렷해 보기 좋음)으로 유지하되, 표시 숫자는 수량으로 바꾼다.
+        # 수정사항(엑셀 표): 1~12월 전체를 표로 보여줘야 하므로, 판매가 없던 달도 0으로 채워
+        # 항상 12칸이 나오도록 한다.
         bars = []
-        for mo in months_sorted:
-            mo_ent = ent['months'][mo]
+        for mo in range(1, 13):
+            mo_ent = ent['months'].get(mo, {'qty': 0, 'amount': 0})
             bars.append({'month': _TREND_MONTHS_KR[mo], 'qty': mo_ent['qty'], 'amount': mo_ent['amount']})
         product_trends.append({'rank': i, 'brand': ent['brand'], 'product': p['product'], 'bars': bars})
 
@@ -9799,7 +9975,7 @@ def _find_keyword_context(report, keyword):
         ('작성자', report.get('author', '')),
         ('직원현황', report.get('staff_info', '')),
         ('매장규모', report.get('store_size', '')),
-        ('타사 동향', report.get('competitor_trend', '')),
+        ('타사 주요내용', report.get('competitor_trend', '')),
         ('조치사항·후속', report.get('action_item', '')),
     ]
     for cat, texts in (report.get('content') or {}).items():
@@ -9920,9 +10096,63 @@ def api_visit_report_merge_stores():
                      (to_name, to_row.get('staff_status', ''), to_row.get('store_status', ''),
                       to_row.get('voucher_info', ''), now))
     conn.execute(f"DELETE FROM store_profile WHERE store_name IN ({placeholders})", from_names)
+
+    # 수정사항(버그): "매장정보를 합쳤을 때 기존 매장 정보는 살아있도록" — 판매처관리(branches)에
+    # 등록된 대표자/연락처/주소 등 기본정보도, 유지할 표기 쪽에 빈 값만 다른 표기에서 보완해서
+    # 채운다(있는 값은 절대 덮어쓰지 않음). 합쳐지는 쪽 branches 행 자체는 지우지 않고 그대로
+    # 둔다 — 다른 곳에서 그 행을 참조하고 있을 가능성에 대비해 안전하게, 정보만 복사한다.
+    BRANCH_INFO_FIELDS = ('ceo', 'ceo_phone', 'store_manager', 'store_manager_phone',
+                           'manager', 'phone', 'email', 'address', 'note')
+    to_branch = conn.execute("SELECT * FROM branches WHERE name=?", (to_name,)).fetchone()
+    if to_branch:
+        to_branch = dict(to_branch)
+        updates = {}
+        for n in from_names:
+            fb = conn.execute("SELECT * FROM branches WHERE name=?", (n,)).fetchone()
+            if not fb:
+                continue
+            fb = dict(fb)
+            for field in BRANCH_INFO_FIELDS:
+                if not (to_branch.get(field) or '').strip() and (fb.get(field) or '').strip():
+                    to_branch[field] = fb[field]
+                    updates[field] = fb[field]
+        if updates:
+            set_clause = ', '.join(f"{f}=?" for f in updates)
+            conn.execute(f"UPDATE branches SET {set_clause} WHERE name=?",
+                         list(updates.values()) + [to_name])
+
     conn.commit(); conn.close()
     return jsonify({'ok': True, 'to': to_name, 'from': from_names,
                      'moved_log': moved_log, 'moved_report': merged_report})
+
+
+@app.route("/api/visit-report/cleanup-format", methods=["POST"])
+@login_required
+def api_visit_report_cleanup_format():
+    """수정사항: 기존에 저장된 방문이력(자사 주요내용/타사 주요내용)을 전부 새 고정 형식으로
+    한 번에 자동 변환한다 — [카테고리]/*브랜드*/ - 설명 구조로 정리하고, 실제로 언급 없는
+    카테고리(예: 빈 [아기침대])는 만들지 않는다. _reformat_visit_content_clean은 멱등적이라
+    여러 번 눌러도 안전하다. body: {store_name}(선택 — 특정 매장만, 없으면 전체)."""
+    d = request.json or {}
+    store_name = (d.get('store_name') or '').strip()
+    conn = get_db()
+    if store_name:
+        rows = conn.execute(
+            "SELECT id, our_content, competitor_trend FROM store_visit_log WHERE store_name=?",
+            (store_name,)).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT id, our_content, competitor_trend FROM store_visit_log").fetchall()
+    updated = 0
+    for r in rows:
+        new_our = _reformat_visit_content_clean(r['our_content'] or '')
+        new_comp = _reformat_visit_content_clean(r['competitor_trend'] or '')
+        if new_our != (r['our_content'] or '') or new_comp != (r['competitor_trend'] or ''):
+            conn.execute("UPDATE store_visit_log SET our_content=?, competitor_trend=? WHERE id=?",
+                         (new_our, new_comp, r['id']))
+            updated += 1
+    conn.commit(); conn.close()
+    return jsonify({'ok': True, 'checked': len(rows), 'updated': updated})
 
 
 @app.route("/api/visit-report/store-card")
@@ -10572,8 +10802,9 @@ def _write_store_sales_sheet(wb, ws, data, FNAME):
     BRAND_COLORS = {'레카로': 'B7DDE8', '줄즈': 'CCC1D9', 'ABC디자인': 'D7E3BC', '엔픽스': 'E5B9B7',
                      '원더폴드': 'FCD5B4', '타프토이즈': 'EEECE1', '카오스': 'C00000', '(미분류)': 'D9D9D9'}
     PIE_PALETTE = ['B7DDE8', 'CCC1D9', 'D7E3BC', 'E5B9B7', 'FCD5B4', 'EEECE1', 'C00000', 'D9D9D9']
-    PIE_FONT_EA = 'HY그래픽M'
-    PIE_FONT_LATIN = '맑은 고딕'
+    # 수정사항: 매출정보 그래프(파이차트) 글꼴을 굴림체로 통일
+    PIE_FONT_EA = '굴림체'
+    PIE_FONT_LATIN = '굴림체'
 
     def mf(h): return PatternFill("solid", fgColor=h)
     def mf_section(): return PatternFill("solid", fgColor=SECTION_BG)
@@ -10728,46 +10959,61 @@ def _write_store_sales_sheet(wb, ws, data, FNAME):
     band(f'B{detail_row}:Q{detail_row}', '월별 매출액 상세', f_subhdr, mf_section(), align=left, height=20)
     dr = detail_row + 1
     months = data['monthly_trend']
-    for i in range(0, 12, 2):
+    # 수정사항(배치 순서): 기존엔 "1월,2월 / 3월,4월 / 5월,6월..." 처럼 가로로 나란한 두 달을
+    # 한 줄에 배치했는데, "1월,7월 / 2월,8월 / 3월,9월..." 처럼 왼쪽 칸엔 상반기(1~6월)를
+    # 위에서 아래로, 오른쪽 칸엔 하반기(7~12월)를 위에서 아래로 나란히 배치하도록 변경.
+    for i in range(6):
         m1 = months[i]
         label_value(f'B{dr}:C{dr}', f"{m1['month']}월", f'D{dr}:F{dr}', m1['amount'], number_format='#,##0"원"')
-        if i + 1 < 12:
-            m2 = months[i + 1]
-            label_value(f'G{dr}:H{dr}', f"{m2['month']}월", f'I{dr}:Q{dr}', m2['amount'], number_format='#,##0"원"')
+        m2 = months[i + 6]
+        label_value(f'G{dr}:H{dr}', f"{m2['month']}월", f'I{dr}:Q{dr}', m2['amount'], number_format='#,##0"원"')
         ws.row_dimensions[dr].height = 18
         dr += 1
     spacer(dr, 8)
     dr += 1
 
-    # ── 주요 제품 최근 흐름 분석 (수정사항2: 점선을 모두 제거 — 라벨은 B:C만 병합,
-    #    값은 D칸에 한 줄로(줄바꿈 없이) 흘러나가게 적는다) ──
-    bdr_hline = Border()  # 수정사항2: 테두리 없음
+    # ── 주요 제품 최근 흐름 분석 (수정사항: 한 줄에 "1월 N개 / 2월 N개 /..."로 길게 이어쓰던
+    #    것을, 1~12월이 열로 펼쳐진 표로 다시 구성 — 사용자가 보내준 참고 이미지와 동일하게
+    #    순위별 행을 남색/자주색으로 번갈아 칠해 한눈에 구분되도록 한다) ──
     # 수정사항(겹침 버그): 공용 `left`는 wrap_text=True라서 좁은 칸에서 줄바꿈되어 다음 줄과
     # 겹쳐 보였다 — 이 목록은 줄바꿈 없이 옆 칸으로 자연스럽게 흘러나가야 하므로 별도 정의.
     left_nowrap = Alignment(horizontal='left', vertical='center', wrap_text=False)
     band(f'B{dr}:Q{dr}', '주요 제품 최근 흐름 분석', f_subhdr, mf_section(), align=left, height=20)
     dr += 1
     trends = data.get('product_trends') or []
+    month_cols = ['D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M', 'N', 'O']
+    TREND_ROW_COLORS = ['1F4E79', 'B8286E']  # 홀수 순위=남색, 짝수 순위=자주색 — 번갈아 눈에 띄게
     if trends:
-        for t in trends:
+        ws.merge_cells(f'B{dr}:C{dr}')
+        hc = ws[f'B{dr}']; hc.value = '제품'; hc.font = Font(name=FNAME, size=9, bold=True)
+        hc.fill = mf('FFFFFF'); hc.border = bdr; hc.alignment = ctr
+        for ci, col in enumerate(month_cols):
+            c = ws[f'{col}{dr}']; c.value = f'{ci+1}월'; c.font = Font(name=FNAME, size=9, bold=True)
+            c.fill = mf('FFFFFF'); c.border = bdr; c.alignment = ctr
+        ws.row_dimensions[dr].height = 18
+        dr += 1
+        for idx, t in enumerate(trends):
             label = f"{t['rank']}위  [{t['brand']}] {t['product']}"
-            month_text = ' / '.join(f"{b['month']} {b['qty']:,}개" for b in t['bars'])
+            color = TREND_ROW_COLORS[idx % 2]
             ws.merge_cells(f'B{dr}:C{dr}')
             lc = ws[f'B{dr}']
-            lc.value = label; lc.font = f_label; lc.fill = mf('FFFFFF')
-            lc.border = bdr_hline; lc.alignment = left_nowrap
-            vc = ws[f'D{dr}']
-            vc.value = month_text; vc.font = f_value; vc.fill = mf('FFFFFF')
-            vc.border = bdr_hline; vc.alignment = left_nowrap
-            ws.row_dimensions[dr].height = 19
+            lc.value = label; lc.font = Font(name=FNAME, size=9, bold=True, color=color)
+            lc.fill = mf('FFFFFF'); lc.border = bdr; lc.alignment = left_nowrap
+            bars_by_month = {b['month']: b['qty'] for b in t['bars']}
+            for ci, col in enumerate(month_cols):
+                v = bars_by_month.get(f'{ci+1}월', 0)
+                c = ws[f'{col}{dr}']
+                c.value = v; c.font = Font(name=FNAME, size=9, bold=True, color=color)
+                c.fill = mf('FFFFFF'); c.border = bdr; c.alignment = ctr
+            ws.row_dimensions[dr].height = 18
             dr += 1
     else:
         ws.merge_cells(f'B{dr}:C{dr}')
         lc = ws[f'B{dr}']
-        lc.value = '—'; lc.font = f_label; lc.fill = mf('FFFFFF'); lc.border = bdr_hline; lc.alignment = left_nowrap
+        lc.value = '—'; lc.font = f_label; lc.fill = mf('FFFFFF'); lc.border = bdr; lc.alignment = left_nowrap
         vc = ws[f'D{dr}']
         vc.value = '집계할 데이터가 부족합니다'; vc.font = f_value; vc.fill = mf('FFFFFF')
-        vc.border = bdr_hline; vc.alignment = left_nowrap
+        vc.border = bdr; vc.alignment = left_nowrap
         ws.row_dimensions[dr].height = 19
         dr += 1
     spacer(dr, 8)
@@ -10837,8 +11083,9 @@ def _write_visit_log_sheet(ws, data, FNAME):
     from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
     from openpyxl.styles.colors import Color
     def mf(h): return PatternFill("solid", fgColor=h)
-    # 수정사항(점선): 사용자가 직접 다듬은 최종본과 동일하게 'hair'(가장 촘촘한 점선) 적용
-    thin = Side(style='hair', color=Color(auto=True))
+    # 수정사항(날짜별 구분선): 점선(hair)이 너무 흐려서 방문일별로 잘 구분이 안 된다는 피드백 —
+    # 기본(실선) 얇은 테두리로 변경.
+    thin = Side(style='thin', color='D1D5DB')
     bdr  = Border(left=thin, right=thin, top=thin, bottom=thin)
     ctr  = Alignment(horizontal='center', vertical='center', wrap_text=True)
     left = Alignment(horizontal='left', vertical='top', wrap_text=True)
@@ -10847,7 +11094,9 @@ def _write_visit_log_sheet(ws, data, FNAME):
     f_hdr = Font(name=FNAME, size=10, bold=True)
     f_val = Font(name=FNAME, size=10)
 
-    widths = {'A':2,'B':11,'C':12,'D':13,'E':46,'F':30,'G':36,'H':11,'I':9,'J':12,'K':11,'L':24}
+    # 수정사항: 자사내용(E)/타사내용(F) 칸 너비를 45.38로 동일하게 맞춤.
+    # 수정사항: "활동비 구분" 칸을 삭제하면서 전체 칸이 한 칸 줄어, J=활동비 금액/K=활동비 내용이 됨.
+    widths = {'A':2,'B':11,'C':12,'D':13,'E':45.38,'F':45.38,'G':36,'H':11,'I':9,'J':11,'K':24}
     for col, w in widths.items():
         ws.column_dimensions[col].width = w
 
@@ -10863,32 +11112,33 @@ def _write_visit_log_sheet(ws, data, FNAME):
             total_lines += max(1, -(-w // usable))  # ceil division
         return max(1, total_lines)
 
-    ws.merge_cells('B2:L2'); ws['B2'] = '매장 방문이력'; ws['B2'].font = f_title
+    ws.merge_cells('B2:K2'); ws['B2'] = '매장 방문이력'; ws['B2'].font = f_title
     store_label = f"{data['store_name']} ({data['store_rank']})" if data['store_rank'] else data['store_name']
-    ws.merge_cells('B3:L3'); ws['B3'] = f"{store_label}  ·  담당 {data['manager'] or ''}"
+    ws.merge_cells('B3:K3'); ws['B3'] = f"{store_label}  ·  담당 {data['manager'] or ''}"
     ws['B3'].font = f_sub
 
     ws.merge_cells('B5:C5'); ws['B5'] = f"총 방문  {data['total_visits']}회"
     ws.merge_cells('D5:E5'); ws['D5'] = f"최근 방문일  {data['latest_visit'] or '-'}"
     ws.merge_cells('F5:G5'); ws['F5'] = f"진행중 조치  {data['ongoing_actions']}건"
-    ws.merge_cells('H5:J5'); ws['H5'] = f"누적 활동비  {data['total_expense']:,}원"
-    ws.merge_cells('K5:L5'); ws['K5'] = f"이번 달 활동비  {data['this_month_expense']:,}원"
-    # 수정사항3: 5행(실제 내용이 시작되는 요약 통계 줄)도 6행·7행과 동일한 hair 테두리 박스로
+    ws.merge_cells('H5:I5'); ws['H5'] = f"누적 활동비  {data['total_expense']:,}원"
+    ws.merge_cells('J5:K5'); ws['J5'] = f"이번 달 활동비  {data['this_month_expense']:,}원"
+    # 수정사항3: 5행(실제 내용이 시작되는 요약 통계 줄)도 6행·7행과 동일한 테두리 박스로
     # 감싸서 깔끔하게 — 이전에는 5행만 테두리 없이 텍스트만 떠 있었다.
-    for col_letter in [get_column_letter(ci) for ci in range(2, 13)]:
+    for col_letter in [get_column_letter(ci) for ci in range(2, 12)]:
         ws[f'{col_letter}5'].border = bdr
         ws[f'{col_letter}5'].fill = mf('FFFFFF')
     ws.row_dimensions[5].height = 20
-    for addr in ('B5','D5','F5','H5','K5'):
+    for addr in ('B5','D5','F5','H5','J5'):
         ws[addr].font = f_sub
 
     ws.merge_cells('B6:I6'); ws['B6'] = '방문 내용'
-    ws.merge_cells('J6:L6'); ws['J6'] = '영업활동비 (식사 · 회식 · 간식 등)'
+    ws.merge_cells('J6:K6'); ws['J6'] = '영업활동비 (식사 · 회식 · 간식 등)'
     for addr in ('B6','J6'):
         ws[addr].font = f_sub; ws[addr].fill = mf('FFFFFF'); ws[addr].border = bdr; ws[addr].alignment = ctr
 
-    headers = ['방문일', '방문목적', '면담자', '자사 주요내용 (매장 의견 · 요청)', '타사 동향',
-               '조치사항 / 후속', '완료(예정)일', '진행상태', '활동비 구분', '활동비 금액', '활동비 내용 (사용처·참석자)']
+    # 수정사항: "타사 동향" → "타사 주요내용"으로 명칭 변경, "활동비 구분" 칸은 삭제
+    headers = ['방문일', '방문목적', '면담자', '자사 주요내용 (매장 의견 · 요청)', '타사 주요내용',
+               '조치사항 / 후속', '완료(예정)일', '진행상태', '활동비 금액', '활동비 내용 (사용처·참석자)']
     for i, h in enumerate(headers):
         c = ws.cell(row=7, column=2+i, value=h)
         c.font = f_hdr; c.fill = mf('FFFFFF'); c.border = bdr; c.alignment = ctr
@@ -10910,8 +11160,10 @@ def _write_visit_log_sheet(ws, data, FNAME):
         # 자사 주요내용·타사 동향을 각각 카테고리 블록 단위로 쪼개서 같은 방문일 안에서
         # 여러 줄(행)로 나눠 보여주고, 방문일/방문목적/면담자/완료예정일/진행상태/활동비처럼
         # 방문 전체에 공통인 값들은 그 줄들을 세로로 병합해서 한 번만 보이게 한다.
-        our_blocks = _split_content_blocks(v.get('our_content', ''))
-        comp_blocks = _split_content_blocks(v.get('competitor_trend', ''))
+        # 수정사항: 엑셀로 내려받을 때 항상 깔끔한 고정 형식([카테고리]/*브랜드*/ - 설명)으로
+        # 자동 정리해서 보여준다 — 저장된 원문이 예전 형식이어도 다운로드 시점에 자동 변환된다.
+        our_blocks = _split_content_blocks(_reformat_visit_content_clean(v.get('our_content', '')))
+        comp_blocks = _split_content_blocks(_reformat_visit_content_clean(v.get('competitor_trend', '')))
         sub_n = max(len(our_blocks), len(comp_blocks), 1)
         start_r, end_r = r, r + sub_n - 1
 
@@ -10927,24 +11179,24 @@ def _write_visit_log_sheet(ws, data, FNAME):
             ws.row_dimensions[rr].height = max(20, min(14.5 * max_lines + 6, 300))
 
         # 방문 전체에 공통인 칸들(방문일/방문목적/면담자/조치사항/완료예정일/진행상태/
-        # 활동비구분/활동비금액/활동비내용)은 카테고리 줄 수만큼 세로로 병합한다.
-        # 열 번호: B=방문일(2) C=방문목적(3) D=면담자(4) E=자사내용(5,위에서 별도 처리)
-        # F=타사동향(6,위에서 별도 처리) G=조치사항(7) H=완료예정일(8) I=진행상태(9)
-        # J=활동비구분(10) K=활동비금액(11) L=활동비내용(12)
+        # 활동비금액/활동비내용)은 카테고리 줄 수만큼 세로로 병합한다. "활동비 구분" 칸은
+        # 삭제했으므로(수정사항) 더 이상 쓰지 않는다 — 열 번호: B=방문일(2) C=방문목적(3)
+        # D=면담자(4) E=자사내용(5,위에서 별도 처리) F=타사주요내용(6,위에서 별도 처리)
+        # G=조치사항(7) H=완료예정일(8) I=진행상태(9) J=활동비금액(10) K=활동비내용(11)
         common_vals = {2: v['visit_date'], 3: v.get('purpose',''), 4: v.get('contact_person',''),
                        7: v.get('action_item',''), 8: v.get('due_date',''), 9: v.get('status',''),
-                       10: v.get('expense_type',''), 11: v.get('expense_amount') or '', 12: v.get('expense_note','')}
+                       10: v.get('expense_amount') or '', 11: v.get('expense_note','')}
         for col, val in common_vals.items():
             if sub_n > 1:
                 ws.merge_cells(start_row=start_r, start_column=col, end_row=end_r, end_column=col)
             c = ws.cell(row=start_r, column=col, value=val)
             c.font = f_val
-            c.alignment = left if col in (7, 12) else ctr
-            if col == 11 and val != '':
+            c.alignment = left if col in (7, 11) else ctr
+            if col == 10 and val != '':
                 c.number_format = '#,##0"원"'
             _border_merged_range(start_r, end_r, col, bdr)
-        # 조치사항(G)/활동비 내용(L)도 내용 길이에 맞춰 병합된 전체 높이를 고려해 최소 높이 보정
-        extra_wrap = [(v.get('action_item', ''), widths['G']), (v.get('expense_note', ''), widths['L'])]
+        # 조치사항(G)/활동비 내용(K)도 내용 길이에 맞춰 병합된 전체 높이를 고려해 최소 높이 보정
+        extra_wrap = [(v.get('action_item', ''), widths['G']), (v.get('expense_note', ''), widths['K'])]
         extra_lines = max(_estimate_wrapped_lines(t, w) for t, w in extra_wrap)
         total_h = sum(ws.row_dimensions[rr].height or 20 for rr in range(start_r, end_r + 1))
         needed_h = max(20, min(14.5 * extra_lines + 6, 300))
@@ -10954,7 +11206,7 @@ def _write_visit_log_sheet(ws, data, FNAME):
         r = end_r + 1
 
     if not data['visit_log']:
-        ws.merge_cells('B8:L8'); ws['B8'] = '등록된 방문 이력이 없습니다. "보고서작성"으로 첫 방문 기록을 남겨보세요.'
+        ws.merge_cells('B8:K8'); ws['B8'] = '등록된 방문 이력이 없습니다. "보고서작성"으로 첫 방문 기록을 남겨보세요.'
         ws['B8'].font = f_val; ws['B8'].alignment = ctr
     ws.sheet_view.showGridLines = False
 
