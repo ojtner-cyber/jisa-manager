@@ -9291,7 +9291,7 @@ def _reformat_visit_content_clean(text):
         lines_out = [f'[{cat}]']
         for brand_raw, bullets in cat_entries[cat]:
             if brand_raw:
-                lines_out.append(f'*{brand_raw}*')
+                lines_out.append(f'*{brand_raw}')
             for b in bullets:
                 lines_out.append(f' - {b}')
         out_parts.append('\n'.join(lines_out))
@@ -9319,29 +9319,42 @@ def _split_blocks_with_header_rows(text):
 
 
 def _value_with_bold_brand_lines(text, FNAME, size=10):
-    """"*브랜드*" 형태로 통째로 된 줄만 실제 BOLD 폰트로 렌더링하고 나머지는 평문으로 — 수정사항:
-    "브랜드명은 *을 브랜드 앞에 써주고 브랜드명은 BOLD처리해줘". 브랜드 줄이 하나도 없으면
-    원래 문자열을 그대로 반환해서(엑셀 서식상 차이 없음) 멱등적으로 동작."""
+    """"*브랜드" 형태로 시작하는 줄(브랜드 줄)만 실제 BOLD 폰트로, 나머지는 평문으로 렌더링.
+    리치텍스트에서는 폰트 없는 평문 조각이 엑셀 기본 크기(11)로 보이므로, 평문 조각도
+    같은 글꼴/크기(size)를 명시한 TextBlock으로 넣는다."""
     if not text:
         return text
     lines = text.split('\n')
-    brand_pat = re.compile(r'^\*.+\*$')
-    is_brand = [bool(brand_pat.match(ln.strip())) for ln in lines]
+    is_brand = [ln.strip().startswith('*') and len(ln.strip()) > 1 for ln in lines]
     if not any(is_brand):
         return text
     import itertools
     from openpyxl.cell.rich_text import CellRichText, TextBlock
     from openpyxl.cell.text import InlineFont
     bold_f = InlineFont(rFont=FNAME, sz=size, b=True)
+    norm_f = InlineFont(rFont=FNAME, sz=size)
     parts = []
     first = True
     for key, group in itertools.groupby(range(len(lines)), key=lambda i: is_brand[i]):
-        idxs = list(group)
-        chunk = '\n'.join(lines[i] for i in idxs)
+        chunk = '\n'.join(lines[i] for i in group)
         prefix = '' if first else '\n'
-        parts.append(TextBlock(bold_f, prefix + chunk) if key else (prefix + chunk))
+        parts.append(TextBlock(bold_f if key else norm_f, prefix + chunk))
         first = False
     return CellRichText(*parts)
+
+
+def _group_blocks_by_category(text):
+    """_split_blocks_with_header_rows 결과를 [(카테고리, 본문)] 순서 목록으로 묶는다.
+    카테고리 없는 자유 텍스트는 카테고리 ''로 묶는다."""
+    groups = []
+    for t, is_hdr in _split_blocks_with_header_rows(text):
+        if is_hdr:
+            groups.append([t[1:-1], ''])
+        elif groups and groups[-1][1] == '' and groups[-1][0] != '':
+            groups[-1][1] = t
+        else:
+            groups.append(['', t])
+    return [(c, b) for c, b in groups]
 
 
 def _split_out_requests(content):
@@ -11318,22 +11331,51 @@ def _write_visit_log_sheet(ws, data, FNAME):
         # 수정사항(카테고리 제목 배경색): "[유모차]" 같은 카테고리 제목 줄은 내용과 같은 셀에
         # 섞어 넣지 않고 별도의 행으로 떼어내서, 그 행에만 SECTION_BG(흰색,배경1,5%더 어둡게)
         # 배경색을 줘서 한눈에 구분되도록 한다. 브랜드명("*브랜드*")은 실제 BOLD 폰트로 렌더링.
-        our_rows = _split_blocks_with_header_rows(v.get('our_content', ''))
-        comp_rows = _split_blocks_with_header_rows(v.get('competitor_trend', ''))
-        sub_n = max(len(our_rows), len(comp_rows), 1)
+        our_groups = _group_blocks_by_category(v.get('our_content', ''))
+        comp_groups = _group_blocks_by_category(v.get('competitor_trend', ''))
+        # 같은 카테고리는 자사/타사가 한 제목 아래 나란히 오도록 카테고리 순서를 합친다.
+        cat_order = []
+        for c, _ in our_groups + comp_groups:
+            if c not in cat_order:
+                cat_order.append(c)
+        our_map = {}
+        for c, bd in our_groups:
+            our_map[c] = (our_map[c] + '\n\n' + bd) if c in our_map and bd else our_map.get(c, bd)
+        comp_map = {}
+        for c, bd in comp_groups:
+            comp_map[c] = (comp_map[c] + '\n\n' + bd) if c in comp_map and bd else comp_map.get(c, bd)
+
+        # 수정사항: 카테고리 제목행([유모차] 등)은 자사/타사 칸(E:F)을 가로로 병합해 음영+볼드로
+        # 표시하고, 그 아래 행에 자사(E)/타사(F) 본문을 나란히 둔다. 행 높이는 글자에 딱 맞게.
+        layout_rows = []  # (kind, cat, our_text, comp_text)
+        for c in cat_order:
+            if c:
+                layout_rows.append(('hdr', c, '', ''))
+            ot, ct = our_map.get(c, ''), comp_map.get(c, '')
+            if ot or ct:
+                layout_rows.append(('body', c, ot, ct))
+        if not layout_rows:
+            layout_rows.append(('body', '', '', ''))
+        sub_n = len(layout_rows)
         start_r, end_r = r, r + sub_n - 1
 
-        for si in range(sub_n):
+        for si, (kind, cat, our_t, comp_t) in enumerate(layout_rows):
             rr = start_r + si
-            our_t, our_is_hdr = our_rows[si] if si < len(our_rows) else ('', False)
-            comp_t, comp_is_hdr = comp_rows[si] if si < len(comp_rows) else ('', False)
-            for ci, val, is_hdr in ((3, our_t, our_is_hdr), (4, comp_t, comp_is_hdr)):
-                c = ws.cell(row=rr, column=2+ci, value=_value_with_bold_brand_lines(val, FNAME))
-                c.font = f_val; c.border = bdr; c.alignment = left
-                c.fill = mf_section() if is_hdr else mf('FFFFFF')
-            wrap_pairs = [(our_t, widths['E']), (comp_t, widths['F'])]
-            max_lines = max(_estimate_wrapped_lines(t, w) for t, w in wrap_pairs)
-            ws.row_dimensions[rr].height = max(20, min(14.5 * max_lines + 6, 300))
+            if kind == 'hdr':
+                ws.merge_cells(start_row=rr, start_column=5, end_row=rr, end_column=6)
+                for col in (5, 6):
+                    cc = ws.cell(row=rr, column=col)
+                    cc.border = bdr; cc.fill = mf_section()
+                c = ws.cell(row=rr, column=5, value=f'[{cat}]')
+                c.font = Font(name=FNAME, size=10, bold=True); c.alignment = left
+                ws.row_dimensions[rr].height = 18
+            else:
+                for col, val in ((5, our_t), (6, comp_t)):
+                    c = ws.cell(row=rr, column=col, value=_value_with_bold_brand_lines(val, FNAME))
+                    c.font = f_val; c.border = bdr; c.alignment = left; c.fill = mf('FFFFFF')
+                max_lines = max(_estimate_wrapped_lines(our_t, widths['E']),
+                                _estimate_wrapped_lines(comp_t, widths['F']))
+                ws.row_dimensions[rr].height = max(18, 13 * max_lines + 5)
 
         # 방문 전체에 공통인 칸들(방문일/방문목적/면담자/조치사항/완료예정일/진행상태/
         # 활동비금액/활동비내용)은 카테고리 줄 수만큼 세로로 병합한다. "활동비 구분" 칸은
