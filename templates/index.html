@@ -1745,7 +1745,7 @@ td.center{text-align:center}
         </div>
 
         <div id="promo-suggest-wrap" style="display:none;margin-top:14px;background:var(--p-lt);border-radius:var(--r-md);padding:12px 14px">
-          <div style="font-size:11px;color:var(--t-300);margin-bottom:8px">아직 등록되지 않았지만 비고란에 2건 이상 등장한 '행사로 보이는' 표기 — 클릭하면 바로 행사 등록으로 이어집니다</div>
+          <div style="font-size:11px;color:var(--t-300);margin-bottom:8px">등록하지 않아도 아래 표에 이미 기간·참여매장·참여율이 자동으로 올라와 있어요. 이름을 클릭하면 참여 현황을 바로 볼 수 있고, 제외 브랜드 같은 세부 조건을 걸고 싶을 때만 "등록"하면 됩니다.</div>
           <div id="promo-suggest-list" style="display:flex;flex-wrap:wrap;gap:6px"></div>
         </div>
 
@@ -2064,7 +2064,13 @@ function toast(msg,ok=true){
 async function api(url,opts={}){
   const r=await fetch(url,{headers:{'Content-Type':'application/json'},...opts,body:opts.body?JSON.stringify(opts.body):undefined});
   if(r.status===401){location='/login';return null;}
-  return r.json();
+  // 서버/프록시가 타임아웃 등으로 JSON이 아닌 응답(HTML 오류 페이지 등)을 내려줄 때
+  // "Unexpected token '<'" 같은 원시 에러 대신 알아볼 수 있는 오류 메시지로 바꿔준다.
+  try{
+    return await r.json();
+  }catch(e){
+    return {ok:false, msg: r.ok?'서버 응답을 처리하지 못했습니다 (형식 오류)':`서버 응답 오류 (${r.status})`};
+  }
 }
 function initYears(){
   const y=TY(),yrs=Array.from({length:5},(_,i)=>y-i);
@@ -2428,10 +2434,16 @@ function renderVrStoreView(){
       <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--t-500);cursor:pointer">
         <input type="checkbox" id="vr-select-all" onchange="toggleVrSelectAll(this)"> 전체 선택
       </label>
-      <button onclick="downloadVrSelectedStores()" id="vr-download-selected-btn" disabled
-        style="font-size:11.5px;font-weight:700;padding:7px 16px;border-radius:8px;border:1px solid var(--border-md);background:var(--bg);color:var(--t-400);cursor:not-allowed">
-        📥 선택 매장 엑셀 다운로드 (<span id="vr-selected-count">0</span>)
-      </button>
+      <div style="display:flex;gap:8px">
+        <button onclick="openVrMergeModal()" id="vr-merge-btn" disabled
+          style="font-size:11.5px;font-weight:700;padding:7px 16px;border-radius:8px;border:1px solid var(--border-md);background:var(--bg);color:var(--t-400);cursor:not-allowed">
+          🔗 선택 매장 병합 (<span id="vr-merge-count">0</span>)
+        </button>
+        <button onclick="downloadVrSelectedStores()" id="vr-download-selected-btn" disabled
+          style="font-size:11.5px;font-weight:700;padding:7px 16px;border-radius:8px;border:1px solid var(--border-md);background:var(--bg);color:var(--t-400);cursor:not-allowed">
+          📥 선택 매장 엑셀 다운로드 (<span id="vr-selected-count">0</span>)
+        </button>
+      </div>
     </div>
     <div style="background:var(--paper);border:1px solid var(--border);border-radius:12px;overflow:hidden">
     <table style="width:100%;border-collapse:collapse">
@@ -2482,6 +2494,57 @@ function updateVrSelectedCount(){
   btn.style.color = active ? 'var(--p)' : 'var(--t-400)';
   btn.style.background = active ? 'var(--p-lt)' : 'var(--bg)';
   btn.style.borderColor = active ? 'var(--p)' : 'var(--border-md)';
+
+  const mbtn = document.getElementById('vr-merge-btn');
+  document.getElementById('vr-merge-count').textContent = checked.length;
+  const mergeActive = checked.length >= 2;
+  mbtn.disabled = !mergeActive;
+  mbtn.style.cursor = mergeActive ? 'pointer' : 'not-allowed';
+  mbtn.style.color = mergeActive ? '#7C3AED' : 'var(--t-400)';
+  mbtn.style.background = mergeActive ? '#7C3AED15' : 'var(--bg)';
+  mbtn.style.borderColor = mergeActive ? '#7C3AED' : 'var(--border-md)';
+}
+
+function openVrMergeModal(){
+  const checked = [...document.querySelectorAll('.vr-store-check:checked')].map(c=>c.value);
+  if(checked.length < 2){ toast('합칠 매장을 2개 이상 선택해주세요', false); return; }
+  let m = document.getElementById('vr-merge-modal');
+  if(!m){
+    m = document.createElement('div');
+    m.id = 'vr-merge-modal';
+    m.style.cssText = 'display:none;position:fixed;inset:0;background:rgba(16,24,40,.4);z-index:1000;align-items:center;justify-content:center';
+    document.body.appendChild(m);
+  }
+  const defaultTo = checked.slice().sort((a,b)=>b.length-a.length)[0];
+  m.innerHTML = `<div style="background:var(--paper);border-radius:var(--r-xl);padding:24px;width:min(440px,95vw);box-shadow:0 24px 60px rgba(0,0,0,.2)">
+    <div style="font-size:15px;font-weight:700;margin-bottom:6px">매장 병합</div>
+    <div style="font-size:12px;color:var(--t-300);margin-bottom:16px">선택한 ${checked.length}개 매장이 같은 매장입니다. 방문 기록과 매장현황 정보를 모두 합치고, 아래에서 고른 이름 하나만 남깁니다.</div>
+    <div style="margin-bottom:18px">
+      ${checked.map(n=>`<label style="display:flex;align-items:center;gap:8px;padding:8px 10px;border:1px solid var(--border);border-radius:8px;margin-bottom:6px;cursor:pointer">
+        <input type="radio" name="vr-merge-to" value="${n.replace(/"/g,'&quot;')}" ${n===defaultTo?'checked':''}> <span style="font-size:13px;font-weight:600">${n}</span>
+      </label>`).join('')}
+    </div>
+    <div style="font-size:11px;color:var(--t-300);margin-bottom:14px">선택하지 않은 다른 표기들은 합쳐진 뒤 목록에서 사라집니다.</div>
+    <div style="display:flex;gap:8px;justify-content:flex-end">
+      <button class="btn btn-ghost" onclick="document.getElementById('vr-merge-modal').style.display='none'">취소</button>
+      <button class="btn btn-primary" onclick='executeVrMerge(${JSON.stringify(checked)})'>병합 실행</button>
+    </div>
+  </div>`;
+  m.style.display = 'flex';
+}
+
+async function executeVrMerge(names){
+  const sel = document.querySelector('input[name="vr-merge-to"]:checked');
+  const to = sel ? sel.value : names[0];
+  if(!confirm(`${names.length}개 매장을 "${to}"(으)로 합칠까요?\n합쳐지는 다른 표기들은 삭제되며 되돌릴 수 없습니다.`)) return;
+  const r = await api('/api/visit-report/merge-stores', {method:'POST', body:{store_names: names, to_name: to}});
+  if(r?.ok){
+    toast(`"${to}"(으)로 병합 완료 — 방문기록 ${r.moved_log}건 이동`);
+    document.getElementById('vr-merge-modal').style.display = 'none';
+    reloadVisitReportView();
+  } else {
+    toast(r?.msg || '병합에 실패했습니다', false);
+  }
 }
 
 async function downloadVrSelectedStores(){
@@ -4172,7 +4235,8 @@ async function loadDisplay(){
 
 // ── 연간 행사 참여 개요 (판매실적 > 행사별 실적의 promo_event 데이터를 그대로 활용) ──
 let promoOverviewCache=[];
-let currentPromoEventId=null;
+let currentPromoEventId=null;   // 등록된 행사(id) 상세를 보고 있을 때
+let currentPromoTag=null;       // 미등록(자동감지) 행사 상세를 보고 있을 때
 
 async function loadPromoOverview(){
   const yrSel=document.getElementById('promo-ov-year');
@@ -4208,6 +4272,21 @@ function renderPromoOverviewTable(r){
 
   document.getElementById('promo-ov-tbody').innerHTML = evs.length ? evs.map(e=>{
     const rateColor = e.participation_rate>=50?'#16A34A':(e.participation_rate>=20?'#D97706':'#9CA3AF');
+    if(e.registered===false){
+      // 등록하지 않아도 자동 감지된 행사 — 기간·참여매장·참여율이 이미 자동 계산되어 있다
+      const tagJs=JSON.stringify(e.tag);
+      return `<tr style="background:var(--bg)">
+        <td style="font-weight:600;cursor:pointer" onclick='openPromoTagParticipation(${tagJs})'>${e.name} <span style="font-size:10px;color:var(--p);font-weight:500">(자동감지·미등록)</span></td>
+        <td style="font-size:12px;color:var(--t-300)">${e.date_start} ~ ${e.date_end}</td>
+        <td style="text-align:center">${e.store_count} / ${e.total_store_count}</td>
+        <td style="text-align:center;font-weight:700;color:${rateColor}">${e.participation_rate}%</td>
+        <td style="text-align:right">${N(e.qty)}</td>
+        <td style="text-align:right;font-weight:600">${N(e.amount)}원</td>
+        <td style="text-align:center">
+          <button class="btn btn-xs" onclick='openCreatePromoEvent(${tagJs},${JSON.stringify(e.date_start)},${JSON.stringify(e.date_end)})'>+ 등록</button>
+        </td>
+      </tr>`;
+    }
     const warn = e.configured?'':' <span style="font-size:10px;color:var(--red);font-weight:400">(비고표기 미설정)</span>';
     return `<tr>
       <td style="font-weight:600;cursor:pointer" onclick="openPromoEventParticipation(${e.id})">${e.name}${warn}</td>
@@ -4221,7 +4300,7 @@ function renderPromoOverviewTable(r){
         <button class="btn btn-xs" style="background:var(--red-lt);color:var(--red)" onclick="deletePromoEventRow(${e.id})">삭제</button>
       </td>
     </tr>`;
-  }).join('') : `<tr><td colspan="7" style="text-align:center;color:var(--t-300);padding:24px 0">이 연도에 등록된 행사가 없습니다</td></tr>`;
+  }).join('') : `<tr><td colspan="7" style="text-align:center;color:var(--t-300);padding:24px 0">이 연도에 등록되거나 자동 감지된 행사가 없습니다</td></tr>`;
 }
 
 async function togglePromoSuggest(){
@@ -4237,10 +4316,13 @@ async function loadPromoSuggestions(){
   const r=await api('/api/promo-events/auto-detect');
   if(!r?.ok) return;
   if(!r.suggestions.length){ list.innerHTML='<span style="font-size:12px;color:var(--t-300)">새로 감지된 행사 표기가 없습니다</span>'; return; }
+  // 아래 표에 이미 기간·참여매장·참여율까지 자동으로 올라와 있으므로, 여기서는 클릭 시 바로 참여
+  // 현황을 보여주고 — 세부 제외 조건을 걸고 싶을 때만 별도로 "등록"하면 된다
   list.innerHTML=r.suggestions.map(s=>
-    `<button class="btn btn-ghost btn-sm" style="background:#fff" onclick='openCreatePromoEvent(${JSON.stringify(s.tag)},${JSON.stringify(s.date_from)},${JSON.stringify(s.date_to)})'>
-      ${s.tag} <span style="color:var(--t-300)">(${s.count}건·${s.store_count}개 매장)</span>
-    </button>`
+    `<span style="display:inline-flex;align-items:center;gap:4px;background:#fff;border:1px solid var(--border);border-radius:20px;padding:4px 6px 4px 12px;font-size:12px">
+      <span style="cursor:pointer" onclick='openPromoTagParticipation(${JSON.stringify(s.tag)})'>${s.tag} <span style="color:var(--t-300)">(${s.count}건·${s.store_count}개 매장·참여율 ${s.participation_rate}%)</span></span>
+      <button class="btn btn-xs" onclick='openCreatePromoEvent(${JSON.stringify(s.tag)},${JSON.stringify(s.date_from)},${JSON.stringify(s.date_to)})'>등록</button>
+    </span>`
   ).join('');
 }
 
@@ -4298,11 +4380,22 @@ async function deletePromoEventRow(id){
 }
 
 async function openPromoEventParticipation(id){
-  currentPromoEventId=id;
+  currentPromoEventId=id; currentPromoTag=null;
   const r=await api(`/api/promo-events/${id}/participation`);
   if(!r?.ok){ toast(r?.msg||'불러오기에 실패했습니다', false); return; }
+  renderPromoDetail(r);
+}
+
+async function openPromoTagParticipation(tag){
+  currentPromoEventId=null; currentPromoTag=tag;
+  const r=await api(`/api/promo-events/tag-participation?tag=${encodeURIComponent(tag)}`);
+  if(!r?.ok){ toast(r?.msg||'불러오기에 실패했습니다', false); return; }
+  renderPromoDetail(r, true);
+}
+
+function renderPromoDetail(r, isAuto){
   document.getElementById('promo-ev-detail-wrap').style.display='block';
-  document.getElementById('promo-ev-detail-title').textContent=`${r.event.name} 참여 현황`;
+  document.getElementById('promo-ev-detail-title').textContent=`${r.event.name} 참여 현황` + (isAuto?' (자동감지·미등록)':'');
   document.getElementById('promo-ev-detail-kpi').innerHTML=[
     {l:'전체 매장',v:`${r.total_store_count}개`,c:'var(--t-900)'},
     {l:'참여 매장',v:`${r.participated_count}개`,c:'var(--p)'},
@@ -4325,8 +4418,13 @@ function downloadPromoOverviewExcel(){
 }
 
 function downloadPromoEventDetailExcel(){
-  if(!currentPromoEventId){ toast('행사를 먼저 선택해주세요', false); return; }
-  window.location.href=`/api/export/xlsx/event-report?event_id=${currentPromoEventId}`;
+  if(currentPromoEventId){
+    window.location.href=`/api/export/xlsx/event-report?event_id=${currentPromoEventId}`;
+  } else if(currentPromoTag){
+    window.location.href=`/api/export/xlsx/event-report?keyword=${encodeURIComponent(currentPromoTag)}`;
+  } else {
+    toast('행사를 먼저 선택해주세요', false); return;
+  }
   toast('행사 상세 엑셀 다운로드 중...');
 }
 
@@ -4907,30 +5005,42 @@ async function startBlogSearch(){
   const sellers=snsData.map(r=>r.seller_name);
   const total=sellers.length; let done=0;
   let totalUpdated=0;
-  const chunk=8;
+  // 수정4: 매장 1건당 최대 5회의 네이버 API 호출이 순차로 일어나다 보니, 한 번에 8개씩 묶어 보내면
+  // 응답이 늦어져 "Unexpected token '<'" 오류(타임아웃으로 서버/프록시가 HTML 오류 페이지를 반환)가
+  // 자주 발생했다. 묶음 크기를 줄이고, 실패한 묶음은 한 번 더 자동 재시도한다.
+  const chunk=4;
 
   for(let i=0;i<sellers.length;i+=chunk){
     const slice=sellers.slice(i,i+chunk);
     label.textContent=`블로그 분석 중... (${i+1}~${Math.min(i+chunk,total)}번째)`;
-    try{
-      const r=await api('/api/sns/search',{method:'POST',body:{sellers:slice}});
-      if(r&&r.results){
-        // 분석 즉시 저장 (청크 단위 → 저장 지연 없음)
-        const sv=await api('/api/sns/save-search',{method:'POST',body:{results:r.results}});
-        if(sv&&sv.ok) totalUpdated+=sv.updated;
+    let r=null, lastErr='';
+    for(let attempt=0;attempt<2;attempt++){
+      try{
+        r=await api('/api/sns/search',{method:'POST',body:{sellers:slice}});
+        if(r&&r.results){ lastErr=''; break; }
+        lastErr=(r&&r.msg)||'알 수 없는 오류';
+      }catch(e){ lastErr=e.message; r=null; }
+      if(attempt===0) await new Promise(res=>setTimeout(res,800)); // 재시도 전 잠깐 대기
+    }
+    if(r&&r.results){
+      // 분석 즉시 저장 (청크 단위 → 저장 지연 없음)
+      const sv=await api('/api/sns/save-search',{method:'POST',body:{results:r.results}});
+      if(sv&&sv.ok) totalUpdated+=sv.updated;
 
-        r.results.forEach(res=>{
-          const icon=res.ok?(res.blog_total>0?'✅':'⬜'):'❌';
-          const g=res.blog_grade||'-';
-          const promo=res.blog_promo_count>0?` 🏷자사홍보${res.blog_promo_count}건`:'';
-          const info=res.ok
-            ?`[${g}] 총 ${res.blog_total}건 / 최신 ${res.blog_latest||'—'} / 30일${res.blog_recent_30d}건 / ${res.blog_score}점${promo}`
-            :res.error;
-          log.innerHTML+=`<div>${icon} <b>${res.seller_name}</b> — ${info}</div>`;
-          log.scrollTop=log.scrollHeight;
-        });
-      }
-    }catch(e){log.innerHTML+=`<div>⚠️ 오류: ${e.message}</div>`;}
+      r.results.forEach(res=>{
+        const icon=res.ok?(res.blog_total>0?'✅':'⬜'):'❌';
+        const g=res.blog_grade||'-';
+        const promo=res.blog_promo_count>0?` 🏷자사홍보${res.blog_promo_count}건`:'';
+        const info=res.ok
+          ?`[${g}] 총 ${res.blog_total}건 / 최신 ${res.blog_latest||'—'} / 30일${res.blog_recent_30d}건 / ${res.blog_score}점${promo}`
+          :res.error;
+        log.innerHTML+=`<div>${icon} <b>${res.seller_name}</b> — ${info}</div>`;
+        log.scrollTop=log.scrollHeight;
+      });
+    }else{
+      log.innerHTML+=`<div>⚠️ 오류 (재시도 후에도 실패, 이 구간은 건너뜀): ${lastErr} — ${slice.join(', ')}</div>`;
+      log.scrollTop=log.scrollHeight;
+    }
     done=Math.min(i+chunk,total);
     countEl.textContent=`${done} / ${total}`;
     bar.style.width=`${Math.round(done/total*100)}%`;
@@ -5023,14 +5133,19 @@ function renderSNSTable(rows){
     if(promoCount>0){
       const latest=r.blog_promo_latest?r.blog_promo_latest.slice(0,10):'';
       let brandTags='';
+      let firstPromoLink='';
       try{
         const promos=JSON.parse(r.blog_product_promo||'[]');
         const allBrands=[...new Set(promos.flatMap(p=>p.brands||[]))].slice(0,3);
         brandTags=allBrands.map(b=>`<span style="background:#FEF9C3;color:#92400E;padding:1px 5px;border-radius:4px;font-size:9px;font-weight:600">${b}</span>`).join(' ');
+        firstPromoLink=(promos[0]&&promos[0].link)||'';
       }catch{}
+      // 수정4: 숫자만 보고 끝나지 않도록, 가장 최근 홍보 글을 바로 열어볼 수 있는 링크를 함께 보여준다
+      const promoLinkIcon=firstPromoLink
+        ?`<a href="${firstPromoLink}" target="_blank" rel="noopener" onclick="event.stopPropagation()" title="가장 최근 홍보 글 열기" style="margin-left:4px;text-decoration:none">🔗</a>`:'';
       promoCell=`<div onclick="event.stopPropagation();openPromoModal('${r.seller_name.replace(/'/g,"\\'")}','${(r.blog_product_promo||'').replace(/'/g,"\\'").replace(/"/g,'&quot;')}',${promoCount})"
         style="cursor:pointer">
-        <span style="color:#D97706;font-weight:700;font-size:11.5px">${promoCount}건</span>
+        <span style="color:#D97706;font-weight:700;font-size:11.5px">${promoCount}건</span>${promoLinkIcon}
         ${latest?`<div style="color:var(--ink-300);font-size:9.5px;margin-top:1px">${latest}</div>`:''}
         <div style="margin-top:2px">${brandTags}</div>
       </div>`;
@@ -5039,10 +5154,14 @@ function renderSNSTable(rows){
     // 수정2: 인스타 인증 칸 — 자사 제품 게시물 누적 조회수만 표시
     const instaCnt=r.instagram_post_count||0;
     const instaViews=r.instagram_views||0;
+    const instaLatestUrl=r.instagram_latest_url||'';
     const safeName=r.seller_name.replace(/'/g,"\\'");
+    // 수정4: 조회수 숫자 옆에 가장 최근 등록된 게시물로 바로 가는 링크를 둔다
+    const instaLinkIcon=instaLatestUrl
+      ?`<a href="${instaLatestUrl}" target="_blank" rel="noopener" onclick="event.stopPropagation()" title="최근 게시물 열기" style="margin-left:4px;text-decoration:none">🔗</a>`:'';
     const instaCell = instaCnt>0
       ? `<div onclick="event.stopPropagation();openInstaPanel('${safeName}')" style="cursor:pointer">
-          <div style="color:#C13584;font-weight:800;font-size:12.5px">👁 ${instaViews.toLocaleString()}</div>
+          <div style="color:#C13584;font-weight:800;font-size:12.5px">👁 ${instaViews.toLocaleString()}${instaLinkIcon}</div>
           <div style="color:var(--ink-300);font-size:9.5px;margin-top:1px">게시물 ${instaCnt}건</div>
         </div>`
       : `<button onclick="event.stopPropagation();openInstaPanel('${safeName}')"

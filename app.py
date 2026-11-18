@@ -1959,6 +1959,7 @@ def remap_group(group, item_name=''):
         '쏘서':            '엔픽스',
         '점퍼루':          '엔픽스',
         '휴대용부스터':    '엔픽스',
+        '흡착식기':        '엔픽스',
         'TAFTOYS':         '타프토이즈',
         '유아섬유류':      'ABC디자인',
     }
@@ -4983,6 +4984,65 @@ _PROMO_NAME_SUFFIXES = ['감사제', '프로모션', '이벤트', '런칭전', '
 _PROMO_NAME_RE = re.compile(r'[가-힣A-Za-z0-9]{1,10}(?:' + '|'.join(_PROMO_NAME_SUFFIXES) + ')')
 
 
+def _promo_autodetect_candidates(min_count=2):
+    """비고란에서 아직 등록되지 않은 '행사로 보이는' 표기를 전부 찾아, 표기별로 참여 매장(+매장별
+    수량·매출)·감지된 기간(첫 등장일~마지막 등장일)까지 집계해서 돌려준다. 수정사항: 이제 사람이
+    행사명을 등록하지 않아도 — 기간을 스스로 감지하고, 그 기간에 어떤 매장이 얼마나 참여했는지
+    바로 계산해서 돌려주므로, 연간 개요 화면에 등록 없이 바로 올릴 수 있다."""
+    conn = get_db()
+    existing_evs = [dict(r) for r in conn.execute("SELECT name, note_tags FROM promo_event").fetchall()]
+    existing_tags_norm = set()
+    for ev in existing_evs:
+        for t in _promo_event_tags(ev):
+            existing_tags_norm.add(re.sub(r'\s+', '', t))
+
+    rows = conn.execute("""SELECT note, sale_date, real_seller, quantity, total FROM sales_data
+                            WHERE note IS NOT NULL AND note!=''""").fetchall()
+    conn.close()
+
+    cand = {}
+    for r in rows:
+        note = r['note'] or ''
+        seen_in_row = set()  # 같은 전표 비고에 같은 표기가 여러 번 매치되는 중복 집계 방지
+        for m in _PROMO_NAME_RE.finditer(note):
+            tok = m.group(0)
+            idx = m.start()
+            before = note[idx - 1] if idx > 0 else None
+            if not _tag_boundary_ok(before):
+                continue
+            tok_norm = re.sub(r'\s+', '', tok)
+            if tok_norm in existing_tags_norm or tok_norm in seen_in_row:
+                continue
+            seen_in_row.add(tok_norm)
+            g = cand.setdefault(tok_norm, {'tag': tok, 'count': 0, 'dates': [], 'store_agg': {}})
+            g['count'] += 1
+            if r['sale_date']:
+                g['dates'].append(r['sale_date'])
+            seller = (r['real_seller'] or '').strip()
+            if seller:
+                sg = g['store_agg'].setdefault(seller, {'qty': 0, 'amount': 0})
+                sg['qty'] += r['quantity'] or 0
+                sg['amount'] += r['total'] or 0
+
+    total_store_count = len(_all_active_store_names())
+    out = []
+    for g in cand.values():
+        if g['count'] < min_count:
+            continue
+        dates = sorted(d for d in g['dates'] if d)
+        store_cnt = len(g['store_agg'])
+        qty = sum(v['qty'] for v in g['store_agg'].values())
+        amount = sum(v['amount'] for v in g['store_agg'].values())
+        rate = (store_cnt / total_store_count * 100) if total_store_count else 0
+        out.append({'tag': g['tag'], 'count': g['count'], 'store_count': store_cnt,
+                     'total_store_count': total_store_count, 'participation_rate': round(rate, 1),
+                     'qty': qty, 'amount': amount,
+                     'date_from': dates[0] if dates else '', 'date_to': dates[-1] if dates else '',
+                     'store_agg': g['store_agg']})
+    out.sort(key=lambda x: -x['count'])
+    return out
+
+
 @app.route("/api/promo-events/overview")
 @login_required
 def api_promo_events_overview():
@@ -5014,11 +5074,28 @@ def api_promo_events_overview():
         store_cnt = len(store_set)
         rate = (store_cnt / total_store_count * 100) if total_store_count else 0
         out.append({
-            'id': ev['id'], 'name': ev['name'], 'date_start': ev['date_start'], 'date_end': ev['date_end'],
+            'id': ev['id'], 'tag': None, 'registered': True,
+            'name': ev['name'], 'date_start': ev['date_start'], 'date_end': ev['date_end'],
             'note': ev.get('note') or '', 'configured': bool((ev.get('note_tags') or '').strip()),
             'store_count': store_cnt, 'total_store_count': total_store_count,
             'participation_rate': round(rate, 1), 'qty': qty, 'amount': amount,
         })
+
+    # 수정사항: 행사명을 일일이 등록하지 않아도, 비고란에서 자동 감지된 표기는 스스로 감지한
+    # 기간·참여 매장·참여율과 함께 바로 목록에 올라온다 (등록은 선택사항일 뿐 필수가 아니다)
+    for c in _promo_autodetect_candidates():
+        y_from = (c['date_from'] or '')[:4]
+        y_to = (c['date_to'] or '')[:4]
+        if not y_from or not y_to or y_from > year or y_to < year:
+            continue
+        out.append({
+            'id': None, 'tag': c['tag'], 'registered': False,
+            'name': c['tag'], 'date_start': c['date_from'], 'date_end': c['date_to'],
+            'note': '', 'configured': False,
+            'store_count': c['store_count'], 'total_store_count': c['total_store_count'],
+            'participation_rate': c['participation_rate'], 'qty': c['qty'], 'amount': c['amount'],
+        })
+    out.sort(key=lambda e: e['date_start'] or '')
 
     return jsonify({'ok': True, 'year': year, 'years': years or [str(datetime.now().year)],
                      'total_store_count': total_store_count, 'events': out})
@@ -5098,47 +5175,65 @@ def api_promo_events_update(event_id):
 def api_promo_events_autodetect():
     """기초데이터 비고란에서 아직 등록되지 않은 '행사로 보이는' 표기를 찾아 제안한다 — 토론감사제/
     ADAC감사제/줄즈감사제/특별프로모션/줄레행사처럼 비고에 행사명이 함께 적혀있는 패턴(…감사제,
-    …프로모션, …행사 등)을 모아 등장 빈도·기간·매장수와 함께 보여주고, 이미 등록된 행사의
-    비고 표기와 겹치는 건 제외한다. 제안을 확인한 뒤엔 행사 등록(+ 비고 표기 등록)으로 그대로
-    이어가면 된다."""
-    conn = get_db()
-    existing_evs = [dict(r) for r in conn.execute("SELECT name, note_tags FROM promo_event").fetchall()]
-    existing_tags_norm = set()
-    for ev in existing_evs:
-        for t in _promo_event_tags(ev):
-            existing_tags_norm.add(re.sub(r'\s+', '', t))
+    …프로모션, …행사 등)을 모아 등장 빈도·자동 감지된 기간·참여 매장수·참여율까지 바로 계산해서
+    보여준다. 수정사항: 행사를 등록하지 않아도 이 목록(과 연간 개요 화면)에서 바로 참여 현황을
+    확인할 수 있으므로, 등록은 더 세밀한 제외 조건을 걸고 싶을 때만 선택적으로 하면 된다."""
+    cands = _promo_autodetect_candidates()
+    suggestions = [{k: v for k, v in c.items() if k != 'store_agg'} for c in cands[:40]]
+    return jsonify({'ok': True, 'suggestions': suggestions})
 
-    rows = conn.execute("SELECT note, sale_date, real_seller FROM sales_data WHERE note IS NOT NULL AND note!=''").fetchall()
+
+@app.route("/api/promo-events/tag-participation")
+@login_required
+def api_promo_tag_participation():
+    """등록하지 않은(자동 감지된) 행사 표기 하나를 클릭했을 때 — 행사 등록 없이도 참여율과
+    매장별 참여 현황을 바로 보여준다. '행사별 실적'에 등록된 비고 표기와 똑같이, tag가 비고에
+    독립된 표기로 들어간 판매건만 정확히 매칭한다(다른 긴 표기의 일부로 붙어있는 경우는 제외)."""
+    tag = request.args.get('tag', '').strip()
+    if not tag:
+        return jsonify({'ok': False, 'msg': '행사 표기가 필요합니다'}), 400
+    conn = get_db()
+    cand_rows = conn.execute(
+        "SELECT sale_date, real_seller, quantity, total, note FROM sales_data WHERE note LIKE ?",
+        (f'%{tag}%',)).fetchall()
+    all_stores = [r[0] for r in conn.execute("SELECT name FROM branches WHERE status='운영중' ORDER BY name").fetchall()]
     conn.close()
 
-    cand = {}
+    rows = [r for r in cand_rows if _note_contains_tag(r['note'] or '', tag)]
+    store_agg = {}
+    dates = []
     for r in rows:
-        note = r['note'] or ''
-        for m in _PROMO_NAME_RE.finditer(note):
-            tok = m.group(0)
-            idx = m.start()
-            before = note[idx - 1] if idx > 0 else None
-            if not _tag_boundary_ok(before):
-                continue
-            tok_norm = re.sub(r'\s+', '', tok)
-            if tok_norm in existing_tags_norm:
-                continue
-            g = cand.setdefault(tok_norm, {'tag': tok, 'count': 0, 'dates': [], 'stores': set()})
-            g['count'] += 1
-            if r['sale_date']:
-                g['dates'].append(r['sale_date'])
-            if r['real_seller']:
-                g['stores'].add(r['real_seller'])
-
-    suggestions = []
-    for g in cand.values():
-        if g['count'] < 2:
+        if r['sale_date']:
+            dates.append(r['sale_date'])
+        s = (r['real_seller'] or '').strip()
+        if not s:
             continue
-        dates = sorted(g['dates'])
-        suggestions.append({'tag': g['tag'], 'count': g['count'], 'store_count': len(g['stores']),
-                             'date_from': dates[0] if dates else '', 'date_to': dates[-1] if dates else ''})
-    suggestions.sort(key=lambda x: -x['count'])
-    return jsonify({'ok': True, 'suggestions': suggestions[:40]})
+        g = store_agg.setdefault(s, {'store': s, 'qty': 0, 'amount': 0})
+        g['qty'] += r['quantity'] or 0
+        g['amount'] += r['total'] or 0
+
+    seen = set(all_stores)
+    participants = []
+    for s in all_stores:
+        if s in store_agg:
+            g = store_agg[s]
+            participants.append({'store': s, 'participated': True, 'qty': g['qty'], 'amount': g['amount']})
+        else:
+            participants.append({'store': s, 'participated': False, 'qty': 0, 'amount': 0})
+    for s, g in store_agg.items():
+        if s not in seen:
+            participants.append({'store': s, 'participated': True, 'qty': g['qty'], 'amount': g['amount']})
+
+    participants.sort(key=lambda x: (not x['participated'], -x['amount'], x['store']))
+    total_cnt = len(all_stores) if all_stores else len(participants)
+    participated_cnt = sum(1 for p in participants if p['participated'])
+    dates = sorted(d for d in dates if d)
+
+    return jsonify({'ok': True,
+                     'event': {'name': tag, 'date_start': dates[0] if dates else '', 'date_end': dates[-1] if dates else ''},
+                     'total_store_count': total_cnt, 'participated_count': participated_cnt,
+                     'participation_rate': round(participated_cnt / total_cnt * 100, 1) if total_cnt else 0,
+                     'participants': participants})
 
 
 @app.route("/api/export/xlsx/promo-events-overview")
@@ -5157,6 +5252,8 @@ def export_xlsx_promo_events_overview():
     conn.close()
 
     events = [dict(r) for r in evs]
+    for ev in events:
+        ev['_ukey'] = ev['id']
     total_store_count = len(all_stores)
     ev_store_agg = {}
     for ev in events:
@@ -5169,7 +5266,19 @@ def export_xlsx_promo_events_overview():
             g = agg.setdefault(s, {'qty': 0, 'amount': 0})
             g['qty'] += r['quantity'] or 0
             g['amount'] += r['total'] or 0
-        ev_store_agg[ev['id']] = agg
+        ev_store_agg[ev['_ukey']] = agg
+
+    # 수정사항: 등록하지 않은(자동 감지된) 행사 표기도 연간 전체 엑셀에 함께 담는다 —
+    # 등록을 안 해도 1~12월 전체 개요에서 빠지지 않도록 하기 위함
+    for c in _promo_autodetect_candidates():
+        y_from = (c['date_from'] or '')[:4]; y_to = (c['date_to'] or '')[:4]
+        if not y_from or not y_to or y_from > year or y_to < year:
+            continue
+        ukey = f"tag:{c['tag']}"
+        events.append({'id': None, '_ukey': ukey, 'name': f"{c['tag']} (자동감지)",
+                        'date_start': c['date_from'], 'date_end': c['date_to']})
+        ev_store_agg[ukey] = {s: v for s, v in c['store_agg'].items()}
+    events.sort(key=lambda e: e['date_start'] or '')
 
     def mf(hex_): return PatternFill('solid', fgColor=hex_)
     NAVY = '1F2937'; HGRAY = 'E5E7EB'; BORDERC = 'D1D5DB'
@@ -5191,7 +5300,7 @@ def export_xlsx_promo_events_overview():
     r = hr + 1
     tot_store_sum = tot_qty_sum = tot_amt_sum = 0
     for ev in events:
-        agg = ev_store_agg[ev['id']]
+        agg = ev_store_agg[ev['_ukey']]
         store_cnt = len(agg)
         qty = sum(g['qty'] for g in agg.values())
         amount = sum(g['amount'] for g in agg.values())
@@ -5230,7 +5339,7 @@ def export_xlsx_promo_events_overview():
     all_names = list(all_stores)
     seen_names = set(all_names)
     for ev in events:
-        for s in ev_store_agg[ev['id']].keys():
+        for s in ev_store_agg[ev['_ukey']].keys():
             if s not in seen_names:
                 seen_names.add(s); all_names.append(s)
 
@@ -5239,7 +5348,7 @@ def export_xlsx_promo_events_overview():
         join_cnt = 0
         vals = [s]
         for ev in events:
-            agg = ev_store_agg[ev['id']]
+            agg = ev_store_agg[ev['_ukey']]
             if s in agg:
                 vals.append(agg[s]['amount']); join_cnt += 1
             else:
@@ -9747,6 +9856,75 @@ def api_visit_report_stores():
     return jsonify(rows)
 
 
+@app.route("/api/visit-report/merge-stores", methods=["POST"])
+@login_required
+def api_visit_report_merge_stores():
+    """매장 방문 보고서 '매장별 누적 현황'에서, 표기만 다른 같은 매장(예: '베이비하우스 파주점'과
+    '베이비하우스 파주')을 체크박스로 골라 하나로 합친다. body: {store_names: [...], to_name}.
+    to_name(유지할 표기)으로 방문 기록(store_visit_log·store_visit_report)을 모두 옮기고,
+    매장현황(store_profile)은 유지할 쪽에 빈 값만 다른 표기에서 보완해 채운 뒤, 병합되어 사라지는
+    표기들의 행은 지운다 — 병합 후에는 고른 이름 하나만 목록에 남는다."""
+    d = request.json or {}
+    names = [n.strip() for n in (d.get('store_names') or []) if (n or '').strip()]
+    names = list(dict.fromkeys(names))  # 중복 제거, 순서 유지
+    to_name = (d.get('to_name') or '').strip()
+    if len(names) < 2:
+        return jsonify({'ok': False, 'msg': '합칠 매장을 2개 이상 선택해주세요'}), 400
+    if not to_name:
+        to_name = max(names, key=len)
+    if to_name not in names:
+        return jsonify({'ok': False, 'msg': '유지할 이름은 선택한 매장 중 하나여야 합니다'}), 400
+    from_names = [n for n in names if n != to_name]
+    if not from_names:
+        return jsonify({'ok': False, 'msg': '합칠 다른 매장이 없습니다'}), 400
+
+    conn = get_db()
+    placeholders = ','.join('?' * len(from_names))
+    moved_log = conn.execute(
+        f"SELECT COUNT(*) FROM store_visit_log WHERE store_name IN ({placeholders})", from_names).fetchone()[0]
+    conn.execute(f"UPDATE store_visit_log SET store_name=? WHERE store_name IN ({placeholders})",
+                 [to_name] + from_names)
+    moved_report = conn.execute(
+        f"SELECT COUNT(*) FROM store_visit_report WHERE store_name IN ({placeholders})", from_names).fetchone()[0]
+    # store_visit_report는 (visit_date, store_name) UNIQUE라서, 합칠 매장이 같은 날짜에 둘 다
+    # 보고서를 올려둔 극히 드문 경우엔 매장명 변경 시 충돌이 날 수 있다 — 그런 날짜만 건너뛴다
+    merged_report = 0
+    for n in from_names:
+        rows = conn.execute("SELECT id, visit_date FROM store_visit_report WHERE store_name=?", (n,)).fetchall()
+        for row in rows:
+            clash = conn.execute("SELECT 1 FROM store_visit_report WHERE store_name=? AND visit_date=?",
+                                  (to_name, row['visit_date'])).fetchone()
+            if clash:
+                continue
+            conn.execute("UPDATE store_visit_report SET store_name=? WHERE id=?", (to_name, row['id']))
+            merged_report += 1
+
+    # store_profile — 유지할 쪽에 없는 값만 다른 표기에서 보완해서 채운다 (있는 값은 덮어쓰지 않음)
+    to_row = conn.execute("SELECT * FROM store_profile WHERE store_name=?", (to_name,)).fetchone()
+    to_row = dict(to_row) if to_row else {}
+    for n in from_names:
+        row = conn.execute("SELECT * FROM store_profile WHERE store_name=?", (n,)).fetchone()
+        if not row:
+            continue
+        row = dict(row)
+        for field in ('staff_status', 'store_status', 'voucher_info'):
+            if not (to_row.get(field) or '').strip() and (row.get(field) or '').strip():
+                to_row[field] = row[field]
+    if to_row or conn.execute(f"SELECT 1 FROM store_profile WHERE store_name IN ({placeholders})", from_names).fetchone():
+        now = datetime.now().strftime('%Y-%m-%d %H:%M')
+        conn.execute("""INSERT INTO store_profile (store_name, staff_status, store_status, voucher_info, updated_at)
+                        VALUES (?,?,?,?,?)
+                        ON CONFLICT(store_name) DO UPDATE SET
+                        staff_status=excluded.staff_status, store_status=excluded.store_status,
+                        voucher_info=excluded.voucher_info, updated_at=excluded.updated_at""",
+                     (to_name, to_row.get('staff_status', ''), to_row.get('store_status', ''),
+                      to_row.get('voucher_info', ''), now))
+    conn.execute(f"DELETE FROM store_profile WHERE store_name IN ({placeholders})", from_names)
+    conn.commit(); conn.close()
+    return jsonify({'ok': True, 'to': to_name, 'from': from_names,
+                     'moved_log': moved_log, 'moved_report': merged_report})
+
+
 @app.route("/api/visit-report/store-card")
 @login_required
 def api_visit_report_store_card():
@@ -11966,7 +12144,11 @@ def api_sns_search():
         req = urllib.request.Request(url)
         req.add_header('X-Naver-Client-Id',     client_id)
         req.add_header('X-Naver-Client-Secret', client_secret)
-        with urllib.request.urlopen(req, timeout=10) as r:
+        # 수정4: 매장 1건당 최대 5회 네이버 API를 순차 호출하다보니(블로그/카페/웹문서×2+인스타+지역보조),
+        # 호출 하나가 느려지면 배치 전체 응답이 지연되어 플랫폼/프록시 타임아웃으로 HTML 오류 페이지가
+        # 내려오고, 프론트에서 "Unexpected token '<'" 로 보이는 원인이 됐다. 호출당 제한 시간을 줄여
+        # 느린 호출이 전체를 지연시키지 않도록 한다.
+        with urllib.request.urlopen(req, timeout=6) as r:
             return json.loads(r.read().decode('utf-8'))
 
     def naver_blog(query, display=20, sort='date'):
@@ -12124,10 +12306,25 @@ def api_sns_search():
             #   자사 브랜드/제품 키워드가 함께 나오면 "그 지역 매장에서 발행된 자사 제품 글"로 보고 인정한다.
             seller_tokens = [t for t in re.split(r'\s+', clean) if len(t) >= 2]
             def _is_relevant(it):
-                text = strip_tags(it.get('title', '')) + ' ' + strip_tags(it.get('description', ''))
-                text_ns = text.replace(' ', '')
-                if seller_tokens and all(tok.replace(' ', '') in text_ns for tok in seller_tokens):
-                    return True
+                title = strip_tags(it.get('title', ''))
+                desc = strip_tags(it.get('description', ''))
+                text = title + ' ' + desc
+                title_ns = title.replace(' ', '')
+                full_ns = text.replace(' ', '')
+                if seller_tokens:
+                    toks = [t.replace(' ', '') for t in seller_tokens]
+                    # 제목에 매장명이 직접 등장하면 확실히 이 매장 글로 인정한다
+                    if all(tok in title_ns for tok in toks):
+                        return True
+                    # 수정4: 매장명이 '본문 설명'에만 등장하는 경우는, 여러 업체를 한데 묶어 소개하는
+                    # 맛집/지역정보 모음 글 같은 데 매장명만 스쳐 지나가듯 언급됐을 뿐인 경우가 많다
+                    # (예: 영통 지역 정보 모음 글에 '베이비하우스 영통점'이 한 줄 언급되고, 정작 글
+                    # 제목·내용은 전혀 무관한 '아웃백 런치메뉴' 얘기인 경우). 그래서 본문에서만 매장명이
+                    # 발견됐을 땐, 자사 브랜드/제품 키워드가 함께 나와야만 "이 매장 관련 글"로 인정한다.
+                    if all(tok in full_ns for tok in toks):
+                        if any(b in text for b in OUR_BRANDS) or any(k in text for k in PRODUCT_KEYWORDS):
+                            return True
+                        return False
                 if area_tokens and any(a in text for a in area_tokens):
                     if any(b in text for b in OUR_BRANDS) or any(k in text for k in PRODUCT_KEYWORDS):
                         return True
@@ -12355,6 +12552,13 @@ def api_sns_list():
     for r in conn.execute("""SELECT seller_name, COUNT(*) cnt, SUM(score) bonus, SUM(COALESCE(view_count,0)) views
                               FROM instagram_post GROUP BY seller_name""").fetchall():
         insta_map[r[0]] = {'cnt': r[1], 'bonus': r[2] or 0, 'views': r[3] or 0}
+    # 수정: 인스타 누적 조회수 숫자를 보고 바로 어떤 게시물인지 확인할 수 있도록, 가장 최근 등록된
+    # 게시물 링크를 함께 내려준다 (화면에서 바로 클릭해서 열어볼 수 있게)
+    insta_latest_url = {}
+    for r in conn.execute("""SELECT seller_name, post_url FROM instagram_post ip1
+                              WHERE id = (SELECT id FROM instagram_post ip2 WHERE ip2.seller_name = ip1.seller_name
+                                          ORDER BY posted_date DESC, id DESC LIMIT 1)""").fetchall():
+        insta_latest_url[r[0]] = r[1]
     conn.close()
     result = []
     for s in sellers:
@@ -12384,6 +12588,7 @@ def api_sns_list():
             'instagram_handle':     info.get('instagram_handle',''),
             'instagram_post_count': insta['cnt'],
             'instagram_views':      insta['views'],
+            'instagram_latest_url': insta_latest_url.get(s, ''),
             'total_score':          total_score,
         })
     result.sort(key=lambda x: -x['year_sales'])
