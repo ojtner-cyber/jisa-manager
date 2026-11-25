@@ -904,6 +904,10 @@ def init_db():
                     conn.execute("DELETE FROM store_visit_log WHERE id=?", (r['id'],))
     except Exception:
         pass
+    try:
+        _dedupe_visit_log(conn)
+    except Exception:
+        pass
 
     conn.commit(); conn.close()
 
@@ -9158,12 +9162,26 @@ def _split_content_blocks(text):
 # 카테고리 제목을 적지 않아도, 실제로 언급된 브랜드·제품을 보고 카테고리를 자동으로 붙인다.
 # (스누즈2=아기침대, 비바체플립=식탁의자처럼 제품명이 곧 카테고리를 특정하는 경우까지 포함)
 _CATEGORY_BRAND_MAP = {
-    '스누즈2': '아기침대', '스누즈': '아기침대',
-    '비바체플립': '식탁의자', '비바체': '식탁의자',
-    '줄즈': '유모차', 'joie': '유모차',
-    '레카로': '카시트', 'recaro': '카시트',
+    # ※ 먼저 나온 키워드가 우선 — 구체적인 것(태그 버디)을 일반적인 것(태그)보다 앞에 둔다.
+    # 자사
+    '버디': '카시트',                       # ABC디자인 태그 버디 = 카시트
+    '태그': '유모차', '루프트': '유모차', '슈타트듀오': '유모차', '슈타트': '유모차',  # ABC디자인
+    '줄즈': '유모차', 'joolz': '유모차',
     '원더폴드': '웨건', 'wonderfold': '웨건',
+    '레카로': '카시트', 'recaro': '카시트',
     '타프토이즈': '용품', 'taftoys': '용품',
+    '비바체플립': '식탁의자', '비바체': '식탁의자', '카오스': '식탁의자', 'chaos': '식탁의자',
+    '스누즈2': '아기침대', '스누즈': '아기침대',
+    # 타사
+    '싸이백스': '카시트', '싸이벡스': '카시트', '사이백스': '카시트', '사이벡스': '카시트', 'cybex': '카시트',
+    '브라이택스': '카시트', '브라이텍스': '카시트', 'britax': '카시트',
+    '조이': '카시트', 'joie': '카시트',
+    '실버크로스': '유모차', 'silvercross': '유모차', 'silver cross': '유모차',
+    '오이스터': '유모차', 'oyster': '유모차',
+    '부가부': '유모차', 'bugaboo': '유모차',
+    '요요': '유모차', 'yoyo': '유모차',
+    '스토케': '유모차', 'stokke': '유모차',
+    '트라이크': '유모차',
 }
 
 def _detect_category_from_text(text):
@@ -9208,6 +9226,34 @@ def _parse_bullet_lines(lines):
     return bullets
 
 
+def _split_freeform_by_brand(lines):
+    """웹에서 막 적은 글(카테고리/* 표시 없이)도 정리되도록: "줄즈", "줄즈: 내용", "줄즈 - 내용"처럼
+    줄 맨 앞이 알려진 브랜드/제품 키워드인 줄을 브랜드 구분으로 보고 묶는다.
+    반환: (브랜드 앞의 남는 줄들, [(브랜드, [세부줄...]), ...])"""
+    pre, groups = [], []
+    for ln in lines:
+        raw = ln.strip()
+        if not raw:
+            continue
+        t = raw.lstrip('-*•· ').strip()
+        if t.startswith('L '):
+            t = t[2:].strip()
+        m = _re_visit.match(r'^([^\s:：\-–—]+)\s*(?:[:：\-–—]\s*(.*))?$', t)
+        brand_tok = None
+        rest = ''
+        if m:
+            tok = m.group(1)
+            if _detect_category_from_text(tok) and tok.lower() in _CATEGORY_BRAND_MAP:
+                brand_tok, rest = tok, (m.group(2) or '').strip()
+        if brand_tok:
+            groups.append((brand_tok, [rest] if rest else []))
+        elif groups:
+            groups[-1][1].append(raw)
+        else:
+            pre.append(ln)
+    return pre, groups
+
+
 def _reformat_visit_content_clean(text):
     """방문이력 '자사 주요내용'/'타사 주요내용'을 깔끔한 고정 형식으로 자동 정리한다 (수정사항).
 
@@ -9247,35 +9293,58 @@ def _reformat_visit_content_clean(text):
             # [식탁의자]) 그 카테고리 자체를 아예 보여주지 않는다.
             continue
 
-        brand_idxs = [i for i, ln in enumerate(body_lines) if ln.strip().startswith('*')]
+        brand_idxs = [i for i, ln in enumerate(body_lines) if ln.strip().startswith('*') and ln.strip().strip('*').strip()]
         if not brand_idxs:
             # 수정사항(Round B): "[브랜드명]\nL 요약\n  설명" 형식(* 서브헤더가 없는 옛 데이터) —
             # 대괄호 제목 자체가 알려진 카테고리/주제어(_NON_BRAND_HEADERS)가 아니라면 그 제목을
             # 브랜드명으로 보고 똑같이 정리한다(카테고리는 브랜드로 다시 판별, 못 찾으면 [기타]).
+            if header and header not in _NON_BRAND_HEADERS:
+                bullets = _parse_bullet_lines(body_lines)
+                if bullets:
+                    cat = _detect_category_from_text(header) or '기타'
+                    cat_entries.setdefault(cat, [])
+                    if cat not in cat_order:
+                        cat_order.append(cat)
+                    cat_entries[cat].append((header, bullets))
+                    continue
+            # 웹에서 막 적은 글: 줄 맨 앞 브랜드 키워드("줄즈: ...")로 브랜드/카테고리를 자동 판별
+            pre, groups = _split_freeform_by_brand(body_lines)
+            if groups:
+                if pre:
+                    pcat = header or '기타'
+                    cat_entries.setdefault(pcat, [])
+                    if pcat not in cat_order:
+                        cat_order.append(pcat)
+                    cat_entries[pcat].append((None, _parse_bullet_lines(pre)))
+                for brand_tok, det in groups:
+                    cat = _detect_category_from_text(brand_tok) or header or '기타'
+                    cat_entries.setdefault(cat, [])
+                    if cat not in cat_order:
+                        cat_order.append(cat)
+                    cat_entries[cat].append((brand_tok, _parse_bullet_lines(det)))
+                continue
             if header:
                 bullets = _parse_bullet_lines(body_lines)
                 if bullets:
-                    if header in _NON_BRAND_HEADERS:
-                        # "[시장상황]"처럼 제목 자체가 브랜드가 아니라 원래부터 주제 제목인 경우 —
-                        # 브랜드로 오인해 볼드 처리하지 않고, 제목은 그대로 둔 채 세부줄만
-                        # " - 설명" 불릿 형식으로 정리한다.
-                        cat = header
-                        entry = (None, bullets)
-                    else:
-                        cat = _detect_category_from_text(header) or '기타'
-                        entry = (header, bullets)
-                    if cat not in cat_entries:
-                        cat_entries[cat] = []
-                        cat_order.append(cat)
-                    cat_entries[cat].append(entry)
+                    cat_entries.setdefault(header, [])
+                    if header not in cat_order:
+                        cat_order.append(header)
+                    cat_entries[header].append((None, bullets))
                     continue
             freeform_blocks.append(block)
             continue
 
+        # 첫 브랜드 줄 앞에 있던 글(머리말)도 잃지 않도록 카테고리 본문으로 보존
+        if brand_idxs[0] > 0:
+            pre_bullets = _parse_bullet_lines(body_lines[:brand_idxs[0]])
+            if pre_bullets:
+                pcat = header or '기타'
+                cat_entries.setdefault(pcat, [])
+                if pcat not in cat_order:
+                    cat_order.append(pcat)
+                cat_entries[pcat].append((None, pre_bullets))
         for bi, idx in enumerate(brand_idxs):
             brand_raw = body_lines[idx].strip().lstrip('*').strip().rstrip('*').strip()
-            if not brand_raw:
-                continue
             end = brand_idxs[bi + 1] if bi + 1 < len(brand_idxs) else len(body_lines)
             detail_lines = body_lines[idx + 1:end]
             bullets = _parse_bullet_lines(detail_lines)
@@ -9382,6 +9451,9 @@ def _upsert_visit_log(conn, *, store_name, visit_date, our_content='', competito
     보존해서 수동으로 적어둔 진행상태·활동비 등을 업로드가 덮어써 날리지 않게 한다.
     manual(보고서작성 폼) 입력만 같은 날 여러 번 방문해도 각각 별개 행으로 쌓이게 둔다."""
     now_str = datetime.now().strftime('%Y-%m-%d %H:%M')
+    # 웹에서 어떻게 적었든 저장 시점에 [카테고리]/*브랜드/ - 설명 형식으로 자동 정리
+    our_content = _reformat_visit_content_clean(our_content or '')
+    competitor_trend = _reformat_visit_content_clean(competitor_trend or '')
     existing = None
     if source != 'manual':
         existing = conn.execute(
@@ -9426,6 +9498,36 @@ def _upsert_visit_log(conn, *, store_name, visit_date, our_content='', competito
              due_date, status, expense_type, expense_amount, expense_note, manager, author, source,
              source_report_id, now_str, now_str))
         return cur.lastrowid
+
+
+def _dedupe_visit_log(conn, store_name=None):
+    """같은 매장·같은 방문일에 내용(자사/타사/조치사항, 활동비)이 완전히 똑같은 행이 여러 개면 하나만
+    남기고 지운다(가장 내용이 풍부한 행 우선). 내용이 다른 같은 날 방문은 건드리지 않는다.
+    반환: 지운 행 수."""
+    if store_name:
+        rows = conn.execute("SELECT * FROM store_visit_log WHERE store_name=?", (store_name,)).fetchall()
+    else:
+        rows = conn.execute("SELECT * FROM store_visit_log").fetchall()
+    groups = {}
+    for r in rows:
+        r = dict(r)
+        key = (r['store_name'], r['visit_date'],
+               _reformat_visit_content_clean(r.get('our_content') or '').strip(),
+               _reformat_visit_content_clean(r.get('competitor_trend') or '').strip(),
+               (r.get('action_item') or '').strip(),
+               r.get('expense_amount') or 0, (r.get('expense_note') or '').strip())
+        groups.setdefault(key, []).append(r)
+    text_fields = ['purpose', 'contact_person', 'due_date', 'status', 'expense_type', 'expense_note']
+    removed = 0
+    for grp in groups.values():
+        if len(grp) < 2:
+            continue
+        best = max(grp, key=lambda x: (sum(len(str(x.get(f) or '')) for f in text_fields), -x['id']))
+        for r in grp:
+            if r['id'] != best['id']:
+                conn.execute("DELETE FROM store_visit_log WHERE id=?", (r['id'],))
+                removed += 1
+    return removed
 
 
 def _staff_status_display_text(raw):
@@ -9798,6 +9900,10 @@ def _build_store_card_data(store_name, year=None, author_name=''):
 
     # 방문·영업활동비 현황 (store_visit_log 자동 집계)
     # 수정사항6: 누적 히스토리를 차례차례 볼 수 있도록 날짜 오름차순(과거→최신, 최신이 맨 아래)으로 정렬
+    try:
+        _dedupe_visit_log(conn, store_name); conn.commit()
+    except Exception:
+        pass
     visit_rows = [dict(r) for r in conn.execute(
         "SELECT * FROM store_visit_log WHERE store_name=? ORDER BY visit_date ASC, id ASC",
         (store_name,)).fetchall()]
@@ -10183,6 +10289,10 @@ def api_visit_report_stores():
            FROM store_visit_log l
            LEFT JOIN branches b ON b.name = l.store_name
            GROUP BY l.store_name"""
+    try:
+        _dedupe_visit_log(conn); conn.commit()
+    except Exception:
+        pass
     rows = [dict(r) for r in conn.execute(q).fetchall()]
     conn.close()
     for r in rows:
@@ -10315,8 +10425,9 @@ def api_visit_report_cleanup_format():
             conn.execute("UPDATE store_visit_log SET our_content=?, competitor_trend=? WHERE id=?",
                          (new_our, new_comp, r['id']))
             updated += 1
+    removed = _dedupe_visit_log(conn, store_name or None)
     conn.commit(); conn.close()
-    return jsonify({'ok': True, 'checked': len(rows), 'updated': updated})
+    return jsonify({'ok': True, 'checked': len(rows), 'updated': updated, 'removed': removed})
 
 
 @app.route("/api/visit-report/store-card")
@@ -10397,9 +10508,11 @@ def api_visit_log_save():
             store_name=?, visit_date=?, purpose=?, contact_person=?, our_content=?, competitor_trend=?,
             action_item=?, due_date=?, status=?, expense_type=?, expense_amount=?, expense_note=?, updated_at=?
             WHERE id=?""",
-            (store_name, visit_date, d.get('purpose',''), d.get('contact_person',''), d.get('our_content',''),
-             d.get('competitor_trend',''), d.get('action_item',''), d.get('due_date',''), d.get('status',''),
+            (store_name, visit_date, d.get('purpose',''), d.get('contact_person',''),
+             _reformat_visit_content_clean(d.get('our_content','')),
+             _reformat_visit_content_clean(d.get('competitor_trend','')), d.get('action_item',''), d.get('due_date',''), d.get('status',''),
              d.get('expense_type',''), expense_amount, d.get('expense_note',''), now_str, log_id))
+        _dedupe_visit_log(conn, store_name)
         conn.commit(); conn.close()
         return jsonify({'ok': True, 'id': log_id})
     else:
@@ -10418,6 +10531,7 @@ def api_visit_log_save():
                                     status=d.get('status',''), expense_type=d.get('expense_type',''),
                                     expense_amount=expense_amount, expense_note=d.get('expense_note',''),
                                     manager=manager_field, author=manager_name, source='manual')
+        _dedupe_visit_log(conn, store_name)
         conn.commit(); conn.close()
         return jsonify({'ok': True, 'id': new_id})
 
@@ -10741,6 +10855,23 @@ def _write_store_info_sheet(wb, ws, data, FNAME):
     def spacer(row, height=8):
         ws.row_dimensions[row].height = height
 
+    def fit_row(row, items, min_h=19):
+        """수정사항: 특이사항 등 긴 글이 잘리지 않도록 행 높이를 글자 수에 딱 맞게 늘린다.
+        items = [(텍스트, 시작열번호, 끝열번호), ...] — 병합 칸 너비 합 기준으로 줄 수를 추정."""
+        need = 1
+        for text, c_from, c_to in items:
+            w = sum((ws.column_dimensions[get_column_letter(ci)].width or 8.43) for ci in range(c_from, c_to + 1))
+            usable = max(w - 1.5, 3)
+            n = 0
+            for line in str(text or '').split('\n'):
+                lw = sum(2 if ord(ch) > 0x2E7F else 1 for ch in line)
+                n += max(1, -(-lw // usable))
+            need = max(need, n)
+        h = max(min_h, min(13 * need + 6, 409))
+        cur_h = ws.row_dimensions[row].height or 0
+        if h > cur_h:
+            ws.row_dimensions[row].height = h
+
     def label_value(label_rng, label_text, value_rng, value, bold_value=False, number_format=None):
         band(label_rng, label_text, f_label, align=left, border=bdr_dot)
         ws.merge_cells(value_rng)
@@ -10830,6 +10961,7 @@ def _write_store_info_sheet(wb, ws, data, FNAME):
         vals = [srow.get('title', ''), srow.get('count', '')]
         for e in entries:
             vals.append(e.get('name', '')); vals.append(e.get('note', ''))
+        fit_row(cur, [(v_, b0_, b1_) for (b0_, b1_), v_ in zip(bounds, vals)])
         for (bc0, bc1), v in zip(bounds, vals):
             l0, l1 = get_column_letter(bc0), get_column_letter(bc1)
             if bc0 != bc1:
@@ -10851,6 +10983,7 @@ def _write_store_info_sheet(wb, ws, data, FNAME):
             ws.merge_cells(f'B{label_top}:C{label_top + n_lines - 1}')
             lc = ws[f'B{label_top}']; lc.value = '매장현황'
             lc.font = f_label; lc.fill = mf('FFFFFF'); lc.border = bdr_dot; lc.alignment = ctr
+        fit_row(rr, [(line, 4, 17)])
         ws.merge_cells(f'D{rr}:Q{rr}')
         vc = ws[f'D{rr}']; vc.value = line
         vc.font = f_value; vc.fill = mf('FFFFFF'); vc.alignment = left_top
@@ -10869,6 +11002,7 @@ def _write_store_info_sheet(wb, ws, data, FNAME):
             ws.merge_cells(f'B{label_top}:C{label_top + n_v - 1}')
             lc = ws[f'B{label_top}']; lc.value = '지역상품권 관련'
             lc.font = f_label; lc.fill = mf('FFFFFF'); lc.border = bdr_dot; lc.alignment = ctr
+        fit_row(rr, [(vrow.get('label', ''), 4, 4), (vrow.get('detail', ''), 5, 17)])
         dc = ws[f'D{rr}']; dc.value = vrow.get('label', '')
         dc.font = f_value; dc.fill = mf('FFFFFF'); dc.alignment = left
         ws.merge_cells(f'E{rr}:Q{rr}')
@@ -10988,9 +11122,8 @@ def _write_store_sales_sheet(wb, ws, data, FNAME):
     f_note = Font(name=FNAME, size=9, italic=True)
     f_prod = Font(name=FNAME, size=9)
 
-    for col, w in [('A', 2), ('B', 10), ('C', 9), ('D', 11), ('E', 10), ('F', 10), ('G', 11),
-                   ('H', 11), ('I', 11), ('J', 10), ('K', 8), ('L', 14), ('M', 8), ('N', 15),
-                   ('O', 8), ('P', 8), ('Q', 2)]:
+    # 수정사항: 매출정보 시트 D~O열 간격을 모두 10.5로 통일.
+    for col, w in [('A', 2), ('B', 10), ('C', 9)] + [(c_, 10.5) for c_ in 'DEFGHIJKLMNO'] + [('P', 8), ('Q', 2)]:
         ws.column_dimensions[col].width = w
     for col in ('S', 'T'):
         ws.column_dimensions[col].hidden = True
@@ -11149,10 +11282,11 @@ def _write_store_sales_sheet(wb, ws, data, FNAME):
     if trends:
         ws.merge_cells(f'B{dr}:C{dr}')
         hc = ws[f'B{dr}']; hc.value = '제품'; hc.font = Font(name=FNAME, size=9, bold=True)
-        hc.fill = mf('FFFFFF'); hc.border = bdr; hc.alignment = ctr
+        hc.fill = mf('FFFFFF'); hc.border = bdr_dot; hc.alignment = ctr
+        ws[f'C{dr}'].border = bdr_dot
         for ci, col in enumerate(month_cols):
             c = ws[f'{col}{dr}']; c.value = f'{ci+1}월'; c.font = Font(name=FNAME, size=9, bold=True)
-            c.fill = mf('FFFFFF'); c.border = bdr; c.alignment = ctr
+            c.fill = mf('FFFFFF'); c.border = bdr_dot; c.alignment = ctr
         ws.row_dimensions[dr].height = 18
         dr += 1
         for idx, t in enumerate(trends):
@@ -11160,13 +11294,14 @@ def _write_store_sales_sheet(wb, ws, data, FNAME):
             ws.merge_cells(f'B{dr}:C{dr}')
             lc = ws[f'B{dr}']
             lc.value = label; lc.font = Font(name=FNAME, size=9, bold=True)
-            lc.fill = mf('FFFFFF'); lc.border = bdr; lc.alignment = left_nowrap
+            lc.fill = mf('FFFFFF'); lc.border = bdr_dot; lc.alignment = left_nowrap
+            ws[f'C{dr}'].border = bdr_dot
             bars_by_month = {b['month']: b['qty'] for b in t['bars']}
             for ci, col in enumerate(month_cols):
                 v = bars_by_month.get(f'{ci+1}월', 0)
                 c = ws[f'{col}{dr}']
                 c.value = v; c.font = Font(name=FNAME, size=9, bold=True)
-                c.fill = mf('FFFFFF'); c.border = bdr; c.alignment = ctr
+                c.fill = mf('FFFFFF'); c.border = bdr_dot; c.alignment = ctr
             ws.row_dimensions[dr].height = 18
             dr += 1
     else:
@@ -11375,7 +11510,7 @@ def _write_visit_log_sheet(ws, data, FNAME):
                     c.font = f_val; c.border = bdr; c.alignment = left; c.fill = mf('FFFFFF')
                 max_lines = max(_estimate_wrapped_lines(our_t, widths['E']),
                                 _estimate_wrapped_lines(comp_t, widths['F']))
-                ws.row_dimensions[rr].height = max(18, 13 * max_lines + 5)
+                ws.row_dimensions[rr].height = max(18, min(13 * max_lines + 5, 409))
 
         # 방문 전체에 공통인 칸들(방문일/방문목적/면담자/조치사항/완료예정일/진행상태/
         # 활동비금액/활동비내용)은 카테고리 줄 수만큼 세로로 병합한다. "활동비 구분" 칸은
@@ -11398,7 +11533,7 @@ def _write_visit_log_sheet(ws, data, FNAME):
         extra_wrap = [(v.get('action_item', ''), widths['G']), (v.get('expense_note', ''), widths['K'])]
         extra_lines = max(_estimate_wrapped_lines(t, w) for t, w in extra_wrap)
         total_h = sum(ws.row_dimensions[rr].height or 20 for rr in range(start_r, end_r + 1))
-        needed_h = max(20, min(14.5 * extra_lines + 6, 300))
+        needed_h = max(20, min(14.5 * extra_lines + 6, 409 * max(sub_n, 1)))
         if needed_h > total_h and sub_n > 0:
             ws.row_dimensions[end_r].height = (ws.row_dimensions[end_r].height or 20) + (needed_h - total_h)
 
