@@ -9657,8 +9657,19 @@ def _split_freeform_by_brand(lines):
             tok = m.group(1)
             if _detect_category_from_text(tok) and tok.lower() in _CATEGORY_BRAND_MAP:
                 brand_tok, rest = tok, (m.group(2) or '').strip()
+        if not brand_tok:
+            # "레카로 A1포스터 부착"처럼 브랜드 뒤에 바로 공백으로 내용이 이어지는 줄도 브랜드 구분으로 본다
+            m2 = _re_visit.match(r'^(\S+)\s+(\S.*)$', t)
+            if m2:
+                tok = m2.group(1).rstrip(':：')
+                if tok.lower() in _CATEGORY_BRAND_MAP and _detect_category_from_text(tok):
+                    brand_tok, rest = tok, m2.group(2).strip()
         if brand_tok:
-            groups.append((brand_tok, [rest] if rest else []))
+            if groups and groups[-1][0] == brand_tok:
+                # 같은 브랜드가 연달아 나오면 한 브랜드 아래로 합친다
+                if rest: groups[-1][1].append(rest)
+            else:
+                groups.append((brand_tok, [rest] if rest else []))
         elif groups:
             groups[-1][1].append(raw)
         else:
