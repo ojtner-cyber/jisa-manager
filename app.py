@@ -5958,84 +5958,163 @@ def _ensure_category_backfill(force=False):
     return updated
 
 
-def _cum_collect(date_from='', date_to=''):
-    """구분란이 N+M 무상제공인 판매건을 모아 집계한다. 반환: dict(summary/stores/products/tiers/rows)."""
+def _cum_collect(date_from='', date_to='', brand=''):
+    """누적행사(N+1 무상제공) 집계.
+    - 참여 매장 = 구분란이 'N+M 무상제공'으로 찍힌 판매건이 있는 매장
+    - 무상 수량 = 그 구분 건 중 금액 0원인 증정분
+    - 유상 수량 = 같은 기간에 그 매장이 같은 제품을 돈 내고 산 수량(구분이 정상 판매든 무엇이든 금액>0인 건)
+      → 구분란엔 무상 건에만 라벨이 붙기 때문에, 유상 수량은 같은 제품의 일반 판매건에서 가져온다
+    - 추가마진 = 무상 수량 × 기준단가(그 매장이 같은 제품을 산 평균 단가(부가세 포함), 없으면 전체 매장 평균 단가)
+    brand를 주면 그 브랜드 제품만 본다."""
     _ensure_category_backfill()
     conn = get_db()
+
+    def _decorate(r):
+        r = dict(r)
+        r['store'] = r.get('real_seller') or '(미상)'
+        r['brand'] = remap_group(r.get('item_group') or '', r.get('item_name') or '') or '(미분류)'
+        r['product'] = _display_product_name(r.get('item_name'))
+        return r
+
     q = """SELECT sale_date, real_seller, item_name, item_group, quantity, unit_price, total, note,
                   category, buyer FROM sales_data WHERE category LIKE '%무상%'"""
     params = []
     if date_from: q += " AND sale_date >= ?"; params.append(date_from)
     if date_to: q += " AND sale_date <= ?"; params.append(date_to)
     q += " ORDER BY sale_date, real_seller"
-    rows = []
+    labeled = []
     for r in conn.execute(q, params).fetchall():
-        r = dict(r)
+        r = _decorate(r)
         tier = _cum_tier_of(r['category'])
-        if not tier:
-            continue
-        if is_unmanaged_seller(r.get('real_seller') or ''):
+        if not tier or is_unmanaged_seller(r['store']):
             continue
         r['tier'] = tier
-        r['store'] = r.get('real_seller') or '(미상)'
-        r['is_free'] = (r['total'] or 0) == 0   # 무상 증정분 = 금액 0원, 나머지는 유상 구매분
-        r['brand'] = remap_group(r.get('item_group') or '', r.get('item_name') or '') or '(미분류)'
-        r['product'] = _display_product_name(r.get('item_name'))
-        rows.append(r)
+        labeled.append(r)
+    brands = sorted({r['brand'] for r in labeled},
+                    key=lambda b: (BRAND_ORDER.index(b) if b in BRAND_ORDER else 99, b))
+    if brand:
+        labeled = [r for r in labeled if r['brand'] == brand]
     has_any_category = conn.execute("SELECT COUNT(*) FROM sales_data WHERE COALESCE(category,'')!=''").fetchone()[0]
+
+    # 대상 제품(구분 건에 나온 브랜드·제품)의 유상(금액>0) 판매건 — 모든 매장 것을 읽어 기준단가 계산에도 씀
+    promo_products = {(r['brand'], r['product']) for r in labeled}
+    participants = {r['store'] for r in labeled}
+    paid_rows = []
+    if promo_products:
+        q2 = """SELECT sale_date, real_seller, item_name, item_group, quantity, unit_price, total, note,
+                       category, buyer FROM sales_data WHERE total > 0 AND quantity > 0"""
+        p2 = []
+        if date_from: q2 += " AND sale_date >= ?"; p2.append(date_from)
+        if date_to: q2 += " AND sale_date <= ?"; p2.append(date_to)
+        for r in conn.execute(q2, p2).fetchall():
+            r = _decorate(r)
+            if (r['brand'], r['product']) in promo_products and not is_unmanaged_seller(r['store']):
+                paid_rows.append(r)
     conn.close()
 
-    def _agg(keyfn):
+    free_rows = [r for r in labeled if (r['total'] or 0) == 0]
+    for r in free_rows:
+        r['is_free'] = True
+    for r in paid_rows:
+        r['is_free'] = False
+        r['tier'] = _cum_tier_of(r.get('category'))
+
+    # 매장의 대표 단계(구분 라벨 중 수량이 가장 많은 것)
+    tier_qty = {}
+    for r in labeled:
+        tier_qty.setdefault(r['store'], {}).setdefault(r['tier'], 0)
+        tier_qty[r['store']][r['tier']] += r['quantity'] or 0
+    store_main_tier = {st: max(tq.items(), key=lambda kv: kv[1])[0] for st, tq in tier_qty.items()}
+
+    rows = free_rows + [r for r in paid_rows if r['store'] in participants]
+    for r in rows:
+        r['tier_main'] = store_main_tier.get(r['store'])
+    rows.sort(key=lambda r: (r['sale_date'], r['store'], 0 if not r['is_free'] else 1))
+
+    # 기준단가 = 부가세 포함 평균 유상 단가
+    def _avg(sel):
+        q_ = sum(r['quantity'] for r in sel); t_ = sum(r['total'] for r in sel)
+        return (t_ / q_) if q_ else None
+    price_store, price_all = {}, {}
+    for r in paid_rows:
+        price_store.setdefault((r['store'], r['brand'], r['product']), []).append(r)
+        price_all.setdefault((r['brand'], r['product']), []).append(r)
+
+    def _agg(keyfn, src):
         out = {}
-        for r in rows:
-            g = out.setdefault(keyfn(r), {'paid_qty': 0, 'free_qty': 0, 'amount': 0, 'cnt': 0, 'free_cnt': 0,
-                                           'tiers': set(), 'first': r['sale_date'], 'last': r['sale_date']})
+        for r in src:
+            g = out.setdefault(keyfn(r), {'paid_qty': 0, 'free_qty': 0, 'amount': 0, 'cnt': 0,
+                                           'first': r['sale_date'], 'last': r['sale_date']})
             q_ = r['quantity'] or 0
             if r['is_free']:
-                g['free_qty'] += q_; g['free_cnt'] += 1
+                g['free_qty'] += q_
             else:
                 g['paid_qty'] += q_
             g['amount'] += r['total'] or 0
             g['cnt'] += 1
-            g['tiers'].add(r['tier'])
             g['first'] = min(g['first'], r['sale_date']); g['last'] = max(g['last'], r['sale_date'])
         return out
 
     def _ratio(g):
         return round(g['free_qty'] / g['paid_qty'] * 100, 1) if g['paid_qty'] else 0.0
 
+    # 추가마진 (매장 × 제품)
+    margin_detail = []
+    store_margin, brand_prod_margin = {}, {}
+    for (st, b, pn), g in _agg(lambda r: (r['store'], r['brand'], r['product']), rows).items():
+        if not g['free_qty']:
+            continue
+        sel = price_store.get((st, b, pn))
+        ref = _avg(sel) if sel else None
+        src = '매장 평균 구매단가'
+        if ref is None:
+            ref = _avg(price_all.get((b, pn), [])); src = '전체 매장 평균 구매단가'
+        if ref is None:
+            ref = 0; src = '기준단가 없음(유상 판매 내역 없음)'
+        mg = round(g['free_qty'] * ref)
+        margin_detail.append({'store': st, 'brand': b, 'product': pn, 'tier': store_main_tier.get(st, ''),
+                              'paid_qty': g['paid_qty'], 'free_qty': g['free_qty'],
+                              'ref_price': round(ref), 'ref_src': src, 'extra_margin': mg})
+        store_margin[st] = store_margin.get(st, 0) + mg
+        brand_prod_margin[(b, pn)] = brand_prod_margin.get((b, pn), 0) + mg
+    margin_detail.sort(key=lambda x: (-store_margin.get(x['store'], 0), x['store'], -x['extra_margin']))
+
     stores = []
-    for st, g in _agg(lambda r: r['store']).items():
+    for st, g in _agg(lambda r: r['store'], rows).items():
         exp = _cum_expected_tier(st)
-        tiers = sorted(g['tiers'], key=lambda t: int(t.split('+')[0]))
+        tiers = sorted(tier_qty.get(st, {}).keys(), key=lambda t: int(t.split('+')[0]))
         stores.append({'store': st, 'tier': ' / '.join(tiers), 'expected_tier': exp,
                        'check': '' if tiers == [exp] else f'확인 필요 (예상 {exp})',
                        'paid_qty': g['paid_qty'], 'free_qty': g['free_qty'], 'amount': g['amount'],
-                       'cnt': g['cnt'], 'free_ratio': _ratio(g), 'first': g['first'], 'last': g['last']})
+                       'cnt': g['cnt'], 'free_ratio': _ratio(g), 'extra_margin': store_margin.get(st, 0),
+                       'first': g['first'], 'last': g['last']})
     stores.sort(key=lambda x: (-x['free_qty'], -x['paid_qty'], x['store']))
 
     products = []
-    for (b, pn), g in _agg(lambda r: (r['brand'], r['product'])).items():
+    for (b, pn), g in _agg(lambda r: (r['brand'], r['product']), rows).items():
         products.append({'brand': b, 'product': pn, 'paid_qty': g['paid_qty'], 'free_qty': g['free_qty'],
-                         'amount': g['amount'], 'cnt': g['cnt'], 'free_ratio': _ratio(g)})
+                         'amount': g['amount'], 'cnt': g['cnt'], 'free_ratio': _ratio(g),
+                         'extra_margin': brand_prod_margin.get((b, pn), 0)})
     products.sort(key=lambda x: (BRAND_ORDER.index(x['brand']) if x['brand'] in BRAND_ORDER else 99, -x['paid_qty']))
 
     tiers = []
-    for t, g in _agg(lambda r: r['tier']).items():
-        n_st = len({r['store'] for r in rows if r['tier'] == t})
-        tiers.append({'tier': t, 'store_count': n_st, 'paid_qty': g['paid_qty'], 'free_qty': g['free_qty'],
-                      'amount': g['amount'], 'cnt': g['cnt'], 'free_ratio': _ratio(g)})
+    for t, g in _agg(lambda r: r['tier_main'], rows).items():
+        sts = {r['store'] for r in rows if r['tier_main'] == t}
+        tiers.append({'tier': t, 'store_count': len(sts), 'paid_qty': g['paid_qty'], 'free_qty': g['free_qty'],
+                      'amount': g['amount'], 'cnt': g['cnt'], 'free_ratio': _ratio(g),
+                      'extra_margin': sum(store_margin.get(x, 0) for x in sts)})
     tiers.sort(key=lambda x: int(x['tier'].split('+')[0]))
 
     paid_total = sum(r['quantity'] or 0 for r in rows if not r['is_free'])
     free_total = sum(r['quantity'] or 0 for r in rows if r['is_free'])
-    summary = {'row_count': len(rows), 'store_count': len({r['store'] for r in rows}),
-               'paid_qty': paid_total, 'free_qty': free_total,
-               'total_qty': paid_total + free_total,
+    summary = {'row_count': len(rows), 'store_count': len(participants),
+               'paid_qty': paid_total, 'free_qty': free_total, 'total_qty': paid_total + free_total,
                'amount': sum(r['total'] or 0 for r in rows),
                'free_ratio': round(free_total / paid_total * 100, 1) if paid_total else 0.0,
+               'extra_margin': sum(store_margin.values()),
                'has_category_data': bool(has_any_category)}
-    return {'summary': summary, 'stores': stores, 'products': products, 'tiers': tiers, 'rows': rows}
+    return {'summary': summary, 'stores': stores, 'products': products, 'tiers': tiers,
+            'margin_detail': margin_detail, 'rows': rows, 'brands': brands, 'brand': brand}
 
 
 @app.route("/api/sales/cumulative-event")
@@ -6044,7 +6123,7 @@ def api_sales_cumulative_event():
     """누적행사 실적 — 이카운트 구분란이 '9+1무상제공'/'10+1 무상제공'인 판매건 집계(기간 선택 가능)."""
     date_from = request.args.get('date_from', '').strip()
     date_to = request.args.get('date_to', '').strip()
-    data = _cum_collect(date_from, date_to)
+    data = _cum_collect(date_from, date_to, request.args.get('brand', '').strip())
     data['ok'] = True
     data['date_from'] = date_from; data['date_to'] = date_to
     return jsonify(data)
@@ -6066,7 +6145,8 @@ def export_xlsx_cumulative_event_report():
     from openpyxl.utils import get_column_letter
     date_from = request.args.get('date_from', '').strip()
     date_to = request.args.get('date_to', '').strip()
-    data = _cum_collect(date_from, date_to)
+    brand_sel = request.args.get('brand', '').strip()
+    data = _cum_collect(date_from, date_to, brand_sel)
     sm, stores, products, tiers, rows = data['summary'], data['stores'], data['products'], data['tiers'], data['rows']
 
     FNAME = '맑은 고딕'
@@ -6090,66 +6170,67 @@ def export_xlsx_cumulative_event_report():
     wb = openpyxl.Workbook()
     ws = wb.active; ws.title = '요약'
     ws.column_dimensions['A'].width = 2
-    ws.merge_cells('B2:H2')
+    ws.merge_cells('B2:I2')
     c = ws['B2']; c.value = '누적행사 실적 보고 (9+1 / 10+1 무상제공)'
     c.font = Font(bold=True, size=16, name=FNAME); c.alignment = ctr
     ws.row_dimensions[2].height = 26
-    ws.merge_cells('B3:H3')
-    c = ws['B3']; c.value = f"기간: {date_from or '전체'} ~ {date_to or '전체'}   ·   이카운트 '구분'란이 N+M 무상제공인 판매건 기준"
+    ws.merge_cells('B3:I3')
+    c = ws['B3']; c.value = f"기간: {date_from or '전체'} ~ {date_to or '전체'}   ·   브랜드: {brand_sel or '전체'}   ·   이카운트 '구분'란이 N+M 무상제공인 판매건 기준"
     c.font = Font(size=10, name=FNAME)
     kpis = [('참여 매장', f"{sm['store_count']}개"), ('유상 수량', f"{sm['paid_qty']:,}대"),
             ('무상 증정 수량', f"{sm['free_qty']:,}대"), ('무상 비율', f"{sm['free_ratio']}%"),
-            ('판매 건수', f"{sm['row_count']}건"), ('유상 합계금액', f"{sm['amount']:,}원")]
+            ('판매 건수', f"{sm['row_count']}건"), ('유상 합계금액', f"{sm['amount']:,}원"),
+            ('매장 추가마진 합계', f"{sm['extra_margin']:,}원")]
     for i, (k, v) in enumerate(kpis):
         a = ws.cell(row=5, column=2 + i, value=k); a.font = Font(size=9, name=FNAME); a.fill = mf(LGRAY); a.border = bdr; a.alignment = lft
         b = ws.cell(row=6, column=2 + i, value=v); b.font = Font(size=11, name=FNAME); b.border = bdr; b.alignment = lft
     ri = 8
     ws.cell(row=ri, column=2, value='혜택 단계별 현황').font = Font(bold=True, size=12, name=FNAME)
     ri += 1
-    hdr(ws, ri, ['혜택 단계', '참여 매장', '유상 수량', '무상 수량', '무상 비율(%)', '판매 건수', '유상 금액'])
+    hdr(ws, ri, ['혜택 단계', '참여 매장', '유상 수량', '무상 수량', '무상 비율(%)', '판매 건수', '유상 금액', '추가마진'])
     ri += 1
     for t in tiers:
-        body(ws, ri, [t['tier'], t['store_count'], t['paid_qty'], t['free_qty'], t['free_ratio'], t['cnt'], t['amount']],
-             [ctr, rgt, rgt, rgt, rgt, rgt, rgt], numcols=(1, 2, 3, 5, 6))
+        body(ws, ri, [t['tier'], t['store_count'], t['paid_qty'], t['free_qty'], t['free_ratio'], t['cnt'], t['amount'], t['extra_margin']],
+             [ctr, rgt, rgt, rgt, rgt, rgt, rgt, rgt], numcols=(1, 2, 3, 5, 6, 7))
         ri += 1
     ri += 1
-    ws.cell(row=ri, column=2, value='※ 베이비하우스 영통점은 9+1, 그 외 매장은 10+1 혜택입니다. 무상 수량 = 금액이 0원인 증정분, 유상 수량 = 그 외 구매분.').font = Font(size=9, name=FNAME, color='C00000')
+    ws.cell(row=ri, column=2, value='※ 베이비하우스 영통점은 9+1, 그 외 매장은 10+1 혜택입니다. 무상 수량 = 금액이 0원인 증정분, 유상 수량 = 같은 기간 같은 제품의 유상 구매분. 추가마진 = 무상 수량 × 매장의 평균 구매단가(부가세 포함).').font = Font(size=9, name=FNAME, color='C00000')
     if not sm['has_category_data']:
         ri += 1
         ws.cell(row=ri, column=2, value="※ 저장된 판매 데이터에 '구분' 값이 없습니다. 판매실적 탭에서 '구분 다시 읽기'를 실행하거나 판매 파일을 다시 업로드해주세요.").font = Font(size=9, name=FNAME, color='C00000')
-    for ci, w in zip(range(2, 9), [16, 14, 14, 14, 14, 14, 16]):
+    for ci, w in zip(range(2, 10), [16, 16, 14, 14, 14, 14, 16, 16]):
         ws.column_dimensions[get_column_letter(ci)].width = w
 
     ws2 = wb.create_sheet('매장별 참여현황')
     ws2.column_dimensions['A'].width = 2
-    labels = ['매장명', '적용 단계', '유상 수량', '무상 수량', '무상 비율(%)', '판매 건수', '유상 금액', '첫 일자', '마지막 일자', '확인']
-    ws2.merge_cells('B2:K2')
+    labels = ['매장명', '적용 단계', '유상 수량', '무상 수량', '무상 비율(%)', '판매 건수', '유상 금액', '추가마진', '첫 일자', '마지막 일자', '확인']
+    ws2.merge_cells('B2:L2')
     c = ws2['B2']; c.value = '매장별 참여현황'; c.font = Font(bold=True, size=14, name=FNAME)
     hdr(ws2, 4, labels)
     ri = 5
     for st in stores:
         body(ws2, ri, [st['store'], st['tier'], st['paid_qty'], st['free_qty'], st['free_ratio'], st['cnt'],
-                        st['amount'], st['first'], st['last'], st['check']],
-             [lft, ctr, rgt, rgt, rgt, rgt, rgt, ctr, ctr, lft], numcols=(2, 3, 5, 6))
+                        st['amount'], st['extra_margin'], st['first'], st['last'], st['check']],
+             [lft, ctr, rgt, rgt, rgt, rgt, rgt, rgt, ctr, ctr, lft], numcols=(2, 3, 5, 6, 7))
         ri += 1
-    body(ws2, ri, ['합계', '', sm['paid_qty'], sm['free_qty'], sm['free_ratio'], sm['row_count'], sm['amount'], '', '', ''],
-         [lft, ctr, rgt, rgt, rgt, rgt, rgt, ctr, ctr, lft], numcols=(2, 3, 5, 6))
-    for cc in range(2, 12): ws2.cell(row=ri, column=cc).font = Font(bold=True, size=9, name=FNAME)
-    for ci, w in zip(range(2, 12), [26, 11, 11, 11, 12, 10, 14, 12, 12, 18]):
+    body(ws2, ri, ['합계', '', sm['paid_qty'], sm['free_qty'], sm['free_ratio'], sm['row_count'], sm['amount'], sm['extra_margin'], '', '', ''],
+         [lft, ctr, rgt, rgt, rgt, rgt, rgt, rgt, ctr, ctr, lft], numcols=(2, 3, 5, 6, 7))
+    for cc in range(2, 13): ws2.cell(row=ri, column=cc).font = Font(bold=True, size=9, name=FNAME)
+    for ci, w in zip(range(2, 13), [26, 11, 11, 11, 12, 10, 14, 14, 12, 12, 18]):
         ws2.column_dimensions[get_column_letter(ci)].width = w
     ws2.freeze_panes = 'B5'
 
     ws3 = wb.create_sheet('제품별')
     ws3.column_dimensions['A'].width = 2
-    ws3.merge_cells('B2:H2')
+    ws3.merge_cells('B2:I2')
     c = ws3['B2']; c.value = '제품별 현황'; c.font = Font(bold=True, size=14, name=FNAME)
-    hdr(ws3, 4, ['브랜드', '제품명', '유상 수량', '무상 수량', '무상 비율(%)', '판매 건수', '유상 금액'])
+    hdr(ws3, 4, ['브랜드', '제품명', '유상 수량', '무상 수량', '무상 비율(%)', '판매 건수', '유상 금액', '추가마진'])
     ri = 5
     for pr in products:
-        body(ws3, ri, [pr['brand'], pr['product'], pr['paid_qty'], pr['free_qty'], pr['free_ratio'], pr['cnt'], pr['amount']],
-             [lft, lft, rgt, rgt, rgt, rgt, rgt], numcols=(2, 3, 5, 6))
+        body(ws3, ri, [pr['brand'], pr['product'], pr['paid_qty'], pr['free_qty'], pr['free_ratio'], pr['cnt'], pr['amount'], pr['extra_margin']],
+             [lft, lft, rgt, rgt, rgt, rgt, rgt, rgt], numcols=(2, 3, 5, 6, 7))
         ri += 1
-    for ci, w in zip(range(2, 9), [14, 26, 11, 11, 12, 10, 14]):
+    for ci, w in zip(range(2, 10), [14, 26, 11, 11, 12, 10, 14, 14]):
         ws3.column_dimensions[get_column_letter(ci)].width = w
 
     ws4 = wb.create_sheet('상세내역')
@@ -6164,6 +6245,55 @@ def export_xlsx_cumulative_event_report():
     for ci, w in zip(range(2, 11), [12, 26, 16, 12, 28, 8, 12, 8, 30]):
         ws4.column_dimensions[get_column_letter(ci)].width = w
     ws4.freeze_panes = 'B3'
+
+    # 매장×제품 추가마진 상세
+    ws5 = wb.create_sheet('매장별 추가마진')
+    ws5.column_dimensions['A'].width = 2
+    ws5.merge_cells('B2:K2')
+    c = ws5['B2']; c.value = '매장별 추가마진 (무상 수량 × 기준단가)'; c.font = Font(bold=True, size=14, name=FNAME)
+    hdr(ws5, 4, ['매장명', '적용 단계', '브랜드', '제품명', '유상 수량', '무상 수량', '기준단가', '추가마진', '기준단가 출처'])
+    ri = 5
+    for m_ in data['margin_detail']:
+        body(ws5, ri, [m_['store'], m_['tier'], m_['brand'], m_['product'], m_['paid_qty'], m_['free_qty'],
+                       m_['ref_price'], m_['extra_margin'], m_['ref_src']],
+             [lft, ctr, lft, lft, rgt, rgt, rgt, rgt, lft], numcols=(4, 5, 6, 7))
+        ri += 1
+    body(ws5, ri, ['합계', '', '', '', '', sm['free_qty'], '', sm['extra_margin'], ''],
+         [lft, ctr, lft, lft, rgt, rgt, rgt, rgt, lft], numcols=(4, 5, 6, 7))
+    for cc in range(2, 11): ws5.cell(row=ri, column=cc).font = Font(bold=True, size=9, name=FNAME)
+    for ci, w in zip(range(2, 11), [26, 10, 12, 26, 10, 10, 12, 14, 28]):
+        ws5.column_dimensions[get_column_letter(ci)].width = w
+    ws5.freeze_panes = 'B5'
+
+    # 기초데이터: 업로드했던 이카운트 원본 시트 복원 (행사별 실적 보고서와 동일 방식)
+    try:
+        covered_ym = sorted(set(r['sale_date'][:7] for r in rows if r.get('sale_date')))
+        if covered_ym:
+            import base64 as _b64_cum
+            conn_raw = get_db()
+            ph = ' OR '.join(['months LIKE ?'] * len(covered_ym))
+            raw_files = conn_raw.execute(
+                f"SELECT filename, file_b64, months FROM sales_upload_file WHERE {ph}",
+                [f"%{ym}%" for ym in covered_ym]).fetchall()
+            conn_raw.close()
+            used = set(wb.sheetnames)
+            if len(raw_files) <= 3:
+                for fname_orig, fb64, months_str in raw_files:
+                    try:
+                        src_wb = _load_workbook_resilient(_b64_cum.b64decode(fb64))
+                        if src_wb is None: continue
+                        for sn in src_wb.sheetnames:
+                            tab = f"기초_{months_str.split(',')[0][5:]}월_{sn}"[:31]
+                            base_tab = tab; suf = 1
+                            while tab in used:
+                                tab = f"{base_tab[:28]}_{suf}"; suf += 1
+                            ws_raw = wb.create_sheet(tab)
+                            _copy_sheet_with_style(src_wb[sn], ws_raw)
+                            used.add(tab)
+                    except Exception:
+                        continue
+    except Exception:
+        pass
 
     buf = io.BytesIO(); wb.save(buf); buf.seek(0)
     fname = f"누적행사_실적보고서_{datetime.now().strftime('%Y%m%d')}.xlsx"

@@ -649,6 +649,8 @@ td.center{text-align:center}
             <input class="fi" type="date" id="cumul-date-from">
             <span style="color:var(--t-300)">~</span>
             <input class="fi" type="date" id="cumul-date-to">
+            <span style="font-size:11px;color:var(--t-400);margin-left:6px">브랜드</span>
+            <select class="fi" id="cumul-brand" onchange="loadCumulativeEvent()"><option value="">전체</option></select>
             <button class="btn btn-dark btn-sm" onclick="loadCumulativeEvent()">조회</button>
             <button class="btn btn-ghost btn-sm" onclick="downloadCumulativeReport()">📊 보고서 다운로드</button>
             <button class="btn btn-ghost btn-sm" onclick="refreshCumulCategory()" title="이전에 올린 판매 파일에서 구분값을 다시 읽어와요">🔄 구분 다시 읽기</button>
@@ -6207,11 +6209,19 @@ async function loadCumulativeEvent(){
   const df=document.getElementById('cumul-date-from').value;
   const dt=document.getElementById('cumul-date-to').value;
   el.innerHTML='<div style="text-align:center;padding:30px;color:var(--t-300);font-size:12px">집계 중...</div>';
+  const brandSel=document.getElementById('cumul-brand');
   const params=new URLSearchParams();
   if(df) params.set('date_from',df);
   if(dt) params.set('date_to',dt);
+  if(brandSel && brandSel.value) params.set('brand',brandSel.value);
   const r=await api(`/api/sales/cumulative-event?${params}`);
   if(!r?.ok){ el.innerHTML='<div style="text-align:center;padding:30px;color:var(--t-300);font-size:12px">불러오지 못했습니다</div>'; return; }
+  if(brandSel){
+    const cur=brandSel.value;
+    const list=r.brands||[];
+    if(cur && !list.includes(cur)) list.push(cur);
+    brandSel.innerHTML='<option value="">전체</option>'+list.map(b=>`<option value="${b}"${b===cur?' selected':''}>${b}</option>`).join('');
+  }
   const s=r.summary;
   if(!s.row_count){
     el.innerHTML=`<div style="text-align:center;padding:40px;color:var(--t-300);font-size:12px">${s.has_category_data
@@ -6223,26 +6233,27 @@ async function loadCumulativeEvent(){
   const card=(l,v)=>`<div style="background:var(--paper);border:1px solid var(--border);border-radius:12px;padding:14px"><div style="font-size:10.5px;color:var(--t-400);margin-bottom:4px">${l}</div><div style="font-size:18px;font-weight:800;color:var(--t-900)">${v}</div></div>`;
   const th=(t,a)=>`<th style="padding:6px 8px;text-align:${a||'right'};font-size:10px;color:var(--t-500)">${t}</th>`;
   const td=(t,a,extra)=>`<td style="padding:6px 8px;text-align:${a||'right'};${extra||''}">${t}</td>`;
-  const tierRows=r.tiers.map(t=>`<tr style="border-top:1px solid var(--border)">${td(t.tier,'left')}${td(t.store_count+'개')}${td(n(t.paid_qty))}${td(n(t.free_qty))}${td(t.free_ratio+'%')}</tr>`).join('');
-  const storeRows=r.stores.map(x=>`<tr style="border-top:1px solid var(--border)">${td(x.store,'left')}${td(x.tier,'center')}${td(n(x.paid_qty))}${td(n(x.free_qty))}${td(x.free_ratio+'%')}${td(x.cnt)}${td(x.last,'center')}${td(x.check||'','left','color:#B45309;font-size:10.5px')}</tr>`).join('');
-  const prodRows=r.products.map(x=>`<tr style="border-top:1px solid var(--border)">${td(x.brand,'left')}${td(x.product,'left')}${td(n(x.paid_qty))}${td(n(x.free_qty))}${td(x.free_ratio+'%')}</tr>`).join('');
+  const tierRows=r.tiers.map(t=>`<tr style="border-top:1px solid var(--border)">${td(t.tier,'left')}${td(t.store_count+'개')}${td(n(t.paid_qty))}${td(n(t.free_qty))}${td(t.free_ratio+'%')}${td(n(t.extra_margin)+'원')}</tr>`).join('');
+  const storeRows=r.stores.map(x=>`<tr style="border-top:1px solid var(--border)">${td(x.store,'left')}${td(x.tier,'center')}${td(n(x.paid_qty))}${td(n(x.free_qty))}${td(x.free_ratio+'%')}${td(n(x.extra_margin)+'원','right','font-weight:700')}${td(x.cnt)}${td(x.last,'center')}${td(x.check||'','left','color:#B45309;font-size:10.5px')}</tr>`).join('');
+  const prodRows=r.products.map(x=>`<tr style="border-top:1px solid var(--border)">${td(x.brand,'left')}${td(x.product,'left')}${td(n(x.paid_qty))}${td(n(x.free_qty))}${td(x.free_ratio+'%')}${td(n(x.extra_margin)+'원')}</tr>`).join('');
   el.innerHTML=`
-    <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:12px;margin-bottom:18px">
-      ${card('참여 매장',s.store_count+'개')}${card('유상 수량',n(s.paid_qty)+'대')}${card('무상 증정 수량',n(s.free_qty)+'대')}${card('무상 비율',s.free_ratio+'%')}${card('판매 건수',s.row_count+'건')}
+    <div style="display:grid;grid-template-columns:repeat(6,1fr);gap:12px;margin-bottom:6px">
+      ${card('참여 매장',s.store_count+'개')}${card('유상 수량',n(s.paid_qty)+'대')}${card('무상 증정 수량',n(s.free_qty)+'대')}${card('무상 비율',s.free_ratio+'%')}${card('매장 추가마진 합계',n(s.extra_margin)+'원')}
     </div>
+    <div style="font-size:10.5px;color:var(--t-400);margin-bottom:14px">추가마진 = 무상 수량 × 그 매장의 평균 구매단가(부가세 포함). 유상 수량은 같은 기간 같은 제품을 돈 내고 산 수량이에요.</div>
     <div style="display:grid;grid-template-columns:1fr 1.3fr;gap:16px;margin-bottom:16px">
       <div style="background:var(--paper);border:1px solid var(--border);border-radius:12px;padding:16px">
         <div style="font-size:12.5px;font-weight:700;color:var(--t-700);margin-bottom:10px">혜택 단계별</div>
-        <table style="width:100%;border-collapse:collapse;font-size:11.5px"><thead><tr style="background:var(--bg)">${th('단계','left')}${th('매장')}${th('유상')}${th('무상')}${th('무상 비율')}</tr></thead><tbody>${tierRows}</tbody></table>
+        <table style="width:100%;border-collapse:collapse;font-size:11.5px"><thead><tr style="background:var(--bg)">${th('단계','left')}${th('매장')}${th('유상')}${th('무상')}${th('무상 비율')}${th('추가마진')}</tr></thead><tbody>${tierRows}</tbody></table>
       </div>
       <div style="background:var(--paper);border:1px solid var(--border);border-radius:12px;padding:16px">
         <div style="font-size:12.5px;font-weight:700;color:var(--t-700);margin-bottom:10px">제품별</div>
-        <table style="width:100%;border-collapse:collapse;font-size:11.5px"><thead><tr style="background:var(--bg)">${th('브랜드','left')}${th('제품','left')}${th('유상')}${th('무상')}${th('무상 비율')}</tr></thead><tbody>${prodRows}</tbody></table>
+        <table style="width:100%;border-collapse:collapse;font-size:11.5px"><thead><tr style="background:var(--bg)">${th('브랜드','left')}${th('제품','left')}${th('유상')}${th('무상')}${th('무상 비율')}${th('추가마진')}</tr></thead><tbody>${prodRows}</tbody></table>
       </div>
     </div>
     <div style="background:var(--paper);border:1px solid var(--border);border-radius:12px;padding:16px">
       <div style="font-size:12.5px;font-weight:700;color:var(--t-700);margin-bottom:10px">매장별 참여현황 <span style="font-weight:400;font-size:10.5px;color:var(--t-400)">· 무상 수량 많은 순</span></div>
-      <table style="width:100%;border-collapse:collapse;font-size:11.5px"><thead><tr style="background:var(--bg)">${th('매장','left')}${th('적용 단계','center')}${th('유상')}${th('무상')}${th('무상 비율')}${th('건수')}${th('마지막 일자','center')}${th('확인','left')}</tr></thead><tbody>${storeRows}</tbody></table>
+      <table style="width:100%;border-collapse:collapse;font-size:11.5px"><thead><tr style="background:var(--bg)">${th('매장','left')}${th('적용 단계','center')}${th('유상')}${th('무상')}${th('무상 비율')}${th('추가마진')}${th('건수')}${th('마지막 일자','center')}${th('확인','left')}</tr></thead><tbody>${storeRows}</tbody></table>
     </div>`;
 }
 
@@ -6252,6 +6263,8 @@ function downloadCumulativeReport(){
   const params=new URLSearchParams();
   if(df) params.set('date_from',df);
   if(dt) params.set('date_to',dt);
+  const bs=document.getElementById('cumul-brand');
+  if(bs && bs.value) params.set('brand',bs.value);
   window.open(`/api/export/xlsx/cumulative-event-report?${params}`,'_blank');
 }
 
