@@ -9361,6 +9361,20 @@ def _parse_new_format_info_sheet(ws):
     # 직원현황 표 — '직원현황' 라벨 다음 행부터, D=직함/E=인원/F=이름/G=특이사항(이후 2칸씩 반복)
     staff_hdr_row = find_row('직원현황')
     staff_rows = []
+    # 수정사항: 엑셀로 내려받은 파일은 이름/특이사항 칸이 병합되어 있어(예: 이름 F:K, 특이사항 L:Q)
+    # 특이사항이 바로 옆 칸이 아닐 수 있다 — 헤더 행의 '이름'/'특이사항' 위치를 읽어 그대로 짝지어서,
+    # 내려받은 엑셀에 적어 올린 특이사항이 유실되지 않고 저장되게 한다. 못 찾으면 예전처럼 F/G부터 2칸씩.
+    staff_pairs = []
+    if staff_hdr_row:
+        pending_name = None
+        for hc in range(6, 18):
+            hv = str(cell(staff_hdr_row, hc) or '').strip()
+            if hv == '이름':
+                pending_name = hc
+            elif hv == '특이사항' and pending_name is not None:
+                staff_pairs.append((pending_name, hc)); pending_name = None
+    if not staff_pairs:
+        staff_pairs = [(c_, c_ + 1) for c_ in range(6, 18, 2)]
     if staff_hdr_row:
         r = staff_hdr_row + 1
         while r <= ws.max_row:
@@ -9374,13 +9388,11 @@ def _parse_new_format_info_sheet(ws):
             title_s = str(title).strip()
             count = cell(r, 5)
             entries = []
-            c = 6
-            while c < 18:
-                name_v = cell(r, c); note_v = cell(r, c + 1)
+            for name_c, note_c in staff_pairs:
+                name_v = cell(r, name_c); note_v = cell(r, note_c)
                 if (name_v is None or str(name_v).strip() == '') and (note_v is None or str(note_v).strip() == ''):
-                    break
+                    continue
                 entries.append({'name': str(name_v or '').strip(), 'note': str(note_v or '').strip()})
-                c += 2
             staff_rows.append({'title': title_s, 'count': str(count or '').strip(), 'entries': entries})
             r += 1
 
