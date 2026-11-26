@@ -85,6 +85,7 @@ def init_db():
         upload_batch TEXT,
         note TEXT DEFAULT '',
         trade_code TEXT DEFAULT '',
+        category TEXT DEFAULT '',
         created_at TEXT DEFAULT CURRENT_TIMESTAMP)""")
     conn.execute("""CREATE TABLE IF NOT EXISTS sellers (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -105,6 +106,9 @@ def init_db():
             conn.execute("ALTER TABLE sales_data ADD COLUMN channel TEXT DEFAULT '오프라인'")
         if 'trade_code' not in existing_cols:
             conn.execute("ALTER TABLE sales_data ADD COLUMN trade_code TEXT DEFAULT ''")
+        if 'category' not in existing_cols:
+            # 이카운트 '구분'란(O열) — 예: 9+1무상제공 / 10+1 무상제공 (누적행사 실적용)
+            conn.execute("ALTER TABLE sales_data ADD COLUMN category TEXT DEFAULT ''")
         # branches 테이블 마이그레이션
         branch_cols = [r[1] for r in conn.execute("PRAGMA table_info(branches)").fetchall()]
         for col in ['ceo','ceo_phone','store_manager','store_manager_phone','branch_code']:
@@ -5891,6 +5895,282 @@ def export_xlsx_event_report():
         as_attachment=True, download_name=fname)
 
 
+# ══════════════════════════════════════════════════════════════
+# 누적행사 실적 — 이카운트 '구분'란이 "9+1무상제공" / "10+1 무상제공"인 판매건만 모아서 보는 기능.
+# 레카로 제논·액시언의 "10대 구매 시 1대 무상증정(영통점은 9+1)" 누적행사 실효성 분석용.
+# ══════════════════════════════════════════════════════════════
+_CUM_PROMO_RE = re.compile(r'(\d+)\s*\+\s*(\d+)\s*무상\s*제공')
+_CUM_STORE_EXPECTED_TIER = {'영통': '9+1'}   # 영통점만 9+1 혜택, 그 외 매장은 10+1
+_CUM_BACKFILL_DONE = False
+
+
+def _cum_tier_of(category):
+    """구분란 문자열에서 '9+1' / '10+1' 같은 혜택 단계를 뽑는다(해당 안 되면 None)."""
+    m = _CUM_PROMO_RE.search((category or '').replace('＋', '+'))
+    return f"{int(m.group(1))}+{int(m.group(2))}" if m else None
+
+
+def _cum_expected_tier(store):
+    for k, t in _CUM_STORE_EXPECTED_TIER.items():
+        if k in (store or ''):
+            return t
+    return '10+1'
+
+
+def _ensure_category_backfill(force=False):
+    """구분(category) 컬럼은 나중에 추가된 컬럼이라 이전에 올린 판매 데이터에는 비어 있다.
+    판매실적 업로드 시 보관해둔 원본 엑셀(sales_upload_file)을 다시 읽어, 비어 있는 행에만
+    구분 값을 채운다(기존 데이터는 지우지 않고 category만 UPDATE)."""
+    global _CUM_BACKFILL_DONE
+    if _CUM_BACKFILL_DONE and not force:
+        return 0
+    import base64 as _b64
+    conn = get_db()
+    updated = 0
+    try:
+        files = conn.execute("SELECT file_b64 FROM sales_upload_file").fetchall()
+    except Exception:
+        files = []
+    for (b64,) in files:
+        try:
+            rows = parse_xlsx_sales(_b64.b64decode(b64))
+        except Exception:
+            continue
+        groups = {}
+        for r in rows:
+            key = (r['sale_date'], r['seller_name'], r['item_code'], r['quantity'], r['unit_price'],
+                   r['total'], r['buyer'], r.get('note', ''))
+            groups.setdefault(key, []).append(r.get('category', ''))
+        for key, cats in groups.items():
+            if not any(cats):
+                continue
+            ids = [x[0] for x in conn.execute(
+                """SELECT id FROM sales_data WHERE sale_date=? AND seller_name=? AND item_code=? AND quantity=?
+                   AND unit_price=? AND total=? AND COALESCE(buyer,'')=? AND COALESCE(note,'')=?
+                   AND COALESCE(category,'')='' ORDER BY id""",
+                (key[0], key[1], key[2], key[3], key[4], key[5], key[6] or '', key[7] or '')).fetchall()]
+            for rid, cat in zip(ids, cats):
+                if cat:
+                    conn.execute("UPDATE sales_data SET category=? WHERE id=?", (cat, rid))
+                    updated += 1
+    conn.commit(); conn.close()
+    _CUM_BACKFILL_DONE = True
+    return updated
+
+
+def _cum_collect(date_from='', date_to=''):
+    """구분란이 N+M 무상제공인 판매건을 모아 집계한다. 반환: dict(summary/stores/products/tiers/rows)."""
+    _ensure_category_backfill()
+    conn = get_db()
+    q = """SELECT sale_date, real_seller, item_name, item_group, quantity, unit_price, total, note,
+                  category, buyer FROM sales_data WHERE category LIKE '%무상%'"""
+    params = []
+    if date_from: q += " AND sale_date >= ?"; params.append(date_from)
+    if date_to: q += " AND sale_date <= ?"; params.append(date_to)
+    q += " ORDER BY sale_date, real_seller"
+    rows = []
+    for r in conn.execute(q, params).fetchall():
+        r = dict(r)
+        tier = _cum_tier_of(r['category'])
+        if not tier:
+            continue
+        if is_unmanaged_seller(r.get('real_seller') or ''):
+            continue
+        r['tier'] = tier
+        r['store'] = r.get('real_seller') or '(미상)'
+        r['is_free'] = (r['total'] or 0) == 0   # 무상 증정분 = 금액 0원, 나머지는 유상 구매분
+        r['brand'] = remap_group(r.get('item_group') or '', r.get('item_name') or '') or '(미분류)'
+        r['product'] = _display_product_name(r.get('item_name'))
+        rows.append(r)
+    has_any_category = conn.execute("SELECT COUNT(*) FROM sales_data WHERE COALESCE(category,'')!=''").fetchone()[0]
+    conn.close()
+
+    def _agg(keyfn):
+        out = {}
+        for r in rows:
+            g = out.setdefault(keyfn(r), {'paid_qty': 0, 'free_qty': 0, 'amount': 0, 'cnt': 0, 'free_cnt': 0,
+                                           'tiers': set(), 'first': r['sale_date'], 'last': r['sale_date']})
+            q_ = r['quantity'] or 0
+            if r['is_free']:
+                g['free_qty'] += q_; g['free_cnt'] += 1
+            else:
+                g['paid_qty'] += q_
+            g['amount'] += r['total'] or 0
+            g['cnt'] += 1
+            g['tiers'].add(r['tier'])
+            g['first'] = min(g['first'], r['sale_date']); g['last'] = max(g['last'], r['sale_date'])
+        return out
+
+    def _ratio(g):
+        return round(g['free_qty'] / g['paid_qty'] * 100, 1) if g['paid_qty'] else 0.0
+
+    stores = []
+    for st, g in _agg(lambda r: r['store']).items():
+        exp = _cum_expected_tier(st)
+        tiers = sorted(g['tiers'], key=lambda t: int(t.split('+')[0]))
+        stores.append({'store': st, 'tier': ' / '.join(tiers), 'expected_tier': exp,
+                       'check': '' if tiers == [exp] else f'확인 필요 (예상 {exp})',
+                       'paid_qty': g['paid_qty'], 'free_qty': g['free_qty'], 'amount': g['amount'],
+                       'cnt': g['cnt'], 'free_ratio': _ratio(g), 'first': g['first'], 'last': g['last']})
+    stores.sort(key=lambda x: (-x['free_qty'], -x['paid_qty'], x['store']))
+
+    products = []
+    for (b, pn), g in _agg(lambda r: (r['brand'], r['product'])).items():
+        products.append({'brand': b, 'product': pn, 'paid_qty': g['paid_qty'], 'free_qty': g['free_qty'],
+                         'amount': g['amount'], 'cnt': g['cnt'], 'free_ratio': _ratio(g)})
+    products.sort(key=lambda x: (BRAND_ORDER.index(x['brand']) if x['brand'] in BRAND_ORDER else 99, -x['paid_qty']))
+
+    tiers = []
+    for t, g in _agg(lambda r: r['tier']).items():
+        n_st = len({r['store'] for r in rows if r['tier'] == t})
+        tiers.append({'tier': t, 'store_count': n_st, 'paid_qty': g['paid_qty'], 'free_qty': g['free_qty'],
+                      'amount': g['amount'], 'cnt': g['cnt'], 'free_ratio': _ratio(g)})
+    tiers.sort(key=lambda x: int(x['tier'].split('+')[0]))
+
+    paid_total = sum(r['quantity'] or 0 for r in rows if not r['is_free'])
+    free_total = sum(r['quantity'] or 0 for r in rows if r['is_free'])
+    summary = {'row_count': len(rows), 'store_count': len({r['store'] for r in rows}),
+               'paid_qty': paid_total, 'free_qty': free_total,
+               'total_qty': paid_total + free_total,
+               'amount': sum(r['total'] or 0 for r in rows),
+               'free_ratio': round(free_total / paid_total * 100, 1) if paid_total else 0.0,
+               'has_category_data': bool(has_any_category)}
+    return {'summary': summary, 'stores': stores, 'products': products, 'tiers': tiers, 'rows': rows}
+
+
+@app.route("/api/sales/cumulative-event")
+@login_required
+def api_sales_cumulative_event():
+    """누적행사 실적 — 이카운트 구분란이 '9+1무상제공'/'10+1 무상제공'인 판매건 집계(기간 선택 가능)."""
+    date_from = request.args.get('date_from', '').strip()
+    date_to = request.args.get('date_to', '').strip()
+    data = _cum_collect(date_from, date_to)
+    data['ok'] = True
+    data['date_from'] = date_from; data['date_to'] = date_to
+    return jsonify(data)
+
+
+@app.route("/api/sales/cumulative-event/refresh-category", methods=["POST"])
+@login_required
+def api_sales_cumulative_refresh_category():
+    """이전에 업로드한 판매 데이터의 '구분'값을 보관된 원본 엑셀에서 다시 읽어 채운다."""
+    n = _ensure_category_backfill(force=True)
+    return jsonify({'ok': True, 'updated': n})
+
+
+@app.route("/api/export/xlsx/cumulative-event-report")
+@login_required
+def export_xlsx_cumulative_event_report():
+    """누적행사 실적 보고서(엑셀) — 요약 / 매장별 참여현황 / 제품별 / 상세내역."""
+    from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
+    from openpyxl.utils import get_column_letter
+    date_from = request.args.get('date_from', '').strip()
+    date_to = request.args.get('date_to', '').strip()
+    data = _cum_collect(date_from, date_to)
+    sm, stores, products, tiers, rows = data['summary'], data['stores'], data['products'], data['tiers'], data['rows']
+
+    FNAME = '맑은 고딕'
+    LGRAY = 'F2F2F2'
+    thin = Side(style='thin', color='BFBFBF'); bdr = Border(left=thin, right=thin, top=thin, bottom=thin)
+    ctr = Alignment(horizontal='center', vertical='center'); lft = Alignment(horizontal='left', vertical='center')
+    rgt = Alignment(horizontal='right', vertical='center')
+    def mf(h): return PatternFill('solid', fgColor=h)
+
+    def hdr(ws, row, labels, start_col=2):
+        for i, h in enumerate(labels):
+            c = ws.cell(row=row, column=start_col + i, value=h)
+            c.font = Font(bold=True, size=9, name=FNAME); c.fill = mf(LGRAY); c.border = bdr; c.alignment = ctr
+
+    def body(ws, row, vals, aligns, numcols=(), start_col=2):
+        for i, v in enumerate(vals):
+            c = ws.cell(row=row, column=start_col + i, value=v)
+            c.font = Font(size=9, name=FNAME); c.border = bdr; c.alignment = aligns[i]
+            if i in numcols: c.number_format = '#,##0'
+
+    wb = openpyxl.Workbook()
+    ws = wb.active; ws.title = '요약'
+    ws.column_dimensions['A'].width = 2
+    ws.merge_cells('B2:H2')
+    c = ws['B2']; c.value = '누적행사 실적 보고 (9+1 / 10+1 무상제공)'
+    c.font = Font(bold=True, size=16, name=FNAME); c.alignment = ctr
+    ws.row_dimensions[2].height = 26
+    ws.merge_cells('B3:H3')
+    c = ws['B3']; c.value = f"기간: {date_from or '전체'} ~ {date_to or '전체'}   ·   이카운트 '구분'란이 N+M 무상제공인 판매건 기준"
+    c.font = Font(size=10, name=FNAME)
+    kpis = [('참여 매장', f"{sm['store_count']}개"), ('유상 수량', f"{sm['paid_qty']:,}대"),
+            ('무상 증정 수량', f"{sm['free_qty']:,}대"), ('무상 비율', f"{sm['free_ratio']}%"),
+            ('판매 건수', f"{sm['row_count']}건"), ('유상 합계금액', f"{sm['amount']:,}원")]
+    for i, (k, v) in enumerate(kpis):
+        a = ws.cell(row=5, column=2 + i, value=k); a.font = Font(size=9, name=FNAME); a.fill = mf(LGRAY); a.border = bdr; a.alignment = lft
+        b = ws.cell(row=6, column=2 + i, value=v); b.font = Font(size=11, name=FNAME); b.border = bdr; b.alignment = lft
+    ri = 8
+    ws.cell(row=ri, column=2, value='혜택 단계별 현황').font = Font(bold=True, size=12, name=FNAME)
+    ri += 1
+    hdr(ws, ri, ['혜택 단계', '참여 매장', '유상 수량', '무상 수량', '무상 비율(%)', '판매 건수', '유상 금액'])
+    ri += 1
+    for t in tiers:
+        body(ws, ri, [t['tier'], t['store_count'], t['paid_qty'], t['free_qty'], t['free_ratio'], t['cnt'], t['amount']],
+             [ctr, rgt, rgt, rgt, rgt, rgt, rgt], numcols=(1, 2, 3, 5, 6))
+        ri += 1
+    ri += 1
+    ws.cell(row=ri, column=2, value='※ 베이비하우스 영통점은 9+1, 그 외 매장은 10+1 혜택입니다. 무상 수량 = 금액이 0원인 증정분, 유상 수량 = 그 외 구매분.').font = Font(size=9, name=FNAME, color='C00000')
+    if not sm['has_category_data']:
+        ri += 1
+        ws.cell(row=ri, column=2, value="※ 저장된 판매 데이터에 '구분' 값이 없습니다. 판매실적 탭에서 '구분 다시 읽기'를 실행하거나 판매 파일을 다시 업로드해주세요.").font = Font(size=9, name=FNAME, color='C00000')
+    for ci, w in zip(range(2, 9), [16, 14, 14, 14, 14, 14, 16]):
+        ws.column_dimensions[get_column_letter(ci)].width = w
+
+    ws2 = wb.create_sheet('매장별 참여현황')
+    ws2.column_dimensions['A'].width = 2
+    labels = ['매장명', '적용 단계', '유상 수량', '무상 수량', '무상 비율(%)', '판매 건수', '유상 금액', '첫 일자', '마지막 일자', '확인']
+    ws2.merge_cells('B2:K2')
+    c = ws2['B2']; c.value = '매장별 참여현황'; c.font = Font(bold=True, size=14, name=FNAME)
+    hdr(ws2, 4, labels)
+    ri = 5
+    for st in stores:
+        body(ws2, ri, [st['store'], st['tier'], st['paid_qty'], st['free_qty'], st['free_ratio'], st['cnt'],
+                        st['amount'], st['first'], st['last'], st['check']],
+             [lft, ctr, rgt, rgt, rgt, rgt, rgt, ctr, ctr, lft], numcols=(2, 3, 5, 6))
+        ri += 1
+    body(ws2, ri, ['합계', '', sm['paid_qty'], sm['free_qty'], sm['free_ratio'], sm['row_count'], sm['amount'], '', '', ''],
+         [lft, ctr, rgt, rgt, rgt, rgt, rgt, ctr, ctr, lft], numcols=(2, 3, 5, 6))
+    for cc in range(2, 12): ws2.cell(row=ri, column=cc).font = Font(bold=True, size=9, name=FNAME)
+    for ci, w in zip(range(2, 12), [26, 11, 11, 11, 12, 10, 14, 12, 12, 18]):
+        ws2.column_dimensions[get_column_letter(ci)].width = w
+    ws2.freeze_panes = 'B5'
+
+    ws3 = wb.create_sheet('제품별')
+    ws3.column_dimensions['A'].width = 2
+    ws3.merge_cells('B2:H2')
+    c = ws3['B2']; c.value = '제품별 현황'; c.font = Font(bold=True, size=14, name=FNAME)
+    hdr(ws3, 4, ['브랜드', '제품명', '유상 수량', '무상 수량', '무상 비율(%)', '판매 건수', '유상 금액'])
+    ri = 5
+    for pr in products:
+        body(ws3, ri, [pr['brand'], pr['product'], pr['paid_qty'], pr['free_qty'], pr['free_ratio'], pr['cnt'], pr['amount']],
+             [lft, lft, rgt, rgt, rgt, rgt, rgt], numcols=(2, 3, 5, 6))
+        ri += 1
+    for ci, w in zip(range(2, 9), [14, 26, 11, 11, 12, 10, 14]):
+        ws3.column_dimensions[get_column_letter(ci)].width = w
+
+    ws4 = wb.create_sheet('상세내역')
+    ws4.column_dimensions['A'].width = 2
+    hdr(ws4, 2, ['일자', '매장명', '구분', '브랜드', '제품명', '수량', '금액', '유무상', '특이사항(비고)'])
+    ri = 3
+    for r in rows:
+        body(ws4, ri, [r['sale_date'], r['store'], r['category'], r['brand'], r['product'], r['quantity'], r['total'],
+                        '무상' if r['is_free'] else '유상', r.get('note') or ''],
+             [ctr, lft, ctr, lft, lft, rgt, rgt, ctr, lft], numcols=(5, 6))
+        ri += 1
+    for ci, w in zip(range(2, 11), [12, 26, 16, 12, 28, 8, 12, 8, 30]):
+        ws4.column_dimensions[get_column_letter(ci)].width = w
+    ws4.freeze_panes = 'B3'
+
+    buf = io.BytesIO(); wb.save(buf); buf.seek(0)
+    fname = f"누적행사_실적보고서_{datetime.now().strftime('%Y%m%d')}.xlsx"
+    return send_file(buf, mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        as_attachment=True, download_name=fname)
+
+
 @app.route("/api/export/xlsx/weekly")
 @login_required
 def export_xlsx_weekly():
@@ -7319,6 +7599,7 @@ def parse_xlsx_sales(file_bytes):
                 'note':         note,
                 'channel':      channel,
                 'trade_code':   row_vals.get('AC', '').strip(),  # 거래처코드 (수정4)
+                'category':     row_vals.get('O', '').strip(),   # 구분 (예: 10+1 무상제공)
             })
     return results
 
@@ -7424,12 +7705,13 @@ def upload_xlsx_commit():
     for r in rows:
         conn.execute("""INSERT INTO sales_data
             (sale_date,seller_name,item_code,item_name,item_group,quantity,
-             unit_price,supply_price,vat,total,buyer,buyer_phone,real_seller,upload_batch,note,channel,trade_code)
-            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+             unit_price,supply_price,vat,total,buyer,buyer_phone,real_seller,upload_batch,note,channel,trade_code,category)
+            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (r['sale_date'], r['seller_name'], r['item_code'], r['item_name'],
              r['item_group'], r['quantity'], r['unit_price'], r['supply_price'],
              r['vat'], r['total'], r['buyer'], r['buyer_phone'],
-             r['real_seller'], batch, r.get('note', ''), r.get('channel', '오프라인'), r.get('trade_code', '')))
+             r['real_seller'], batch, r.get('note', ''), r.get('channel', '오프라인'), r.get('trade_code', ''),
+             r.get('category', '')))
 
     conn.commit(); conn.close()
     return jsonify({"ok": True, "rows": len(rows), "months": months, "batch": batch})
