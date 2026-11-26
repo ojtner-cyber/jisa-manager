@@ -9677,6 +9677,81 @@ def _split_freeform_by_brand(lines):
     return pre, groups
 
 
+# 수정사항: 자사 주요내용 칸에 타사 브랜드(싸이백스·브라이택스·조이·폼포라·다이치·오이스터 등) 설명이
+# 적혀 있으면 자동으로 타사 칸으로 옮기고, 같은 브랜드·같은 내용이 양쪽/여러 번 나오면 하나로 합친다.
+_COMPETITOR_KW = ['싸이백스', '싸이벡스', '사이백스', '사이벡스', 'cybex', '브라이택스', '브라이텍스', 'britax',
+                  '조이', 'joie', '실버크로스', 'silvercross', 'silver cross', '오이스터', 'oyster',
+                  '부가부', 'bugaboo', '요요', 'yoyo', '스토케', 'stokke', '트라이크', '다이치', '폼포라',
+                  '맥시코시', 'maxi-cosi', '콤비', '잉글레시나', '맥클라렌', '베이비젠', '퀴니', '에그']
+_OWN_KW = ['버디', '태그', '루프트', '슈타트', 'abc', '줄즈', 'joolz', '원더폴드', 'wonderfold', '레카로', 'recaro',
+           '타프토이즈', 'taftoys', '비바체', '카오스', 'chaos', '스누즈', '엔픽스', 'enfix', '토론', '제논', '액시언']
+
+
+def _is_competitor_brand(brand):
+    """브랜드 줄에서 가장 먼저 나오는 키워드가 타사 키워드면 타사 브랜드로 본다."""
+    low = (brand or '').lower()
+    best_c = min([low.find(k) for k in _COMPETITOR_KW if k in low] or [10**6])
+    best_o = min([low.find(k) for k in _OWN_KW if k in low] or [10**6])
+    return best_c < best_o
+
+
+def _parse_visit_entries(text):
+    """정리된 텍스트 -> ([(카테고리, 브랜드|None, [불릿...])], [카테고리 없는 자유 블록])"""
+    entries, free = [], []
+    for block in _split_content_blocks(text):
+        lines = block.split('\n')
+        if not (lines and lines[0].startswith('[') and lines[0].endswith(']')):
+            free.append(block); continue
+        cat = lines[0][1:-1].strip()
+        cur = None
+        for ln in lines[1:]:
+            t = ln.strip()
+            if not t: continue
+            if t.startswith('*') and t.strip('*').strip():
+                cur = [cat, t.lstrip('*').strip(), []]; entries.append(cur)
+            else:
+                if cur is None:
+                    cur = [cat, None, []]; entries.append(cur)
+                cur[2].append(t[2:].strip() if t.startswith('- ') else t)
+    return entries, free
+
+
+def _merge_visit_entries(entries, free):
+    """같은 브랜드는 첫 등장 카테고리 아래로 합치고, 같은 불릿은 한 번만 남긴다."""
+    merged, key_idx = [], {}
+    for cat, brand, bullets in entries:
+        key = (brand or '').replace(' ', '').lower() if brand else ('__nobrand__', cat)
+        if key in key_idx:
+            tgt = merged[key_idx[key]]
+        else:
+            tgt = [cat, brand, []]; key_idx[key] = len(merged); merged.append(tgt)
+        for b in bullets:
+            if b not in tgt[2]:
+                tgt[2].append(b)
+    cat_order, out = [], []
+    for cat, _, _ in merged:
+        if cat not in cat_order: cat_order.append(cat)
+    for cat in cat_order:
+        lines = [f'[{cat}]']
+        for c, brand, bullets in merged:
+            if c != cat: continue
+            if brand: lines.append(f'*{brand}')
+            lines += [f' - {b}' for b in bullets]
+        out.append('\n'.join(lines))
+    out.extend(free)
+    return '\n\n'.join(out)
+
+
+def _rebalance_visit_pair(our, comp):
+    """(자사, 타사) 텍스트를 정리 형식으로 바꾸고, 자사 칸의 타사 브랜드를 타사 칸으로 옮기며 중복을 없앤다."""
+    our_e, our_f = _parse_visit_entries(_reformat_visit_content_clean(our or ''))
+    comp_e, comp_f = _parse_visit_entries(_reformat_visit_content_clean(comp or ''))
+    keep, moved = [], []
+    for e in our_e:
+        (moved if e[1] and _is_competitor_brand(e[1]) else keep).append(e)
+    return _merge_visit_entries(keep, our_f), _merge_visit_entries(comp_e + moved, comp_f)
+
+
 def _reformat_visit_content_clean(text):
     """방문이력 '자사 주요내용'/'타사 주요내용'을 깔끔한 고정 형식으로 자동 정리한다 (수정사항).
 
@@ -9875,8 +9950,7 @@ def _upsert_visit_log(conn, *, store_name, visit_date, our_content='', competito
     manual(보고서작성 폼) 입력만 같은 날 여러 번 방문해도 각각 별개 행으로 쌓이게 둔다."""
     now_str = datetime.now().strftime('%Y-%m-%d %H:%M')
     # 웹에서 어떻게 적었든 저장 시점에 [카테고리]/*브랜드/ - 설명 형식으로 자동 정리
-    our_content = _reformat_visit_content_clean(our_content or '')
-    competitor_trend = _reformat_visit_content_clean(competitor_trend or '')
+    our_content, competitor_trend = _rebalance_visit_pair(our_content, competitor_trend)
     existing = None
     if source != 'manual':
         existing = conn.execute(
@@ -9934,9 +10008,8 @@ def _dedupe_visit_log(conn, store_name=None):
     groups = {}
     for r in rows:
         r = dict(r)
-        key = (r['store_name'], r['visit_date'],
-               _reformat_visit_content_clean(r.get('our_content') or '').strip(),
-               _reformat_visit_content_clean(r.get('competitor_trend') or '').strip(),
+        _ko, _kc = _rebalance_visit_pair(r.get('our_content') or '', r.get('competitor_trend') or '')
+        key = (r['store_name'], r['visit_date'], _ko.strip(), _kc.strip(),
                (r.get('action_item') or '').strip(),
                r.get('expense_amount') or 0, (r.get('expense_note') or '').strip())
         groups.setdefault(key, []).append(r)
@@ -10842,8 +10915,7 @@ def api_visit_report_cleanup_format():
             "SELECT id, our_content, competitor_trend FROM store_visit_log").fetchall()
     updated = 0
     for r in rows:
-        new_our = _reformat_visit_content_clean(r['our_content'] or '')
-        new_comp = _reformat_visit_content_clean(r['competitor_trend'] or '')
+        new_our, new_comp = _rebalance_visit_pair(r['our_content'] or '', r['competitor_trend'] or '')
         if new_our != (r['our_content'] or '') or new_comp != (r['competitor_trend'] or ''):
             conn.execute("UPDATE store_visit_log SET our_content=?, competitor_trend=? WHERE id=?",
                          (new_our, new_comp, r['id']))
@@ -10932,8 +11004,7 @@ def api_visit_log_save():
             action_item=?, due_date=?, status=?, expense_type=?, expense_amount=?, expense_note=?, updated_at=?
             WHERE id=?""",
             (store_name, visit_date, d.get('purpose',''), d.get('contact_person',''),
-             _reformat_visit_content_clean(d.get('our_content','')),
-             _reformat_visit_content_clean(d.get('competitor_trend','')), d.get('action_item',''), d.get('due_date',''), d.get('status',''),
+             *_rebalance_visit_pair(d.get('our_content',''), d.get('competitor_trend','')), d.get('action_item',''), d.get('due_date',''), d.get('status',''),
              d.get('expense_type',''), expense_amount, d.get('expense_note',''), now_str, log_id))
         _dedupe_visit_log(conn, store_name)
         conn.commit(); conn.close()
@@ -11889,8 +11960,9 @@ def _write_visit_log_sheet(ws, data, FNAME):
         # 수정사항(카테고리 제목 배경색): "[유모차]" 같은 카테고리 제목 줄은 내용과 같은 셀에
         # 섞어 넣지 않고 별도의 행으로 떼어내서, 그 행에만 SECTION_BG(흰색,배경1,5%더 어둡게)
         # 배경색을 줘서 한눈에 구분되도록 한다. 브랜드명("*브랜드*")은 실제 BOLD 폰트로 렌더링.
-        our_groups = _group_blocks_by_category(v.get('our_content', ''))
-        comp_groups = _group_blocks_by_category(v.get('competitor_trend', ''))
+        _o, _c = _rebalance_visit_pair(v.get('our_content', ''), v.get('competitor_trend', ''))
+        our_groups = _group_blocks_by_category(_o)
+        comp_groups = _group_blocks_by_category(_c)
         # 같은 카테고리는 자사/타사가 한 제목 아래 나란히 오도록 카테고리 순서를 합친다.
         cat_order = []
         for c, _ in our_groups + comp_groups:
